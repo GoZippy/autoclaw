@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Lobster claw / claw shape -->
+  <!-- Main claw body - curved outer shell -->
+  <path d="M6 18 C6 18 4 14 5 10 C6 6 10 4 14 5 C18 6 20 10 19 14 C18 18 14 20 10 19" />
+  <!-- Upper pincer -->
+  <path d="M14 5 C16 3 18 3 20 5" />
+  <!-- Lower pincer -->
+  <path d="M10 19 C12 21 14 21 16 19" />
+  <!-- Inner claw detail -->
+  <path d="M8 14 C10 12 14 11 16 13" />
+  <!-- Eye dot -->
+  <circle cx="12" cy="10" r="1" fill="currentColor" />
+</svg>

@@ -1,0 +1,29 @@
+---
+description: MAteam multi-agent coordinator. Invoke when user asks to spawn a team of agents, coordinate parallel work, launch multi-agent task, or distribute work across roles.
+alwaysApply: false
+---
+
+# MAteam — Multi-Agent Coordinator
+
+When the user invokes mateam, determine the sub-command: `launch`, `status`, `list-peers`, `cancel`, or `result`.
+
+## launch "<task>"
+1. **Decompose** the task into roles: Researcher, Coder, Reviewer, Verifier (use only roles the task needs).
+2. **Create scratchpad** at `.autoclaw/mateam/scratch/YYYY-MM-DD-<task-slug>/`:
+   - `plan.md` (task breakdown + role assignments)
+   - `context.md` (Researcher output)
+   - `output.md` (Coder output)
+   - `review.md` (Reviewer notes)
+   - `verify.md` (Verifier results)
+3. **Execute roles in order**:
+   - Researcher: search codebase, write findings to `context.md`.
+   - Coder: implement using `context.md`, write summary to `output.md`.
+   - Reviewer: check `output.md` and changed files, write issues to `review.md`.
+   - Verifier: if blockers in `review.md`, halt and report; otherwise run tests, write to `verify.md`.
+4. **Report** summary of all role outputs to user.
+
+## Other Commands
+- `status`: List active sessions with phase and last update.
+- `list-peers`: List roles, tasks, and states.
+- `cancel`: Mark session cancelled, confirm.
+- `result`/`merge`: Present `output.md` from most recent session.

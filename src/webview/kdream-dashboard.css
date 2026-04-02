@@ -1,0 +1,136 @@
+body {
+    font-family: var(--vscode-font-family);
+    color: var(--vscode-foreground);
+    background-color: var(--vscode-editor-background);
+    padding: 10px;
+    margin: 0;
+}
+
+#dashboard-container {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+h1 {
+    margin: 0;
+    font-size: 1.5em;
+}
+
+h2 {
+    font-size: 1.2em;
+    margin-top: 20px;
+    margin-bottom: 10px;
+    color: var(--vscode-descriptionForeground);
+}
+
+section {
+    margin-bottom: 20px;
+    padding: 10px;
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    border-radius: 4px;
+}
+
+button {
+    background-color: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: none;
+    padding: 6px 12px;
+    cursor: pointer;
+    border-radius: 2px;
+}
+
+button:hover {
+    background-color: var(--vscode-button-hoverBackground);
+}
+
+.task-item {
+    padding: 5px 0;
+    border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.task-item:last-child {
+    border-bottom: none;
+}
+
+.log-entry {
+    font-family: var(--vscode-editor-font-family);
+    font-size: 0.9em;
+    padding: 3px 0;
+}
+
+.adapter-status {
+    display: flex;
+    align-items: center;
+    padding: 5px 0;
+}
+
+.adapter-status .indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 10px;
+}
+
+.adapter-status .indicator.healthy {
+    background-color: var(--vscode-testing-iconPassed);
+}
+
+.adapter-status .indicator.warning {
+    background-color: var(--vscode-testing-iconQueued);
+}
+
+.adapter-status .indicator.error {
+    background-color: var(--vscode-testing-iconFailed);
+}
+
+.todo-item {
+    display: flex;
+    align-items: center;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    gap: 8px;
+}
+
+.todo-item:last-child {
+    border-bottom: none;
+}
+
+.todo-type {
+    font-size: 0.75em;
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    min-width: 45px;
+    text-align: center;
+}
+
+.todo-type.todo {
+    background-color: var(--vscode-charts-blue);
+    color: var(--vscode-editor-background);
+}
+
+.todo-type.fixme {
+    background-color: var(--vscode-charts-orange);
+    color: var(--vscode-editor-background);
+}
+
+.todo-file {
+    font-size: 0.85em;
+    color: var(--vscode-descriptionForeground);
+    font-family: var(--vscode-editor-font-family);
+}
+
+.todo-text {
+    flex: 1;
+    font-size: 0.9em;
+}

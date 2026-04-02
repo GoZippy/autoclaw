@@ -1,0 +1,165 @@
+{
+  "name": "autoclaw",
+  "displayName": "AutoClaw — Autonomous AI Agents",
+  "description": "Persistent background agents, autonomous build workflows, and multi-agent teams. Zero setup. Works with Claude, Copilot, and any Agent Skills compatible AI.",
+  "version": "1.2.0",
+  "publisher": "ZippyTechnologiesLLC",
+  "engines": {
+    "vscode": "^1.108.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "agent",
+    "claude",
+    "copilot",
+    "background-agent",
+    "multi-agent",
+    "workflow"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GoZippy/autoclaw.git"
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "icon": "icon.png",
+  "main": "./out/extension.js",
+  "contributes": {
+    "chatSkills": [
+      {
+        "path": "./skills/kdream/SKILL.md"
+      },
+      {
+        "path": "./skills/autobuild/SKILL.md"
+      },
+      {
+        "path": "./skills/mateam/SKILL.md"
+      }
+    ],
+    "commands": [
+      {
+        "command": "autoclaw.enableAll",
+        "title": "AutoClaw: Enable All Autonomous Features"
+      },
+      {
+        "command": "autoclaw.startKdream",
+        "title": "AutoClaw: Start KDream Background Agent"
+      },
+      {
+        "command": "autoclaw.installAdapters",
+        "title": "AutoClaw: Install Adapters for Detected AI Extensions"
+      },
+      {
+        "command": "kdream.showDashboard",
+        "title": "KDream: Show Dashboard"
+      },
+      {
+        "command": "kdream.refreshDashboard",
+        "title": "KDream: Refresh Dashboard"
+      },
+      {
+        "command": "kdream.addTask",
+        "title": "KDream: Add Task"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "autoclaw-kdream",
+          "title": "AutoClaw KDream",
+          "icon": "resources/kdream-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "autoclaw-kdream": [
+        {
+          "id": "kdreamDashboard",
+          "name": "KDream Dashboard",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "kdream.refreshDashboard",
+          "when": "view == kdreamDashboard",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AutoClaw KDream",
+      "properties": {
+        "autoclaw.kdream.enableFileWatcher": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable file system watcher for KDream state changes"
+        },
+        "autoclaw.kdream.notifyNewTodos": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show notification when new TODOs are detected"
+        },
+        "autoclaw.kdream.refreshInterval": {
+          "type": "number",
+          "default": 30,
+          "description": "Dashboard refresh interval in seconds"
+        },
+        "autoclaw.kdream.adapters": {
+          "type": "array",
+          "default": [
+            { "name": "Claude Code", "id": "Anthropic.claude-code" },
+            { "name": "Cline", "id": "saoudrizwan.claude-dev" },
+            { "name": "KiloCode", "id": "kilocode.kilo-code" },
+            { "name": "Kiro", "id": "amazon.kiro" },
+            { "name": "Windsurf", "id": "codeium.windsurf" },
+            { "name": "Continue", "id": "Continue.continue" }
+          ],
+          "description": "List of AI adapters to monitor for health status. ZippyMesh LLM Router health is checked separately via HTTP."
+        },
+        "autoclaw.kdream.zippymeshUrl": {
+          "type": "string",
+          "default": "http://localhost:20128",
+          "description": "Base URL of ZippyMesh LLM Router instance (for health checks)"
+        },
+        "autoclaw.kdream.scanPatterns": {
+          "type": "array",
+          "default": ["**/*.ts", "**/*.js", "**/*.tsx", "**/*.jsx", "**/*.py", "**/*.md"],
+          "description": "File patterns to scan for TODOs/FIXMEs"
+        },
+        "autoclaw.kdream.notificationLevel": {
+          "type": "string",
+          "enum": ["all", "warnings", "errors", "none"],
+          "default": "all",
+          "description": "Notification verbosity level"
+        },
+        "autoclaw.kdream.autoInstallAdapters": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically install adapters for detected AI extensions"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile && npm run copy-webview",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "copy-webview": "node scripts/copy-webview.js",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^25.5.0",
+    "@types/vscode": "^1.108.0",
+    "@vscode/test-cli": "^0.0.9",
+    "@vscode/test-electron": "^2.3.9",
+    "typescript": "^5.8.0"
+  }
+}

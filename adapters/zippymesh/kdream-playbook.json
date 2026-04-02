@@ -1,0 +1,24 @@
+{
+  "id": "autoclaw-kdream",
+  "name": "AutoClaw KDream — Long Session Optimization",
+  "description": "Cost-optimized routing for KDream background monitoring. Routes light tasks to free tiers, escalates to paid for complex work.",
+  "version": "1.0.0",
+  "author": "ZippyTechnologies",
+  "tags": ["autoclaw", "kdream", "background", "cost-optimized"],
+  "trigger": {
+    "intent": "monitoring"
+  },
+  "routing": {
+    "strategy": "cost-optimized",
+    "providers": [
+      { "id": "groq", "models": ["llama-3.1-8b-instant"], "priority": 1, "forTaskTypes": ["heartbeat", "scan"] },
+      { "id": "gemini", "models": ["gemini-1.5-flash"], "priority": 2, "forTaskTypes": ["analysis"] },
+      { "id": "anthropic", "models": ["claude-haiku-4-5"], "priority": 3, "forTaskTypes": ["dream", "consolidate"] }
+    ],
+    "fallback": "free-models-tier-1"
+  },
+  "costControls": {
+    "preferFree": true,
+    "escalationThreshold": "complex"
+  }
+}

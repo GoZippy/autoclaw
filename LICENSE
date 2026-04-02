@@ -1,0 +1,489 @@
+# Zippy Technologies Source-Available Commercial License
+
+Version 1.3
+Effective Date: April 2, 2026
+
+Copyright (c) 2026 Zippy Technologies LLC
+All rights reserved.
+
+## Product and Repository Scope
+
+**Product Name:** AutoClaw
+**Applies to:**
+- `autoclaw`
+- related source distributions, binaries, packages, installers, artifacts, and
+  documentation released by Licensor for AutoClaw unless a different written
+  license is expressly provided by Licensor
+
+## Licensor Information
+
+**Zippy Technologies LLC**
+1515 E Lewis
+Wichita, Kansas 67211
+Sedgwick County, Kansas
+United States
+
+**Sales, Support, Licensing, and Derivative Disclosure Contact:**
+Support@GoZippy.com
+
+---
+
+## IMPORTANT NOTICE
+
+THIS LICENSE IS NOT AN OPEN SOURCE LICENSE AND IS NOT INTENDED TO SATISFY THE
+OPEN SOURCE DEFINITION. THE SOFTWARE IS MADE AVAILABLE ON A SOURCE-AVAILABLE
+BASIS ONLY UNDER THE TERMS OF THIS LICENSE. PERSONAL AND EDUCATIONAL USE IS
+FREE AS PROVIDED BELOW. ALL COMMERCIAL USE REQUIRES A PAID COMMERCIAL LICENSE
+FROM ZIPPY TECHNOLOGIES LLC. DERIVATIVE WORKS MUST BE DISCLOSED TO ZIPPY
+TECHNOLOGIES LLC AS DESCRIBED IN SECTION 8.
+
+---
+
+## 1. Definitions
+
+### 1.1 "Licensor"
+"Licensor" means **Zippy Technologies LLC**, located at **1515 E Lewis,
+Wichita, Kansas 67211, Sedgwick County, Kansas, United States**.
+
+### 1.2 "Product"
+"Product" means the software product known as **AutoClaw**.
+
+### 1.3 "Software"
+"Software" means the Product and all related source code, object code,
+binaries, libraries, modules, SDKs, scripts, build logic, packaging,
+deployment artifacts, configuration, documentation, examples, interfaces,
+assets, and other materials contained in or distributed through the
+repositories listed in the Product and Repository Scope section above,
+together with any updates, upgrades, revisions, patches, fixes, and portions
+thereof made available by Licensor.
+
+### 1.4 "Open Materials"
+"Open Materials" means only those files or portions of the Software expressly
+designated by Licensor as open under this License, whether by:
+- inclusion in `COMPONENTS.md` or another Licensor-issued classification
+  manifest,
+- a file header or repository notice stating **"ZIPPY OPEN MATERIAL"**,
+- placement in a directory expressly designated by Licensor as open, or
+- another written designation by Licensor.
+
+### 1.5 "Restricted Materials"
+"Restricted Materials" means all Software that is not expressly designated as
+Open Materials. All Software is Restricted Material unless explicitly
+identified as Open Material by Licensor.
+
+### 1.6 "Personal Use"
+"Personal Use" means use by a natural person for private, hobbyist,
+experimental, evaluation, or other non-commercial purposes, and not on behalf
+of any company, employer, customer, organization, revenue-generating activity,
+or operational environment.
+
+### 1.7 "Educational Use"
+"Educational Use" means use by a student, instructor, school, university,
+academic lab, or researcher solely for teaching, coursework, classroom
+demonstration, training, or non-commercial academic research, and not for
+commercial services, paid consulting, production operations, internal business
+deployment, or product development for sale or commercial rollout.
+
+### 1.8 "Commercial Use"
+"Commercial Use" means any use that is not Personal Use or Educational Use,
+including without limitation:
+- internal business or organizational use,
+- production use by a company, contractor, public entity, or nonprofit acting
+  in an operational or service-delivery capacity,
+- use as part of a paid or billable development, consulting, or AI-assisted
+  workflow,
+- resale, white-labeling, OEM, embedding, sublicensing, or customer delivery,
+- monetized products or services,
+- commercial pilots, staging, pre-production, benchmarking, or testing
+  performed for a business purpose,
+- use by a consultant, integrator, agency, or contractor for a paying client
+  or commercial engagement.
+
+### 1.9 "Seat"
+"Seat" means each individual user account or developer using AutoClaw for
+Commercial Use, including in VS Code or any other IDE or environment.
+
+Evaluation instances used by a single developer solely to assess AutoClaw for
+potential Commercial Use are not counted as Seats, provided they are not used
+for billable client work or commercial output.
+
+### 1.10 "Derivative Work"
+"Derivative Work" means any modification, adaptation, translation, port,
+enhancement, extension, patch, improvement, reimplementation, fork, branch,
+merge, or other work based on, derived from, or incorporating a material part
+of the Software, whether or not the result would qualify as a derivative work
+under applicable copyright law.
+
+### 1.11 "Disclosure Package"
+"Disclosure Package" means the complete corresponding source code of a
+Derivative Work together with: build instructions, dependency manifests,
+change summaries, and documentation sufficient for Licensor to understand,
+build, and evaluate the Derivative Work.
+
+### 1.12 "Contribution"
+"Contribution" means any work of authorship submitted to Licensor for
+inclusion in or improvement of the Software, including source code, bug fixes,
+documentation, examples, and test cases, submitted voluntarily by any means.
+
+---
+
+## 2. Acceptance
+
+By accessing, downloading, viewing, copying, installing, executing, modifying,
+distributing, or otherwise using the Software, You agree to be bound by this
+License. If You do not agree, You must not use the Software.
+
+---
+
+## 3. Ownership and Reservation of Rights
+
+3.1 The Software is licensed, not sold.
+
+3.2 Licensor retains all right, title, and interest in and to the Product and
+Software, including all copyrights, trade secrets, patent rights, trademarks,
+know-how, and all other intellectual property and proprietary rights.
+
+3.3 No rights are granted except those expressly stated in this License. All
+rights not expressly granted are reserved by Licensor.
+
+---
+
+## 4. Free License for Personal and Educational Use
+
+Subject to compliance with this License, Licensor grants You a non-exclusive,
+non-transferable, non-sublicensable license to:
+- access and review the Software,
+- use Open Materials and permitted portions of the Software for Personal Use
+  or Educational Use,
+- modify Open Materials for Personal Use or Educational Use,
+- share Open Materials and permitted modifications solely for Personal Use or
+  Educational Use, provided that: this License is included in full, all
+  notices are preserved, no recipient receives broader rights than You
+  received, and no commercial exploitation is involved.
+
+This license for Personal and Educational Use is not revocable except upon
+Your material breach of this License that You fail to cure within thirty (30)
+days of written notice from Licensor describing the breach in reasonable
+detail.
+
+No free right is granted to use Restricted Materials except as minimally
+necessary to inspect the repository and exercise express rights granted under
+this License.
+
+---
+
+## 5. Commercial License and Fees
+
+5.1 No Commercial Use is authorized without a valid paid commercial license
+from Licensor.
+
+5.2 Standard commercial license fees are as follows ("Schedule A"):
+
+| Tier | Seats Covered | Fee |
+|------|--------------|-----|
+| Pro | 1 Seat | USD $150 per year (or $15 per month) |
+| Teams | Up to 5 Seats | USD $250 per seat per year (or $25 per seat per month) |
+| Enterprise | Unlimited | Custom — contact Support@GoZippy.com |
+
+All fees are per-calendar-year (or per-calendar-month for monthly billing)
+unless a separate written agreement specifies otherwise. Seats exceeding a
+tier's limit require upgrade before the excess Seats may be used commercially.
+
+5.3 Unlicensed Commercial Use penalty: Any Commercial Use discovered without a
+valid paid license is subject to a retroactive fee of **USD $1,000 per Seat**
+for the full period of unlicensed use, plus the cost of bringing the
+deployment into compliance under the applicable tier going forward. This
+penalty rate is not the standard purchase price — it applies only to
+unlicensed use discovered through audit, self-report, or enforcement.
+
+5.4 Any Commercial Use without payment of the applicable fee is unauthorized
+and constitutes a material breach of this License.
+
+5.5 If You discover that You have been making Commercial Use without a valid
+license, You have thirty (30) days from the date of discovery to obtain the
+required license before Licensor may pursue enforcement remedies solely based
+on that prior unauthorized use — provided You: (a) promptly pay all fees
+accrued from the start of Commercial Use at the standard tier rate (not the
+penalty rate), (b) cease unauthorized use immediately, and (c) self-report to
+Licensor at Support@GoZippy.com in writing. The reduced-rate self-reporting
+grace period is available once per entity.
+
+5.6 Payment of a fee grants only the limited Commercial Use rights stated in
+this License and does not transfer ownership or convert this License into an
+open source or permissive license.
+
+5.7 Licensor may offer alternative enterprise, volume, OEM, partner, reseller,
+or custom commercial terms in a separate written agreement. Contact
+Support@GoZippy.com for enterprise licensing inquiries.
+
+5.8 No Managed Service Use. Regardless of whether a commercial license fee has
+been paid, You may not offer the Software or a Derivative Work as a hosted,
+managed, cloud, or "as-a-service" product accessible to third parties —
+whether for a fee or for free — without a separate written agreement with
+Zippy Technologies LLC expressly authorizing managed service use. Internal
+deployment for Your own organization's employees and contractors does not
+constitute managed service use under this section.
+
+---
+
+## 6. Open Materials
+
+Subject to all terms of this License, You may review, modify, and create
+Derivative Works of Open Materials.
+
+Any permitted distribution of Open Materials or Derivative Works thereof must:
+- include this License in full,
+- preserve all copyright, trademark, and proprietary notices,
+- clearly identify modifications and dates of modification,
+- not remove notices that classify material as open or restricted, and
+- comply with the disclosure obligations in Section 8.
+
+---
+
+## 7. Restricted Materials
+
+7.1 Restricted Materials are proprietary and confidential to Licensor except
+to the limited extent they are exposed within the repository or distribution
+package for inspection purposes only.
+
+7.2 Except where Licensor expressly agrees otherwise in writing, You may not:
+- modify, adapt, or create Derivative Works of Restricted Materials,
+- distribute Restricted Materials except as an inseparable, unmodified portion
+  of a permitted distribution,
+- bypass technical restrictions or access controls associated with Restricted
+  Materials, or
+- use Restricted Materials beyond the express permissions granted by this
+  License.
+
+7.3 Access to Restricted Materials for inspection does not create any
+ownership right or broader exploitation right.
+
+---
+
+## 8. Mandatory Disclosure of Derivative Works; Limited License-Back
+
+8.1 As a condition of this License, You must disclose every Derivative Work of
+the Software to Licensor.
+
+8.2 Disclosure is required:
+- within thirty (30) calendar days after creation of the Derivative Work,
+- before any public release, customer demonstration, production use, or
+  commercial deployment, and
+- within thirty (30) calendar days after each material update to a previously
+  disclosed Derivative Work.
+
+8.3 Disclosure must include the full Disclosure Package delivered to
+**Support@GoZippy.com** or another address designated in writing by Licensor.
+
+8.4 By disclosing a Derivative Work, You grant Licensor a perpetual,
+irrevocable, worldwide, non-exclusive, royalty-free license to use, reproduce,
+modify, and distribute that Derivative Work solely for the purpose of
+maintaining, improving, and operating the Product. This license does not grant
+Licensor the right to commercialize, resell, or sublicense Your Derivative
+Work as a standalone product separate from the Product without Your written
+consent.
+
+8.5 You represent and warrant that You have obtained all rights necessary to
+grant the license in Section 8.4.
+
+8.6 Failure to disclose a Derivative Work that is not cured within fifteen
+(15) days of written notice from Licensor is a material breach that terminates
+all rights under this License.
+
+---
+
+## 9. Contributions
+
+9.1 By submitting a Contribution to Licensor (by pull request, email, issue,
+or other means), You grant Licensor a perpetual, irrevocable, worldwide,
+non-exclusive, transferable, sublicensable, royalty-free license to reproduce,
+modify, prepare derivative works of, publicly display, publicly perform,
+sublicense, and distribute the Contribution and derivative works thereof as
+part of the Product.
+
+9.2 You represent that: (a) each Contribution is Your original work or You
+have the right to submit it under this License, (b) Your Contribution does not
+violate any third party's rights, and (c) You are legally entitled to grant
+the above license.
+
+9.3 Submitting a Contribution does not grant You any additional rights beyond
+those already provided by this License.
+
+---
+
+## 10. Distribution Conditions
+
+Any permitted distribution of the Software or any permitted part of it must:
+- include this License in full,
+- preserve all notices and proprietary legends,
+- state clearly that the Product is **AutoClaw** by **Zippy Technologies LLC**,
+- state clearly that commercial use requires a paid commercial license from
+  Zippy Technologies LLC (Support@GoZippy.com),
+- not misrepresent ownership, endorsement, or origin,
+- bind downstream recipients to this License before access or use, and
+- comply with all applicable laws and regulations.
+
+---
+
+## 11. No Open Source Representation
+
+11.1 The Software is not licensed under an OSI-approved open source license.
+
+11.2 You may not describe the Product or Software as "open source," "free
+software," "MIT-licensed," "Apache-licensed," or "permissively licensed."
+
+11.3 You may accurately describe the Software as **"source-available under the
+Zippy Technologies Source-Available Commercial License"** and may note that
+personal and educational use is free and that commercial use requires a paid
+license from Zippy Technologies LLC.
+
+---
+
+## 12. Feedback
+
+Unless separately agreed in writing, any suggestions, comments, ideas, bug
+reports, or feedback You provide regarding the Product may be incorporated by
+Licensor into the Product without restriction or compensation, consistent with
+Section 9.
+
+---
+
+## 13. Records, Reporting, and Audit
+
+13.1 Any party making Commercial Use of the Software must maintain accurate
+records sufficient to verify Seat counts, deployment dates, and fees due or
+paid for a period of three (3) years.
+
+13.2 Upon thirty (30) days' written notice from Licensor, You must provide a
+written certification of compliance signed by an authorized representative.
+
+13.3 If Licensor has reasonable written basis to suspect material
+underreporting or unauthorized Commercial Use, Licensor may require an audit
+by a mutually agreed independent auditor under reasonable confidentiality
+protections. If underpayment or unauthorized use exceeding ten percent (10%)
+is confirmed, You must pay all unpaid fees plus reasonable audit costs. If the
+audit finds You are in compliance, Licensor bears the audit cost.
+
+---
+
+## 14. Trademarks
+
+No license is granted to use the names, logos, service marks, branding, or
+trade dress of **Zippy Technologies LLC**, **GoZippy**, or **AutoClaw** except
+for accurate factual attribution required by this License or as otherwise
+expressly authorized in writing by Licensor.
+
+---
+
+## 15. Compliance with Law
+
+You must comply with all applicable laws, regulations, export controls, trade
+restrictions, and sanctions in connection with Your use of the Software.
+
+---
+
+## 16. Term and Termination
+
+16.1 This License begins upon Your first access or use of the Software.
+
+16.2 For material breaches not addressed by a specific cure period elsewhere
+in this License, Licensor will provide written notice describing the breach in
+reasonable detail, and this License terminates if You fail to cure within
+thirty (30) days of that notice.
+
+16.3 Breach of Section 5 (unpaid Commercial Use without self-reporting) or
+Section 7 (Restricted Material misuse) terminates this License immediately
+upon expiration of any applicable cure period in those sections, without
+further notice.
+
+16.4 Upon termination, You must immediately cease all use, distribution,
+deployment, and exploitation of the Software and destroy or permanently delete
+all copies in Your possession or control, except to the extent retention is
+required by applicable law.
+
+16.5 Sections 3, 8, 9, 12, 13, 14, 16, 17, 18, and 19 survive termination.
+
+---
+
+## 17. Disclaimer of Warranties
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE PRODUCT AND SOFTWARE ARE PROVIDED
+"AS IS" AND "AS AVAILABLE," WITH ALL FAULTS AND WITHOUT WARRANTIES OF ANY
+KIND, WHETHER EXPRESS, IMPLIED, STATUTORY, OR OTHERWISE, INCLUDING ANY IMPLIED
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE,
+NON-INFRINGEMENT, ACCURACY, RELIABILITY, SECURITY, OR AVAILABILITY.
+
+---
+
+## 18. Limitation of Liability
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, ZIPPY TECHNOLOGIES LLC SHALL NOT BE
+LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR
+PUNITIVE DAMAGES, OR FOR LOST PROFITS, REVENUE, DATA, GOODWILL, OR BUSINESS
+INTERRUPTION, ARISING OUT OF OR RELATING TO THE PRODUCT, SOFTWARE, OR THIS
+LICENSE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE AGGREGATE LIABILITY OF ZIPPY
+TECHNOLOGIES LLC ARISING OUT OF OR RELATING TO THE PRODUCT, SOFTWARE, OR THIS
+LICENSE SHALL NOT EXCEED THE GREATER OF: (A) THE AMOUNT PAID BY YOU TO ZIPPY
+TECHNOLOGIES LLC FOR THE RELEVANT SEAT IN THE TWELVE (12) MONTHS PRECEDING
+THE CLAIM, OR (B) USD $100.
+
+---
+
+## 19. Governing Law; Venue; Jurisdiction
+
+19.1 This License is governed by the laws of the **State of Kansas**, without
+regard to conflict of law principles.
+
+19.2 Any dispute arising out of or relating to this License, the Product, or
+the Software shall be brought exclusively in the state courts of **Sedgwick
+County, Kansas**, or the federal courts serving **Sedgwick County, Kansas**.
+
+19.3 The parties consent to exclusive jurisdiction and venue in **Sedgwick
+County, Kansas** and waive any objection based on inconvenient forum.
+
+---
+
+## 20. Notices and Contact
+
+**Zippy Technologies LLC**
+Attn: Licensing / Legal
+1515 E Lewis
+Wichita, Kansas 67211
+Sedgwick County, Kansas
+United States
+Support@GoZippy.com
+
+Commercial licensing, seat reporting, support, and derivative work
+disclosures: **Support@GoZippy.com**
+
+---
+
+## 21. Entire Agreement; Severability; Waiver
+
+21.1 This License constitutes the entire agreement between You and Licensor
+regarding the Software unless superseded by a separate written agreement
+signed by an authorized representative of Licensor.
+
+21.2 If any provision is found unenforceable, the remaining provisions remain
+in effect and the unenforceable provision shall be modified only to the minimum
+extent necessary to make it enforceable.
+
+21.3 No waiver by Licensor shall be effective unless in writing. No failure to
+enforce any provision constitutes a waiver of future enforcement rights.
+
+---
+
+## 22. Open/Restricted Classification
+
+Licensor must maintain `COMPONENTS.md` in the distribution repository
+expressly identifying which files or directories are Open Materials and which
+are Restricted Materials. Any file or directory not identified as Open Material
+is Restricted Material. Licensor will keep `COMPONENTS.md` current with each
+release.
+
+---
+
+*Zippy Technologies Source-Available Commercial License v1.3*
+*Copyright (c) 2026 Zippy Technologies LLC. All rights reserved.*

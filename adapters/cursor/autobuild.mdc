@@ -1,0 +1,29 @@
+---
+description: AutoBuild autonomous workflow engine. Invoke when user asks to schedule a build, run a workflow, automate CI steps, or set up recurring tasks.
+alwaysApply: false
+---
+
+# AutoBuild — Autonomous Workflow Engine
+
+When the user invokes autobuild, determine the sub-command: `schedule`, `run`, `list`, `cancel`, `status`, or infer a one-shot workflow from description.
+
+## schedule "<cron>" <name>
+1. Parse cron expression and name.
+2. Create `.autoclaw/autobuild/workflows/<name>.yaml` with cron, steps (install/build/test), notify=true.
+3. Register in `.autoclaw/autobuild/registry.json`.
+4. Confirm and instruct user to customize the YAML steps.
+
+## run <name>
+1. Load workflow YAML from `.autoclaw/autobuild/workflows/<name>.yaml`.
+2. Create run log at `.autoclaw/autobuild/runs/<name>-<timestamp>.log`.
+3. Execute each step via bash. Log `[STEP: id]`, stdout/stderr, exit code.
+4. On failure: log `[FAILED: id]`, stop execution.
+5. Update registry, notify user pass/fail.
+
+## list / cancel / status
+- `list`: Show registry table with name/cron/last-run/status.
+- `cancel`: Delete workflow YAML and registry entry.
+- `status`: Show last 20 lines of most recent run log.
+
+## One-Shot
+Infer steps from description, create `oneshot-<timestamp>`, run immediately, delete after.

@@ -1,0 +1,28 @@
+{
+  "id": "autoclaw-mateam",
+  "name": "AutoClaw MAteam — Multi-Agent Burst",
+  "description": "Distributes MAteam agent calls across free providers to prevent rate limiting. Use with X-Session-Parallel: true header.",
+  "version": "1.0.0",
+  "author": "ZippyTechnologies",
+  "tags": ["autoclaw", "mateam", "multi-agent", "free-tier"],
+  "trigger": {
+    "intent": "multi-agent"
+  },
+  "routing": {
+    "strategy": "round-robin-parallel",
+    "sessionHeader": "x-session-id",
+    "sessionTtlMs": 600000,
+    "providers": [
+      { "id": "groq", "models": ["llama-3.3-70b-versatile"], "priority": 1 },
+      { "id": "gemini", "models": ["gemini-2.0-flash-exp"], "priority": 2 },
+      { "id": "github-models", "models": ["gpt-4o-mini"], "priority": 3 },
+      { "id": "cerebras", "models": ["llama3.1-70b"], "priority": 4 },
+      { "id": "ollama", "models": ["auto"], "priority": 5 }
+    ],
+    "fallback": "budget-routing"
+  },
+  "costControls": {
+    "preferFree": true,
+    "maxCostPerRequest": 0
+  }
+}
