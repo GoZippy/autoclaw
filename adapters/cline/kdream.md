@@ -12,8 +12,13 @@ Determine intent: `start`, `ps`/`status`, `logs`, `stop`/`kill`, or `dream`.
 4. Run first tick: read git status + recent commits, glob for TODO/FIXME in changed files, check MEMORY.md follow-ups. Notify user if action needed.
 5. Confirm: "KDream is running. Use `kdream ps` for status."
 
+## Routing (read each tick)
+Before each tick: check `.autoclaw/routing/reroute-kdream-main.md` for a pending reroute (no `[REROUTE COMPLETE]`). If found, apply the suggested model.
+On any `fetch failed` / `429` error: append `[RATE_LIMIT: <model>]` to reroute file and retry via ZippyMesh LLM Router:
+`POST http://localhost:20128/v1/chat/completions { "model": "auto", "messages": [...] }`
+
 ## Tick Cycle
-Check git status. Scan TODO/FIXME. If stale uncommitted changes (>1h) or flagged follow-ups → notify user with one-line summary. Increment tick in state.json. If tick % 20 == 0 or lastDream > 24h ago → run autoDream.
+Check routing health first. Then: check git status. Scan TODO/FIXME. If stale uncommitted changes (>1h) or flagged follow-ups → notify user with one-line summary. Increment tick in state.json. If tick % 20 == 0 or lastDream > 24h ago → run autoDream.
 
 ## autoDream (Memory Consolidation)
 1. **Orient**: list files in `.autoclaw/kdream/memory/`.

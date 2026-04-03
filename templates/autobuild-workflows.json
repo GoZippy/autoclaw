@@ -1,0 +1,123 @@
+{
+  "templates": [
+    {
+      "name": "build-test-deploy",
+      "displayName": "Build, Test & Deploy",
+      "description": "Complete CI/CD pipeline with build, test, and deployment",
+      "variables": {
+        "buildCommand": "npm run build",
+        "testCommand": "npm test",
+        "deployCommand": "npm run deploy"
+      },
+      "workflow": {
+        "name": "build-test-deploy-{{timestamp}}",
+        "steps": [
+          {
+            "name": "Install Dependencies",
+            "command": "npm ci",
+            "workingDirectory": ".",
+            "continueOnError": false
+          },
+          {
+            "name": "Lint Code",
+            "command": "npm run lint",
+            "workingDirectory": ".",
+            "continueOnError": false
+          },
+          {
+            "name": "Run Tests",
+            "command": "{{testCommand}}",
+            "workingDirectory": ".",
+            "continueOnError": false
+          },
+          {
+            "name": "Build Application",
+            "command": "{{buildCommand}}",
+            "workingDirectory": ".",
+            "continueOnError": false
+          },
+          {
+            "name": "Deploy",
+            "command": "{{deployCommand}}",
+            "workingDirectory": ".",
+            "continueOnError": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "lint-test",
+      "displayName": "Lint & Test Only",
+      "description": "Quick quality check without full build",
+      "variables": {
+        "testCommand": "npm test"
+      },
+      "workflow": {
+        "name": "lint-test-{{timestamp}}",
+        "steps": [
+          {
+            "name": "Install Dependencies",
+            "command": "npm ci",
+            "workingDirectory": ".",
+            "continueOnError": false
+          },
+          {
+            "name": "Lint Code",
+            "command": "npm run lint",
+            "workingDirectory": ".",
+            "continueOnError": false
+          },
+          {
+            "name": "Run Tests",
+            "command": "{{testCommand}}",
+            "workingDirectory": ".",
+            "continueOnError": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "docker-build",
+      "displayName": "Docker Build & Push",
+      "description": "Build and push Docker images",
+      "variables": {
+        "imageName": "myapp",
+        "tag": "latest"
+      },
+      "workflow": {
+        "name": "docker-build-{{timestamp}}",
+        "steps": [
+          {
+            "name": "Build Docker Image",
+            "command": "docker build -t {{imageName}}:{{tag}} .",
+            "workingDirectory": ".",
+            "continueOnError": false
+          },
+          {
+            "name": "Push Docker Image",
+            "command": "docker push {{imageName}}:{{tag}}",
+            "workingDirectory": ".",
+            "continueOnError": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "custom",
+      "displayName": "Custom Workflow",
+      "description": "Create a custom workflow from scratch",
+      "variables": {},
+      "workflow": {
+        "name": "custom-workflow-{{timestamp}}",
+        "steps": [
+          {
+            "name": "Custom Step",
+            "command": "echo 'Add your commands here'",
+            "workingDirectory": ".",
+            "continueOnError": false
+          }
+        ]
+      }
+    }
+  ]
+}

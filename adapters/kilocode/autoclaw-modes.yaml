@@ -11,11 +11,19 @@ customModes:
       State files live in .autoclaw/kdream/. Daily logs in .autoclaw/kdream/logs/YYYY-MM-DD.md.
       Memory in .autoclaw/kdream/memory/MEMORY.md.
 
-      Sub-commands: start, ps, logs, stop, dream.
+      Sub-commands: start, ps, logs, stop, dream, routing.
+
+      Routing (each tick): check .autoclaw/routing/reroute-kdream-main.md for pending model
+      switch. On fetch failed/429: append [RATE_LIMIT: <model>] to reroute file and retry via
+      ZippyMesh LLM Router: POST http://localhost:20128/v1/chat/completions with model:"auto".
 
       On start: create directories, write state.json, run first tick, confirm.
-      On tick: check git, scan TODOs, review MEMORY.md follow-ups, notify if action needed.
-      autoDream: Orient → Gather (7 days logs) → Consolidate (dedupe, fix dates) → Prune (archive if >200 lines) → Finalize.
+      On tick: check routing health, check git, scan TODOs, review MEMORY.md follow-ups, notify if action needed.
+      On work: apply critique loop (max 3 self-reviews, 0-2 score each, revise if <6 total).
+              Queue high-priority items for SOTA review via ZMLR.
+      autoDream: Orient → Gather (7 days logs, include ROUTE_FAIL events) → Consolidate
+      (dedupe, fix dates) → SOTA review gate for queued items → Prune (archive if >200 lines)
+      → Finalize.
     groups:
       - read
       - edit
@@ -51,16 +59,25 @@ customModes:
       Each role reads from and writes to a shared scratchpad in
       .autoclaw/mateam/scratch/YYYY-MM-DD-<slug>/.
 
-      Sub-commands: launch "<task>", status, list-peers, cancel, result.
+      Sub-commands: launch "<task>", status, list-peers, cancel, result, routing.
+
+      Routing (before launch): check ZMLR HEAD http://localhost:20128. Assign tiers:
+      Researcher=free, Coder=mid, Reviewer=mid/sota, Verifier=low-cost.
+      Max 3 concurrent on free tier (30s batch gaps). On fetch/429:
+      [RATE_LIMIT: <model>] → reroute.md → ZMLR model:"auto". Write routing in plan.md.
+      Critique loop for free/local Coder (max 3 passes, revise if score <6/8).
+      SOTA final review via ZMLR for security-critical tasks.
 
       On launch:
         1. Decompose task, assign only needed roles.
-        2. Create scratchpad with plan.md, context.md, output.md, review.md, verify.md.
+        2. Create scratchpad with plan.md (include ## Routing section), context.md, output.md,
+           review.md, verify.md.
         3. Researcher writes to context.md.
-        4. Coder uses context.md, writes to output.md.
-        5. Reviewer audits, writes to review.md. If blockers, halt.
+        4. Coder uses context.md, writes to output.md. Apply critique loop if on free/local tier.
+        5. Reviewer audits, writes to review.md. If blockers, halt. Score correctness + security.
         6. Verifier runs tests, writes to verify.md.
-        7. Report summary of all outputs.
+        7. SOTA final review if score < 2 on correctness or security-critical task.
+        8. Report summary of all outputs.
     groups:
       - read
       - edit

@@ -14,7 +14,13 @@ When the user invokes kdream, determine the sub-command: `start`, `ps`/`status`,
 4. Run first tick immediately: check git status, scan TODOs, review MEMORY.md for follow-ups.
 5. Confirm to user: "KDream is running."
 
+## Routing (each tick)
+Check `.autoclaw/routing/reroute-kdream-main.md` — apply any pending model switch.
+On `fetch failed` / `429`: append `[RATE_LIMIT: <model>]` to reroute file, retry via ZMLR:
+`POST http://localhost:20128/v1/chat/completions { "model": "auto", "messages": [...] }`
+
 ## Tick Cycle
+- Check routing health first.
 - Check git status and recent commits.
 - Glob for TODO/FIXME in recently changed files.
 - If action warranted (stale uncommitted changes, flagged items), notify user with one-line summary.

@@ -5,6 +5,19 @@ When the user asks to spawn a team of agents, coordinate parallel work, or launc
 ## Sub-commands
 Determine intent: `launch "<task>"`, `status`, `list-peers`, `cancel`, `result`/`merge`.
 
+## Routing (run before launch)
+Check ZMLR: `HEAD http://localhost:20128`. If online, route all agent LLM calls through it.
+Assign model tiers: Researcher=free/low-cost, Coder=mid, Reviewer=mid/sota, Verifier=low-cost.
+Never spawn >3 agents simultaneously on free-tier models — batch with 30s gaps.
+On fetch/rate-limit error: append `[RATE_LIMIT: <model>]` to `reroute.md` and retry via ZMLR `model: "auto"`.
+Write routing plan to `plan.md` under `## Routing` before spawning.
+
+## Critique Loop (for free/local tier Coder)
+If Coder uses free or local model: self-review output (correctness/security/simplicity 0-2 each). If total < 6, revise. Max 3 iterations.
+
+## SOTA Final Review
+If task touches auth/payments/crypto/data migration OR Reviewer scores correctness<2: route final review to ZMLR requesting Claude Opus or Gemini 2.5 Pro.
+
 ## launch
 1. **Decompose** the task into roles (only assign roles the task requires):
    - Researcher: reads files, searches codebase, identifies dependencies.

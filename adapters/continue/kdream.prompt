@@ -13,9 +13,13 @@ Sub-commands: start, ps, logs, stop, dream.
 On start: create .autoclaw/kdream/logs/ and .autoclaw/kdream/memory/, write state.json
 (status=running, tick=0, lastDream=null), append to today's log, run first tick, confirm.
 
-Tick cycle: check git status + recent commits, glob TODO/FIXME in changed files, check
-MEMORY.md follow-ups. If action needed (stale uncommitted work, flagged items) notify user.
-Increment tick. If tick % 20 == 0 or 24h elapsed → autoDream.
+Routing (each tick): check .autoclaw/routing/reroute-kdream-main.md for pending model switch.
+On fetch failed/429: append [RATE_LIMIT: <model>] to reroute file, retry via ZippyMesh LLM
+Router: POST http://localhost:20128/v1/chat/completions {"model":"auto","messages":[...]}.
+
+Tick cycle: check routing health, then git status + recent commits, glob TODO/FIXME in changed
+files, check MEMORY.md follow-ups. If action needed (stale uncommitted work, flagged items)
+notify user. Increment tick. If tick % 20 == 0 or 24h elapsed → autoDream.
 
 autoDream: Orient (list memory files) → Gather (read last 7 days logs) → Consolidate
 (merge into MEMORY.md, remove contradictions, ISO dates, deduplicate) → Prune (archive

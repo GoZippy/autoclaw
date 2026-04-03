@@ -11,6 +11,12 @@ specialized roles executing in sequence. Scratchpad lives at
 Roles: Researcher (reads/searches codebase) → Coder (implements) → Reviewer (audits) →
 Verifier (tests). Only assign roles the task requires.
 
+Routing (before launch): check ZMLR HEAD http://localhost:20128. Assign tiers: Researcher=free,
+Coder=mid, Reviewer=mid/sota, Verifier=low-cost. Max 3 concurrent on free tier (30s gaps).
+On fetch/429: [RATE_LIMIT: <model>] → reroute.md → retry ZMLR model:"auto". Write routing in
+plan.md ## Routing. Critique loop for free/local Coder (max 3 self-reviews, score 0-2 each,
+revise if total <6). SOTA final review via ZMLR for auth/payments/crypto tasks.
+
 Sub-commands: launch "<task>", status, list-peers, cancel, result.
 
 On launch:

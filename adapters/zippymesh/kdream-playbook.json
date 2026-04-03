@@ -1,24 +1,71 @@
 {
   "id": "autoclaw-kdream",
-  "name": "AutoClaw KDream — Long Session Optimization",
-  "description": "Cost-optimized routing for KDream background monitoring. Routes light tasks to free tiers, escalates to paid for complex work.",
-  "version": "1.0.0",
+  "name": "AutoClaw KDream — Intelligent Routing Playbook",
+  "description": "Self-healing routing for KDream background monitoring. Routes by task type, applies rate-limit backoff, escalates to SOTA for complex/critical work, and runs critique loops on smaller models.",
+  "version": "2.0.0",
   "author": "ZippyTechnologies",
-  "tags": ["autoclaw", "kdream", "background", "cost-optimized"],
+  "tags": ["autoclaw", "kdream", "background", "self-healing", "routing"],
   "trigger": {
     "intent": "monitoring"
   },
   "routing": {
-    "strategy": "cost-optimized",
-    "providers": [
-      { "id": "groq", "models": ["llama-3.1-8b-instant"], "priority": 1, "forTaskTypes": ["heartbeat", "scan"] },
-      { "id": "gemini", "models": ["gemini-1.5-flash"], "priority": 2, "forTaskTypes": ["analysis"] },
-      { "id": "anthropic", "models": ["claude-haiku-4-5"], "priority": 3, "forTaskTypes": ["dream", "consolidate"] }
-    ],
-    "fallback": "free-models-tier-1"
+    "strategy": "task-capability-ranked",
+    "zmlrFirst": true,
+    "rateLimitBackoff": {
+      "initialMs": 30000,
+      "multiplier": 2,
+      "maxMs": 600000
+    },
+    "taskTypeModels": {
+      "heartbeat": [
+        { "provider": "groq", "model": "llama-3.1-8b-instant", "tier": "free", "maxRPM": 30 },
+        { "provider": "openrouter", "model": "google/gemini-2.0-flash-exp:free", "tier": "free", "maxRPM": 10 }
+      ],
+      "scan": [
+        { "provider": "groq", "model": "llama-3.1-8b-instant", "tier": "free" },
+        { "provider": "openrouter", "model": "google/gemini-flash-1.5", "tier": "low-cost" }
+      ],
+      "analysis": [
+        { "provider": "openrouter", "model": "google/gemini-flash-1.5", "tier": "low-cost" },
+        { "provider": "openrouter", "model": "anthropic/claude-haiku-4-5", "tier": "low-cost" }
+      ],
+      "dream": [
+        { "provider": "openrouter", "model": "anthropic/claude-sonnet-4-6", "tier": "mid" },
+        { "provider": "openrouter", "model": "openai/gpt-4o-mini", "tier": "mid" }
+      ],
+      "final-review": [
+        { "provider": "openrouter", "model": "anthropic/claude-opus-4-6", "tier": "sota" },
+        { "provider": "openrouter", "model": "google/gemini-2.5-pro-preview-03-25", "tier": "sota" }
+      ]
+    },
+    "fallback": {
+      "chain": [
+        { "provider": "openrouter", "model": "auto" },
+        { "provider": "ollama", "model": "llama3.1:8b" }
+      ]
+    }
+  },
+  "selfHealing": {
+    "onFetchFailed": "retry-via-zmlr",
+    "onRateLimit": "backoff-then-next-model",
+    "maxRetries": 3,
+    "reroutePlaybookPath": ".autoclaw/routing/reroute-kdream-main.md"
+  },
+  "critiqueLoop": {
+    "enabledForTiers": ["local", "free"],
+    "maxIterations": 3,
+    "passingScore": 6,
+    "criteria": ["correctness", "edgeCases", "security", "simplicity"]
+  },
+  "sotaReviewGate": {
+    "triggerOnTasks": ["high-priority", "security", "payments", "auth", "migration"],
+    "preferredModel": "anthropic/claude-opus-4-6",
+    "fallbackModel": "google/gemini-2.5-pro-preview-03-25",
+    "reviewQueuePath": ".autoclaw/kdream/review-queue.md"
   },
   "costControls": {
     "preferFree": true,
-    "escalationThreshold": "complex"
+    "escalationThreshold": "complex",
+    "localModelsFirst": false
   }
 }

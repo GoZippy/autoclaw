@@ -1,28 +1,102 @@
 {
   "id": "autoclaw-mateam",
-  "name": "AutoClaw MAteam — Multi-Agent Burst",
-  "description": "Distributes MAteam agent calls across free providers to prevent rate limiting. Use with X-Session-Parallel: true header.",
-  "version": "1.0.0",
+  "name": "AutoClaw MAteam — Intelligent Multi-Agent Routing",
+  "description": "Capability-ranked routing for MAteam multi-agent sessions. Assigns model tiers per role, enforces concurrency limits on free tier, applies critique loops, and gates SOTA review for security-critical output.",
+  "version": "2.0.0",
   "author": "ZippyTechnologies",
-  "tags": ["autoclaw", "mateam", "multi-agent", "free-tier"],
+  "tags": ["autoclaw", "mateam", "multi-agent", "self-healing", "routing"],
   "trigger": {
     "intent": "multi-agent"
   },
   "routing": {
-    "strategy": "round-robin-parallel",
+    "strategy": "role-capability-ranked",
+    "zmlrFirst": true,
     "sessionHeader": "x-session-id",
     "sessionTtlMs": 600000,
-    "providers": [
-      { "id": "groq", "models": ["llama-3.3-70b-versatile"], "priority": 1 },
-      { "id": "gemini", "models": ["gemini-2.0-flash-exp"], "priority": 2 },
-      { "id": "github-models", "models": ["gpt-4o-mini"], "priority": 3 },
-      { "id": "cerebras", "models": ["llama3.1-70b"], "priority": 4 },
-      { "id": "ollama", "models": ["auto"], "priority": 5 }
-    ],
-    "fallback": "budget-routing"
+    "roleModels": {
+      "researcher": {
+        "preferredTier": "free",
+        "models": [
+          { "provider": "openrouter", "model": "google/gemini-2.0-flash-exp:free", "maxRPM": 10 },
+          { "provider": "groq", "model": "llama-3.1-8b-instant", "maxRPM": 30 },
+          { "provider": "openrouter", "model": "meta-llama/llama-4-scout:free", "maxRPM": 5 }
+        ]
+      },
+      "coder": {
+        "preferredTier": "mid",
+        "models": [
+          { "provider": "openrouter", "model": "anthropic/claude-sonnet-4-6" },
+          { "provider": "openrouter", "model": "openai/gpt-4o-mini" },
+          { "provider": "openrouter", "model": "anthropic/claude-haiku-4-5" }
+        ]
+      },
+      "reviewer": {
+        "preferredTier": "mid",
+        "escalateToSotaFor": ["security", "auth", "payments"],
+        "models": [
+          { "provider": "openrouter", "model": "anthropic/claude-sonnet-4-6" },
+          { "provider": "openrouter", "model": "anthropic/claude-opus-4-6", "forEscalated": true },
+          { "provider": "openrouter", "model": "google/gemini-2.5-pro-preview-03-25", "forEscalated": true }
+        ]
+      },
+      "verifier": {
+        "preferredTier": "low-cost",
+        "models": [
+          { "provider": "openrouter", "model": "google/gemini-flash-1.5" },
+          { "provider": "openrouter", "model": "anthropic/claude-haiku-4-5" }
+        ]
+      },
+      "final-reviewer": {
+        "preferredTier": "sota",
+        "models": [
+          { "provider": "openrouter", "model": "anthropic/claude-opus-4-6" },
+          { "provider": "openrouter", "model": "google/gemini-2.5-pro-preview-03-25" },
+          { "provider": "openrouter", "model": "openai/o3" }
+        ]
+      }
+    },
+    "concurrencyLimits": {
+      "sota": { "max": 2, "spawnDelayMs": 5000 },
+      "mid": { "max": 4, "spawnDelayMs": 2000 },
+      "low-cost": { "max": 6, "spawnDelayMs": 1000 },
+      "free": { "max": 3, "spawnDelayMs": 30000 },
+      "local": { "max": 999, "spawnDelayMs": 0 }
+    },
+    "fallback": {
+      "chain": [
+        { "provider": "openrouter", "model": "auto" },
+        { "provider": "ollama", "model": "llama3.1:8b" }
+      ]
+    }
+  },
+  "selfHealing": {
+    "onFetchFailed": "retry-via-zmlr",
+    "onRateLimit": "backoff-then-next-model",
+    "maxRetries": 3,
+    "reroutePlaybookPattern": ".autoclaw/mateam/scratch/<session>/reroute.md"
+  },
+  "critiqueLoop": {
+    "enabledForTiers": ["local", "free"],
+    "enabledForRoles": ["coder", "researcher"],
+    "maxIterations": 3,
+    "passingScore": 6,
+    "criteria": ["correctness", "edgeCases", "security", "simplicity"]
+  },
+  "sotaReviewGate": {
+    "triggerWhen": ["security-critical", "reviewer-score-low", "user-requested-high-quality"],
+    "preferredModel": "anthropic/claude-opus-4-6",
+    "fallbackModel": "google/gemini-2.5-pro-preview-03-25",
+    "minAcceptableScore": 7
+  },
+  "contextCompression": {
+    "enableOnModelSwitch": true,
+    "compressedContextFile": "context-compressed.md",
+    "strategy": "key-facts-bullet-list",
+    "maxLines": 50
   },
   "costControls": {
     "preferFree": true,
-    "maxCostPerRequest": 0
+    "researcherAlwaysFree": true,
+    "escalateOnlyWhenNecessary": true
   }
 }

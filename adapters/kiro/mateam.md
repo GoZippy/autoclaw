@@ -8,6 +8,9 @@ description: MAteam multi-agent coordinator. Reference with #mateam when spawnin
 
 Sub-commands: `launch "<task>"`, `status`, `list-peers`, `cancel`, `result`.
 
+## Routing (before launch)
+Check ZMLR `HEAD http://localhost:20128`. Tiers: Researcher=free, Coder=mid, Reviewer=mid/sota, Verifier=low-cost. Max 3 concurrent on free tier. On fetch/429: `[RATE_LIMIT: <model>]` → reroute.md → retry via ZMLR `model:"auto"`. Write routing in `plan.md ## Routing`. Apply critique loop for free/local Coder (max 3 passes). SOTA review via ZMLR for security-critical.
+
 ## launch
 1. Decompose task into roles (use only what's needed): Researcher → Coder → Reviewer → Verifier.
 2. Create scratchpad at `.autoclaw/mateam/scratch/YYYY-MM-DD-<slug>/` with plan.md, context.md, output.md, review.md, verify.md.

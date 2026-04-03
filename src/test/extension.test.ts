@@ -33,8 +33,8 @@ import type { ParsedTask, TodoItem, AdapterHealth } from '../kdream-helpers';
 
 suite('KDream Helper Tests', function () {
   
-  // Test fixtures
-  const testWorkspaceRoot = path.join(os.tmpdir(), 'kdream-test-workspace');
+  // Test fixtures - use unique directory per run to avoid conflicts
+  const testWorkspaceRoot = path.join(os.tmpdir(), 'kdream-test-workspace-' + Date.now() + '-' + process.pid);
   const testAutoclawDir = path.join(testWorkspaceRoot, '.autoclaw', 'kdream');
   const testMemoryDir = path.join(testAutoclawDir, 'memory');
   const testMemoryPath = path.join(testMemoryDir, 'MEMORY.md');
@@ -49,9 +49,13 @@ suite('KDream Helper Tests', function () {
   });
 
   teardown(function () {
-    // Clean up test directory
+    // Clean up test directory - handle Windows file locking gracefully
     if (fs.existsSync(testWorkspaceRoot)) {
-      fs.rmSync(testWorkspaceRoot, { recursive: true, force: true });
+      try {
+        fs.rmSync(testWorkspaceRoot, { recursive: true, force: true });
+      } catch {
+        // Windows may lock files temporarily - ignore cleanup failures
+      }
     }
   });
 
@@ -486,11 +490,11 @@ Line 3`;
       assert.strictEqual(result.status, 'warning');
     });
 
-    test('should return warning status with default URL when service is not running', async function () {
-      // Default URL will fail if ZippyMesh is not running locally
+    test('should return valid status with default URL', async function () {
+      // Default URL may or may not be running - accept either status
       const result = await checkZippyMeshHealth();
       assert.strictEqual(result.name, 'ZippyMesh LLM Router');
-      assert.strictEqual(result.status, 'warning');
+      assert.ok(['healthy', 'warning'].includes(result.status), `Status should be healthy or warning, got: ${result.status}`);
     });
 
     test('should return object with expected shape', async function () {

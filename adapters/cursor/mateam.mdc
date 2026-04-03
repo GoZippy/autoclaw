@@ -7,6 +7,11 @@ alwaysApply: false
 
 When the user invokes mateam, determine the sub-command: `launch`, `status`, `list-peers`, `cancel`, or `result`.
 
+## Routing (before launch)
+Check ZMLR `HEAD http://localhost:20128`. Assign tiers: Researcher=free, Coder=mid, Reviewer=mid/sota, Verifier=low-cost.
+Max 3 concurrent agents on free tier (batch with 30s gaps). On fetch/429: write `[RATE_LIMIT: <model>]` to `reroute.md`, retry via ZMLR `model:"auto"`.
+Write routing plan in `plan.md ## Routing`. Apply critique loop (max 3 self-reviews) for free/local Coder. Route SOTA final review via ZMLR for security-critical tasks.
+
 ## launch "<task>"
 1. **Decompose** the task into roles: Researcher, Coder, Reviewer, Verifier (use only roles the task needs).
 2. **Create scratchpad** at `.autoclaw/mateam/scratch/YYYY-MM-DD-<task-slug>/`:

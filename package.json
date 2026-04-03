@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Persistent background agents, autonomous build workflows, and multi-agent teams. Zero setup. Works with Claude, Copilot, and any Agent Skills compatible AI.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.108.0"
@@ -43,28 +43,124 @@
     "commands": [
       {
         "command": "autoclaw.enableAll",
-        "title": "AutoClaw: Enable All Autonomous Features"
+        "title": "AutoClaw: Enable All Autonomous Features",
+        "category": "AutoClaw"
       },
       {
         "command": "autoclaw.startKdream",
-        "title": "AutoClaw: Start KDream Background Agent"
+        "title": "KDream: Start Background Agent",
+        "category": "KDream"
       },
       {
         "command": "autoclaw.installAdapters",
-        "title": "AutoClaw: Install Adapters for Detected AI Extensions"
+        "title": "AutoClaw: Install Adapters",
+        "category": "Setup"
       },
       {
         "command": "kdream.showDashboard",
-        "title": "KDream: Show Dashboard"
+        "title": "KDream: Show Dashboard",
+        "category": "KDream"
       },
       {
         "command": "kdream.refreshDashboard",
-        "title": "KDream: Refresh Dashboard"
+        "title": "KDream: Refresh Dashboard",
+        "category": "KDream"
       },
       {
         "command": "kdream.addTask",
-        "title": "KDream: Add Task"
-      }
+        "title": "KDream: Add Task",
+        "category": "KDream"
+      },
+      {
+        "command": "kdream.openZmlrDownload",
+        "title": "KDream: Learn about ZippyMesh LLM Router",
+        "category": "Setup"
+      },
+      {
+        "command": "autoclaw.askAIHelp",
+        "title": "AutoClaw: Ask AI for Help",
+        "category": "Help"
+      },
+      {
+        "command": "autoclaw.openFAQ",
+        "title": "AutoClaw: Open FAQ",
+        "category": "Help"
+      },
+      {
+        "command": "autoclaw.openGitignore",
+        "title": "AutoClaw: Open .gitignore",
+        "category": "Setup"
+      },
+      {
+        "command": "kdream.searchMemory",
+        "title": "KDream: Search Memory",
+        "category": "KDream"
+      },
+      {
+        "command": "kdream.showMemoryHistory",
+        "title": "KDream: Memory History",
+        "category": "KDream"
+      },
+      {
+        "command": "autoclaw.showCommands",
+        "title": "AutoClaw: Show All Commands",
+        "category": "AutoClaw"
+      },
+      {
+        "command": "autoclaw.addSelectionToTask",
+        "title": "Add to KDream Task",
+        "category": "AutoClaw"
+      },
+      {
+        "command": "autoclaw.addTodoFromContext",
+        "title": "Add TODO/FIXME to KDream",
+        "category": "AutoClaw"
+      },
+       {
+         "command": "autoclaw.addFileToTask",
+         "title": "Add File to KDream Task",
+         "category": "AutoClaw"
+       },
+       {
+         "command": "autoclaw.openTerminal",
+         "title": "AutoClaw: Open Terminal",
+         "category": "AutoClaw"
+       },
+       {
+         "command": "autobuild.list",
+         "title": "AutoBuild: List Workflows",
+         "category": "AutoBuild"
+       },
+        {
+          "command": "mateam.launch",
+          "title": "MAteam: Launch Session",
+          "category": "MAteam"
+        },
+        {
+          "command": "autoclaw.refreshDecorations",
+          "title": "AutoClaw: Refresh File Decorations",
+          "category": "AutoClaw"
+        },
+        {
+          "command": "autoclaw.healSessions",
+          "title": "AutoClaw: Heal Stalled Sessions",
+          "category": "AutoClaw"
+        },
+        {
+          "command": "autoclaw.routingDecide",
+          "title": "AutoClaw: Routing — Decide Best Model",
+          "category": "AutoClaw"
+        },
+        {
+          "command": "autoclaw.recheckZMLR",
+          "title": "AutoClaw: Routing — Recheck ZMLR",
+          "category": "AutoClaw"
+        },
+        {
+          "command": "autoclaw.resetRouting",
+          "title": "AutoClaw: Routing — Reset Engine",
+          "category": "AutoClaw"
+        }
     ],
     "viewsContainers": {
       "activitybar": [
@@ -90,6 +186,28 @@
           "command": "kdream.refreshDashboard",
           "when": "view == kdreamDashboard",
           "group": "navigation"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "autoclaw.addSelectionToTask",
+          "when": "editorHasSelection",
+          "group": "AutoClaw@1"
+        },
+        {
+          "command": "autoclaw.addTodoFromContext",
+          "when": "editorTextFocus",
+          "group": "AutoClaw@2"
+        },
+        {
+          "command": "autoclaw.showCommands",
+          "group": "AutoClaw@3"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "autoclaw.addFileToTask",
+          "group": "AutoClaw@1"
         }
       ]
     },
@@ -143,9 +261,127 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically install adapters for detected AI extensions"
+        },
+        "autoclaw.errorTracking.frequencyTrackingEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Track how often each error type occurs"
+        },
+        "autoclaw.errorTracking.dismissCooldownHours": {
+          "type": "number",
+          "default": 1,
+          "description": "Hours to suppress a dismissed error notification"
+        },
+        "autoclaw.kdream.enableFileDecorations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable file decorations for files with TODO/FIXME comments"
+        },
+        "autoclaw.routing.zmlrUrl": {
+          "type": "string",
+          "default": "http://localhost:20128",
+          "description": "ZippyMesh LLM Router base URL used by the routing engine"
+        },
+        "autoclaw.routing.failoverMode": {
+          "type": "string",
+          "enum": ["auto", "ask", "disabled"],
+          "default": "ask",
+          "description": "How AutoClaw handles routing failures: auto-reroute silently, ask the user, or disable failover"
+        },
+        "autoclaw.routing.customModels": {
+          "type": "array",
+          "default": [],
+          "description": "Additional model definitions to add to the routing engine's model catalog",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "provider": { "type": "string" },
+              "tier": { "type": "string", "enum": ["local", "free", "low-cost", "mid", "sota"] },
+              "contextWindow": { "type": "number" },
+              "rpmLimit": { "type": ["number", "null"] },
+              "supportsFunctions": { "type": "boolean" },
+              "routedViaZMLR": { "type": "boolean" }
+            }
+          }
+        },
+        "autoclaw.routing.ollamaUrl": {
+          "type": "string",
+          "default": "http://localhost:11434/v1",
+          "description": "Ollama API base URL for local model routing"
+        },
+        "autoclaw.routing.sessionHealerEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the session healer to detect and recover stalled agent sessions"
+        },
+        "autoclaw.routing.sessionStaleThresholdMinutes": {
+          "type": "number",
+          "default": 10,
+          "description": "Minutes of inactivity before a session is considered stalled"
         }
       }
-    }
+    },
+    "terminal": {
+      "profiles": [
+        {
+          "title": "AutoClaw",
+          "id": "autoclaw.terminal",
+          "icon": "$(tools)"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "autoclaw.showCommands",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "editorFocus"
+      },
+      {
+        "command": "kdream.showDashboard",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "kdream.focusDashboard",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "kdream.refreshDashboard",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "kdream.searchDashboard",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "kdream.toggleSection",
+        "key": "ctrl+alt+left",
+        "mac": "cmd+alt+left",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "kdream.toggleSection",
+        "key": "ctrl+alt+right",
+        "mac": "cmd+alt+right",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "kdream.helpDashboard",
+        "key": "ctrl+alt+h",
+        "mac": "cmd+alt+h",
+        "when": "editorTextFocus"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile && npm run copy-webview",

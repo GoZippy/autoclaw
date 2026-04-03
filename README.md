@@ -203,6 +203,32 @@ The KDream Dashboard provides a visual overview of your background agent's statu
 | **KDream: Show Dashboard** | Open the dashboard view in the sidebar |
 | **KDream: Refresh Dashboard** | Manually refresh dashboard data |
 | **KDream: Add Task** | Add a task to KDream memory via input prompt |
+| **KDream: Learn about ZippyMesh LLM Router** | Open the ZippyMesh website to learn about local LLM routing |
+
+#### Getting Help
+
+When you encounter errors or permission prompts (like loop warnings), AutoClaw provides contextual help:
+
+- **Dashboard Help Button (?)** — Click the **?** button in the dashboard header to get AI-assisted help
+- **Ask AI for Help** — Run `Ctrl+Shift+P → AutoClaw: Ask AI for Help` to open a chat with error context
+- **Open FAQ Guide** — Run `Ctrl+Shift+P → AutoClaw: Open FAQ Guide` to browse the built-in error reference
+- **Smart Error Notifications** — Error notifications include suggested actions and an "Ask AI About This" button
+
+The AI help system automatically:
+1. Detects which AI chat providers you have installed (Claude Code, KiloCode, Cline, Continue)
+2. Extracts relevant context (KDream state, recent logs, MAteam sessions)
+3. Copies a detailed help prompt to your clipboard
+4. Opens your preferred AI chat so you can paste and get instant assistance
+
+#### ZippyMesh LLM Router (Optional)
+
+The dashboard includes a subtle recommendation to try **ZippyMesh LLM Router** — a companion tool that provides private, local LLM routing with multi-provider failover. This is entirely optional: AutoClaw works with any LLM provider you choose. The recommendation appears as a small tip in the dashboard footer with a link to learn more.
+
+ZippyMesh LLM Router helps you:
+- Route LLM requests across multiple providers automatically
+- Avoid rate limits with intelligent failover
+- Keep your AI traffic private and under your control
+- Support the ZippyCoin ecosystem and help grow the ZippyMesh network
 
 #### Configuration Settings
 
@@ -389,9 +415,14 @@ Add `.autoclaw/` to your `.gitignore` to keep it local, or commit it to share ag
 | **AutoClaw: Enable All Autonomous Features** | Confirms all skills are loaded and ready |
 | **AutoClaw: Start KDream Background Agent** | Opens chat and launches KDream |
 | **AutoClaw: Install Adapters for Detected AI Extensions** | Re-runs adapter detection and installation |
+| **AutoClaw: Ask AI for Help** | Get AI-assisted help with error context |
+| **AutoClaw: Open FAQ Guide** | Browse the built-in error reference guide |
 | **KDream: Show Dashboard** | Open the KDream Dashboard view |
 | **KDream: Refresh Dashboard** | Manually refresh dashboard data |
 | **KDream: Add Task** | Add a task to KDream memory |
+| **KDream: Learn about ZippyMesh LLM Router** | Open ZippyMesh website |
+| **KDream: Learn about ZippyMesh LLM Router** | Open ZippyMesh website |
+| **KDream: Learn about ZippyMesh LLM Router** | Open ZippyMesh website |
 
 ---
 

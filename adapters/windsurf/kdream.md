@@ -15,8 +15,11 @@ Sub-commands: `start`, `ps`/`status`, `logs`, `stop`, `dream`.
 4. Run first tick: check git status, scan TODOs, review MEMORY.md follow-ups.
 5. Confirm: "KDream is running."
 
+## Routing (each tick)
+Check `.autoclaw/routing/reroute-kdream-main.md` for pending model switch. On `fetch failed`/`429`: write `[RATE_LIMIT: <model>]` to reroute file, retry via ZMLR `POST http://localhost:20128/v1/chat/completions {"model":"auto","messages":[...]}`.
+
 ## Tick Cycle
-Check git + recent commits. Scan TODO/FIXME in recently changed files. If stale uncommitted work or flagged items → notify user. Increment tick; if tick % 20 == 0 or 24h elapsed → autoDream.
+Check routing. Then: check git + recent commits. Scan TODO/FIXME in recently changed files. If stale uncommitted work or flagged items → notify user. Increment tick; if tick % 20 == 0 or 24h elapsed → autoDream.
 
 ## autoDream
 1. List memory files. 2. Read last 7 days of logs. 3. Merge into MEMORY.md, remove contradictions, convert dates. 4. Archive oldest 20% if >200 lines. 5. Update lastDream.
