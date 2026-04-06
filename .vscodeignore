@@ -1,5 +1,6 @@
 .vscode/**
 .vscode-test/**
+.vscode-test.mjs
 src/**
 .gitignore
 tsconfig.json
@@ -8,3 +9,6 @@ tsconfig.json
 !out/**
 node_modules/**
 !adapters/**
+.github/**
+scripts/**
+*.vsix

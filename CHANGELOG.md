@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.2.1] - 2026-04-06
+
+### Changed
+- License updated to Zippy Technologies Source-Available Commercial License v1.3
+  (personal/educational use remains free; commercial use requires a paid license)
+
+### Fixed
+- Patched high-severity `serialize-javascript` transitive vulnerability in dev dependencies
+  via package override (does not affect the published extension — devDeps are not bundled)
+- Updated `@vscode/test-cli` to 0.0.12
+
 ## [1.2.0] - 2026-04-01
 
 ### Added

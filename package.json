@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Persistent background agents, autonomous build workflows, and multi-agent teams. Zero setup. Works with Claude, Copilot, and any Agent Skills compatible AI.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.108.0"
@@ -152,14 +152,23 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "copy-webview": "node scripts/copy-webview.js",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "package": "vsce package",
+    "publish:vscode": "vsce publish",
+    "publish:ovsx": "ovsx publish autoclaw-$(node -p \"require('./package.json').version\").vsix --token $OVSX_TOKEN"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",
     "@types/node": "^25.5.0",
     "@types/vscode": "^1.108.0",
-    "@vscode/test-cli": "^0.0.9",
+    "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.3.9",
+    "@vscode/vsce": "^3.3.2",
+    "ovsx": "^0.9.5",
     "typescript": "^5.8.0"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "diff": "^8.0.4"
   }
 }
