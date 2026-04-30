@@ -21,8 +21,14 @@ AutoClaw ships three skills:
 | Skill | What it does |
 |---|---|
 | **KDream** | Always-on background agent that monitors your workspace and consolidates memory |
-| **AutoBuild** | Autonomous scheduled build and workflow pipelines |
-| **MAteam** | Multi-agent coordinator — spawns Researcher, Coder, Reviewer, Verifier in sequence |
+| **AutoBuild** | Autonomous scheduled build and workflow pipelines (real in-process cron scheduler since v1.2.5) |
+| **MAteam** | Multi-agent coordinator — Researcher → Coder → Reviewer → Verifier (real subagent dispatch on Claude Code, in-session fallback elsewhere, since v1.2.5) |
+
+Plus extension-level commands:
+
+- `AutoClaw: Doctor (Health Check)` — single-command health report covering workspace, KDream state, MEMORY.md, log presence, adapter drift, per-host install matrix, ZippyMesh status, skill-source sanity.
+- `AutoClaw: Export Health Snapshot` — Markdown snapshot of the doctor report plus state.json, log tail, and open follow-ups; share-friendly.
+- `AutoClaw: Run AutoBuild Workflow Now` and `AutoClaw: Tail Latest Workflow Run` — fire and inspect scheduled workflows on demand.
 
 ---
 
