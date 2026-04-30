@@ -15,6 +15,19 @@
 - Export Health Snapshot — dashboard button + `autoclaw.exportSnapshot` command save the doctor report plus state/logs/follow-ups to a single Markdown file.
 - AutoBuild scheduler now actually executes cron-scheduled workflows from the extension host. A 30-second tick (configurable via `autoclaw.autobuild.tickIntervalSeconds`, off when `autoclaw.autobuild.enabled` is false) reads `.autoclaw/autobuild/workflows/*.yaml`, fires due workflows, streams stdout/stderr to `.autoclaw/autobuild/runs/<name>-<ISO>.log` (truncated at 1 MB), honours per-step `timeout`, and updates `registry.json`. New commands `AutoClaw: AutoBuild — Run Workflow Now` and `AutoClaw: AutoBuild — Tail Most Recent Run Log`; doctor gained an `## AutoBuild` section listing scheduled workflows and last-run status.
 
+### Fixed
+- Removed `K:/Projects/zippymesh-router` and `S:/Projects/zippymesh-router` developer drive paths from the ZippyMesh MCP setup wizard. Candidate search is now workspace-relative first, then `~/zippymesh-router`, then user-supplied paths from the new `autoclaw.kdream.zippymeshSearchPaths` setting.
+- `getCodeChurnMetrics` aggregates lines added/deleted across the last 30 days of commits instead of just the most recent diff (`HEAD~1..HEAD`).
+- `churnRate` (lines per day) and `avgCommitSize` (lines per commit) now use distinct formulas instead of returning the same value.
+- `adapterCoverage` no longer divides by zero when the adapter health array is empty.
+- ZippyMesh LLM Router health check has a 60-second cache with ±5 second jitter; "healthy" requires either a ZippyMesh-identifying response header or a JSON body that names ZippyMesh, not just a 200 OK on the configured port.
+- All blocking `execSync` git calls in the dashboard refresh path were replaced with awaited `execFile` so the extension host stops stalling on large repositories.
+- `mergeKiloModes` now upgrades existing `.kilocodemodes` files in place when the AutoClaw block is delimited by a marker comment, instead of leaving stale modes for users upgrading from older AutoClaw releases.
+
+### Distribution
+- VSIX is now runtime-only: 45 files / ~150 KB. `out/test/`, `out/scripts/`, source maps, and dev-only workspace artifacts (`.autoclaw/`, `.kilocodemodes`, `.voidspec/`, `.kilo/`) are excluded from the published package.
+- Published to the VS Code Marketplace as `ZippyTechnologiesLLC.autoclaw v1.2.5`. Open VSX republish pending an `OVSX_TOKEN` refresh.
+
 ## [1.2.4] - 2026-04-29
 
 ### Fixed
