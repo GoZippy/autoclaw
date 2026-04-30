@@ -36,6 +36,45 @@ export interface TodoItem {
 }
 
 /**
+ * Code churn metrics data
+ */
+export interface CodeChurnMetrics {
+  totalCommits: number;
+  commitsLast7Days: number;
+  commitsLast30Days: number;
+  linesAdded: number;
+  linesDeleted: number;
+  churnRate: number; // (added + deleted) / commits
+  avgCommitSize: number; // lines changed per commit
+  mostActiveDay: string; // YYYY-MM-DD
+}
+
+/**
+ * Productivity insights data
+ */
+export interface ProductivityInsights {
+  todoResolutionRate: number; // resolved / total todos
+  avgTimeToResolveTodo: number; // days
+  commitFrequency: number; // commits per day last 30 days
+  activeDays: number; // days with commits last 30 days
+  memorySize: number; // KB
+  logsSize: number; // KB
+}
+
+/**
+ * Project health indicators
+ */
+export interface ProjectHealthIndicators {
+  totalFiles: number;
+  sourceFiles: number;
+  openTodos: number;
+  uncommittedChanges: number;
+  staleChangesHours: number; // age of oldest uncommitted change
+  memoryCompleteness: number; // percentage of sections filled
+  adapterCoverage: number; // percentage of adapters healthy
+}
+
+/**
  * Parses MEMORY.md content and extracts tasks.
  * @param memoryContent - The raw content of MEMORY.md
  * @returns Array of parsed tasks
@@ -192,28 +231,70 @@ export const DEFAULT_ADAPTERS = [
 ];
 
 /**
- * Checks if ZippyMesh LLM Router is running locally
+ * Checks if ZippyMesh LLM Router is running locally.
+ *
+ * "Healthy" requires more than a 200 OK on the port — many unrelated services
+ * happen to listen on the same port and answer HEAD with 200. We require the
+ * `/health` (or `/api/health`) endpoint to either return JSON identifying the
+ * service or send an `x-zippymesh` / `server: zippymesh` header.
+ *
  * @param baseUrl - Base URL to check (default: http://localhost:20128)
  * @returns Promise resolving to health status object
  */
 export async function checkZippyMeshHealth(baseUrl = 'http://localhost:20128'): Promise<AdapterHealth> {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(baseUrl, { signal: controller.signal, method: 'HEAD' });
-    clearTimeout(timeout);
-    return {
-      name: 'ZippyMesh LLM Router',
-      status: res.ok ? 'healthy' : 'warning',
-      details: res.ok ? `Running at ${baseUrl}` : `Responded ${res.status} at ${baseUrl}`
-    };
-  } catch {
-    return {
-      name: 'ZippyMesh LLM Router',
-      status: 'warning',
-      details: 'Not detected — start ZippyMesh on localhost:20128'
-    };
+  const healthEndpoints = [`${baseUrl}/health`, `${baseUrl}/api/health`];
+
+  for (const url of healthEndpoints) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2000);
+      const res = await fetch(url, { signal: controller.signal, method: 'GET' });
+      clearTimeout(timeout);
+      if (!res.ok) { continue; }
+
+      // Require either a recognizable header or a JSON body that names ZippyMesh.
+      const headerHit =
+        /zippymesh/i.test(res.headers.get('server') || '') ||
+        res.headers.has('x-zippymesh') ||
+        res.headers.has('x-zippymesh-version');
+
+      let bodyHit = false;
+      const ctype = res.headers.get('content-type') || '';
+      if (ctype.includes('application/json')) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const body: any = await res.json();
+          const text = JSON.stringify(body || '').toLowerCase();
+          bodyHit = text.includes('zippymesh') || text.includes('zmlr');
+        } catch {
+          // ignore parse error
+        }
+      }
+
+      if (headerHit || bodyHit) {
+        return {
+          name: 'ZippyMesh LLM Router',
+          status: 'healthy',
+          details: `Running at ${baseUrl}`
+        };
+      }
+
+      // Reachable but doesn't identify as ZippyMesh — degraded.
+      return {
+        name: 'ZippyMesh LLM Router',
+        status: 'warning',
+        details: `Service responded at ${url} but did not identify as ZippyMesh`
+      };
+    } catch {
+      // Try next endpoint
+    }
   }
+
+  return {
+    name: 'ZippyMesh LLM Router',
+    status: 'warning',
+    details: 'Not detected — start ZippyMesh on localhost:20128'
+  };
 }
 
 /**

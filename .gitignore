@@ -1,3 +1,11 @@
 node_modules/
 out/
 *.vsix
+.vscode-test/
+tsconfig.tsbuildinfo
+
+# Workspace files generated at runtime by the extension itself
+.kilocodemodes
+
+# AutoClaw KDream data
+.autoclaw/

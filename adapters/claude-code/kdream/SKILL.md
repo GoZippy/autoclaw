@@ -5,6 +5,14 @@ description: Persistent always-on background agent with automatic memory consoli
 
 # KDream — Persistent Background Agent
 
+## Operating Rules (read before any sub-command)
+
+1. **Use file tools, not shell, for directories and files.** Create folders and files with the host's file/write tool (e.g. Write, create_file, edit_file). Do NOT use `mkdir -p`, `touch`, `New-Item`, or shell redirection — they fail across the Bash/PowerShell/cmd.exe mix you may be running on. If you must shell out, detect the platform first and use `mkdir` (no `-p`) on Windows cmd, or `New-Item -ItemType Directory -Force` in PowerShell.
+2. **Always use forward slashes in paths** (e.g. `.autoclaw/kdream/state.json`). Node, git, and every supported shell accept them.
+3. **Be idempotent.** Before running `start`, read `.autoclaw/kdream/state.json`. If `status == "running"`, do NOT recreate directories or rewrite state — just run a fresh tick and report current status.
+4. **Output discipline.** When confirming an action, output ≤3 short lines: what was done, current counts (ticks/TODOs/follow-ups), next step. Do NOT narrate your reasoning, repeat headings, or invent style rules ("titles must be gerunds", etc.). No emojis unless the user asked.
+5. **Never invent files, follow-ups, or commits.** Only report what you actually read from disk or git.
+
 ## On Invocation
 
 Determine the sub-command from the user's message:
@@ -22,14 +30,13 @@ Determine the sub-command from the user's message:
 
 ## start — Launch Daemon
 
-1. Create directories if missing:
-   ```
-   .autoclaw/kdream/logs/
-   .autoclaw/kdream/memory/
-   ```
-2. Write `.autoclaw/kdream/state.json`:
+0. **Idempotency check.** Read `.autoclaw/kdream/state.json`. If it exists and `status == "running"`, skip steps 1–4, jump to step 5 (run a tick), then report: "KDream already running (tick N). Ran fresh tick."
+1. Create directories if missing using the host's file/write tool (NOT shell `mkdir -p`):
+   - `.autoclaw/kdream/logs/`
+   - `.autoclaw/kdream/memory/`
+2. Write `.autoclaw/kdream/state.json` using the file/write tool:
    ```json
-   { "status": "running", "started": "<ISO timestamp>", "tick": 0, "lastDream": null }
+   { "status": "running", "started": "<ISO timestamp>", "tick": 0, "lastDream": null, "todos": [] }
    ```
 3. Create `.autoclaw/kdream/memory/MEMORY.md` if missing with this structure:
    ```markdown
@@ -48,8 +55,15 @@ Determine the sub-command from the user's message:
    ```
    [HH:MM:SS] KDream started. Workspace: <cwd>
    ```
-5. Run the first **tick** immediately.
-6. Inform the user: "KDream is running. Add tasks to `.autoclaw/kdream/memory/MEMORY.md` under `## Follow-ups`, or use `/kdream add <note>`. Use `/kdream ps` for status."
+5. Run the first **tick** immediately (see Tick Cycle below).
+6. Inform the user with a single concise block — for example:
+   ```
+   KDream started. Tick 1.
+   Git: <N> uncommitted, <M> commits today.
+   TODOs: <K>. Follow-ups: <J>. No autoDream yet.
+   Add tasks with /kdream add <note> or in MEMORY.md ## Follow-ups.
+   ```
+   Adapt counts to reality. No extra prose, no headings, no style commentary.
 
 ---
 
@@ -103,11 +117,14 @@ This is the fastest way to give KDream something to watch or act on.
 ## work — Act on an Item
 
 When the user runs `/kdream work <item description or number>`:
-1. Identify the matching TODO/FIXME or follow-up item.
-2. Read the relevant file(s) and context.
-3. Implement or resolve the item using available tools.
-4. Mark the follow-up as `- [x]` in `MEMORY.md` or confirm the code change.
-5. Log the action taken.
+1. **Dispatch.** If the host exposes a tool literally named `Agent` (Claude Code), spawn a coder subagent scoped to this single item with a short, self-contained prompt and the relevant file paths. Otherwise (Copilot, Cursor, Cline, Kilo, Continue, Antigravity, Windsurf, Kiro, etc.) work the item in-session yourself — do NOT fabricate an `Agent` call. Small items (one-file edits, doc tweaks) MAY be done in-session even when `Agent` is available, to avoid spawn overhead; items spanning ≥3 files or requiring a research pass SHOULD use `Agent`.
+2. Identify the matching TODO/FIXME or follow-up item.
+3. Read the relevant file(s) and context.
+4. Implement or resolve the item using available tools.
+5. Mark the follow-up as `- [x]` in `MEMORY.md` or confirm the code change.
+6. Log the action taken.
+
+Steps 2–5 apply regardless of which dispatch path was taken.
 
 ---
 

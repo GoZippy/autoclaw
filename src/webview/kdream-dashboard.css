@@ -15,9 +15,15 @@ header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
     margin-bottom: 20px;
     padding-bottom: 10px;
     border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+header button + button {
+    margin-left: 4px;
 }
 
 h1 {
@@ -133,4 +139,42 @@ button:hover {
 .todo-text {
     flex: 1;
     font-size: 0.9em;
+}
+
+.metric-item {
+    margin-bottom: 8px;
+}
+
+.metric-label {
+    display: block;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+.metric-value {
+    display: block;
+    font-size: 0.9em;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 8px;
+    background-color: var(--vscode-progressBar-background);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 4px;
+}
+
+.progress-fill {
+    height: 100%;
+    background-color: var(--vscode-progressBar-foreground);
+    transition: width 0.3s ease;
+}
+
+.progress-fill.warning {
+    background-color: var(--vscode-charts-orange);
+}
+
+.progress-fill.error {
+    background-color: var(--vscode-charts-red);
 }

@@ -5,6 +5,14 @@ description: Autonomous scheduled build workflows and pipelines. Trigger on "/au
 
 # AutoBuild — Autonomous Workflow Engine
 
+## Operating Rules (read first)
+
+1. **Use file tools, not shell, for files and directories.** Create `.autoclaw/autobuild/...` paths with the host's file/write tool. Do NOT use `mkdir -p`, `touch`, or `New-Item` — they break across Bash/PowerShell/cmd.
+2. **Forward slashes in paths.** Always.
+3. **Idempotency.** `schedule` with an existing `<name>` updates the workflow in place — do not duplicate registry entries. `cancel` on a missing name reports "no such workflow" and exits cleanly.
+4. **Step commands are platform-aware.** Default templates use cross-platform npm scripts (`npm run build`, `npm test`). If a step needs a shell builtin, prefer Node/npm scripts in `package.json` over raw shell so it works on every host.
+5. **Output discipline.** Confirm in ≤3 lines: what changed, file path, next action. No reasoning narration.
+
 ## On Invocation
 
 Determine the sub-command from the user's message:

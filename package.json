@@ -2,10 +2,10 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Persistent background agents, autonomous build workflows, and multi-agent teams. Zero setup. Works with Claude, Copilot, and any Agent Skills compatible AI.",
-  "version": "1.2.1",
+  "version": "1.2.5",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
-    "vscode": "^1.108.0"
+    "vscode": "^1.95.0"
   },
   "categories": [
     "AI",
@@ -54,6 +54,22 @@
         "title": "AutoClaw: Install Adapters for Detected AI Extensions"
       },
       {
+        "command": "autoclaw.doctor",
+        "title": "AutoClaw: Doctor (Health Check)"
+      },
+      {
+        "command": "autoclaw.exportSnapshot",
+        "title": "AutoClaw: Export Health Snapshot"
+      },
+      {
+        "command": "autoclaw.autobuild.runNow",
+        "title": "AutoClaw: AutoBuild — Run Workflow Now"
+      },
+      {
+        "command": "autoclaw.autobuild.tail",
+        "title": "AutoClaw: AutoBuild — Tail Most Recent Run Log"
+      },
+      {
         "command": "kdream.showDashboard",
         "title": "KDream: Show Dashboard"
       },
@@ -88,6 +104,11 @@
       "view/title": [
         {
           "command": "kdream.refreshDashboard",
+          "when": "view == kdreamDashboard",
+          "group": "navigation"
+        },
+        {
+          "command": "autoclaw.exportSnapshot",
           "when": "view == kdreamDashboard",
           "group": "navigation"
         }
@@ -128,6 +149,12 @@
           "default": "http://localhost:20128",
           "description": "Base URL of ZippyMesh LLM Router instance (for health checks)"
         },
+        "autoclaw.kdream.zippymeshSearchPaths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Additional filesystem paths to search for a ZippyMesh LLM Router installation when configuring MCP. Workspace-relative and ~/zippymesh-router candidates are always checked first."
+        },
         "autoclaw.kdream.scanPatterns": {
           "type": "array",
           "default": ["**/*.ts", "**/*.js", "**/*.tsx", "**/*.jsx", "**/*.py", "**/*.md"],
@@ -143,6 +170,17 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically install adapters for detected AI extensions"
+        },
+        "autoclaw.autobuild.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run scheduled AutoBuild workflows from the extension host"
+        },
+        "autoclaw.autobuild.tickIntervalSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 10,
+          "description": "How often the AutoBuild scheduler checks for due workflows (seconds, minimum 10)"
         }
       }
     }
@@ -152,7 +190,15 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "copy-webview": "node scripts/copy-webview.js",
+    "adapters:compile": "tsc -p scripts/tsconfig.json",
+    "adapters:build": "npm run adapters:compile && node out/scripts/build-adapters.js",
+    "adapters:check": "npm run adapters:compile && node out/scripts/check-adapters.js",
+    "pretest": "tsc -p ./",
     "test": "vscode-test",
+    "test:integration": "vscode-test",
+    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js",
+    "sample:snapshot": "node scripts/sample-snapshot.js",
+    "sample:autobuild": "node scripts/sample-autobuild-run.js",
     "package": "vsce package",
     "publish:vscode": "vsce publish",
     "publish:ovsx": "ovsx publish autoclaw-$(node -p \"require('./package.json').version\").vsix --token $OVSX_TOKEN"
@@ -160,7 +206,7 @@
   "devDependencies": {
     "@types/mocha": "^10.0.6",
     "@types/node": "^25.5.0",
-    "@types/vscode": "^1.108.0",
+    "@types/vscode": "^1.95.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^3.3.2",

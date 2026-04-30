@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.2.5] - 2026-04-30
+
+### Added
+- `AutoClaw: Doctor (Health Check)` command (`autoclaw.doctor`) — surfaces a
+  single comprehensive read-only health report covering workspace state,
+  KDream `state.json`, MEMORY.md follow-up counts and required sections,
+  log-file presence, adapter drift vs `skills/`, per-host adapter installation
+  (claude-code, kilocode, cline, cursor, antigravity, windsurf, kiro,
+  continue), ZippyMesh LLM Router reachability, and skill-source sanity. The
+  report is rendered into a dedicated `AutoClaw Doctor` OutputChannel so it
+  can be copy-pasted or diffed.
+- MAteam and `/kdream work` now explicitly dispatch via `Agent` tool on Claude Code and degrade to in-session execution elsewhere, instead of leaving the choice ambiguous.
+- Export Health Snapshot — dashboard button + `autoclaw.exportSnapshot` command save the doctor report plus state/logs/follow-ups to a single Markdown file.
+- AutoBuild scheduler now actually executes cron-scheduled workflows from the extension host. A 30-second tick (configurable via `autoclaw.autobuild.tickIntervalSeconds`, off when `autoclaw.autobuild.enabled` is false) reads `.autoclaw/autobuild/workflows/*.yaml`, fires due workflows, streams stdout/stderr to `.autoclaw/autobuild/runs/<name>-<ISO>.log` (truncated at 1 MB), honours per-step `timeout`, and updates `registry.json`. New commands `AutoClaw: AutoBuild — Run Workflow Now` and `AutoClaw: AutoBuild — Tail Most Recent Run Log`; doctor gained an `## AutoBuild` section listing scheduled workflows and last-run status.
+
+## [1.2.4] - 2026-04-29
+
+### Fixed
+- KDream `start` failed under Kilo Code on Windows because the agent fell back to
+  `mkdir -p`, which PowerShell rejects. All skills (kdream, autobuild, mateam) and
+  adapter copies (claude-code, kilocode, cline, cursor, antigravity, windsurf, kiro,
+  continue) now instruct the agent to create directories and files with the host's
+  file/write tool instead of shelling out, and to use forward slashes.
+- `/kdream start` is now explicitly idempotent — if `state.json` already shows
+  `status=="running"`, the agent skips init and just runs a fresh tick instead of
+  re-initialising state.
+
+### Changed
+- Each skill gained an "Operating Rules" header that pins output discipline
+  (≤3 short confirmation lines, no reasoning narration, no invented style rules)
+  to suppress the verbose / repetitive startup transcripts seen under some hosts.
+- `start` confirmation now reports concrete counts (uncommitted, TODOs, follow-ups)
+  rather than the generic "KDream is running."
+
 ## [1.2.1] - 2026-04-06
 
 ### Changed

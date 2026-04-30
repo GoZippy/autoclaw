@@ -6,6 +6,14 @@ Works with **GitHub Copilot, Claude Code, Cursor, Kiro, Windsurf, KiloCode, Clin
 
 ---
 
+## License at a glance
+
+- Free for personal, educational, and evaluation use.
+- Commercial use requires a paid license — contact ZippyTechnologiesLLC.
+- Full terms: see [LICENSE](LICENSE).
+
+---
+
 ## What's Included
 
 AutoClaw ships three skills:
@@ -439,3 +447,9 @@ once you have ZippyMesh running locally.
 - GitHub: [GoZippy/autoclaw](https://github.com/GoZippy/autoclaw)
 - Report bugs or request features via [GitHub Issues](https://github.com/GoZippy/autoclaw/issues)
 - Changelog: [CHANGELOG.md](https://github.com/GoZippy/autoclaw/blob/master/CHANGELOG.md)
+
+---
+
+## License
+
+AutoClaw is distributed under the **Zippy Technologies Source-Available Commercial License v1.3**. Personal, educational, and evaluation use is free of charge. Commercial use requires a paid license from ZippyTechnologiesLLC. See [LICENSE](LICENSE) for the full terms.

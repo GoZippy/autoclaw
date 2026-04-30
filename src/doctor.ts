@@ -1,0 +1,716 @@
+/**
+ * AutoClaw Doctor — Health Check
+ *
+ * Read-only health report producer. No `vscode.window.*` calls live in this
+ * module so it can be unit-tested against a temp workspace. The extension
+ * activates `runDoctor` and renders the structured `DoctorReport` into a
+ * dedicated OutputChannel.
+ */
+
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { spawnSync } from 'child_process';
+
+import {
+  checkZippyMeshHealth,
+  getKdreamDirPath,
+  getMemoryPath,
+  getStatePath,
+  getTodayLogPath,
+  getTodayDate,
+  isAutoclawInGitignore
+} from './kdream-helpers';
+import type { AdapterHealth } from './kdream-helpers';
+import {
+  discoverWorkflows,
+  getWorkflowsDir,
+  getRegistryPath,
+  readRegistry,
+  parseCron
+} from './autobuild';
+
+// Vscode is optional at runtime — passed in via dependency injection so the
+// module can run under plain Mocha without `vscode` being on the import path.
+export interface DoctorVscodeShim {
+  workspaceRoot?: string;
+  isExtensionInstalled?: (id: string) => boolean;
+  isAntigravityHost?: boolean;
+  zippymeshUrl?: string;
+}
+
+export interface WorkspaceSection {
+  workspaceRoot: string | null;
+  autoclawDirExists: boolean;
+  autoclawInGitignore: boolean | null; // null when no .gitignore present
+  gitignorePresent: boolean;
+}
+
+export interface KdreamStateSection {
+  initialised: boolean;
+  status?: string;
+  tick?: number;
+  lastDream?: string;
+  started?: string;
+  raw?: unknown;
+  error?: string;
+}
+
+export interface MemorySection {
+  present: boolean;
+  lineCount: number;
+  openFollowups: number;
+  doneFollowups: number;
+  hasFollowupsSection: boolean;
+  hasFactsSection: boolean;
+  hasObservationsSection: boolean;
+}
+
+export interface LogsSection {
+  todayLogPresent: boolean;
+  todayLogSizeBytes: number;
+  todayLogLastEntryTimestamp: string | null;
+  totalLogFiles: number;
+}
+
+export type AdapterDriftStatus = 'ok' | 'drift' | 'skipped' | 'error';
+
+export interface AdapterDriftSection {
+  status: AdapterDriftStatus;
+  exitCode: number | null;
+  driftedFiles: number;
+  message: string;
+  output: string;
+}
+
+export interface AdapterHostStatus {
+  host: string;
+  extensionId: string | null;
+  extensionInstalled: boolean;
+  destination: string;
+  destinationExists: boolean;
+  expectedFiles: { file: string; present: boolean }[];
+  notes?: string;
+}
+
+export interface AdapterInstallationSection {
+  hosts: AdapterHostStatus[];
+}
+
+export interface SkillsSourceSection {
+  skillsRoot: string;
+  skills: { name: string; skillMdPath: string; present: boolean }[];
+  allPresent: boolean;
+}
+
+export interface AutobuildWorkflowStatus {
+  name: string;
+  cron: string;
+  workflowPresent: boolean;
+  cronValid: boolean;
+  cronError?: string;
+  lastRun: string | null;
+  status: string;
+  lastLog?: string;
+}
+
+export interface AutobuildSection {
+  workflowsDir: string;
+  workflowCount: number;
+  registryPresent: boolean;
+  workflows: AutobuildWorkflowStatus[];
+}
+
+export interface DoctorReport {
+  generatedAt: string;
+  extensionPath: string;
+  workspace: WorkspaceSection;
+  kdreamState: KdreamStateSection;
+  memory: MemorySection;
+  logs: LogsSection;
+  adapterDrift: AdapterDriftSection;
+  adapterInstallation: AdapterInstallationSection;
+  zmlr: AdapterHealth;
+  skillsSource: SkillsSourceSection;
+  autobuild: AutobuildSection;
+}
+
+const SKILL_NAMES = ['kdream', 'autobuild', 'mateam'] as const;
+
+interface HostSpec {
+  host: string;
+  extensionId: string | null; // null = not a vscode extension (e.g. Antigravity host)
+  destinationFor: (ctx: {
+    workspaceRoot: string | null;
+    home: string;
+    isAntigravityHost: boolean;
+  }) => string | null;
+  expectedFiles: string[];
+  // Whether this host is "active" given the shim — used to colour notes only.
+  isActive?: (ctx: { extInstalled: boolean; isAntigravityHost: boolean }) => boolean;
+}
+
+const HOST_SPECS: HostSpec[] = [
+  {
+    host: 'claude-code',
+    extensionId: 'Anthropic.claude-code',
+    destinationFor: ({ home }) => path.join(home, '.claude', 'skills').replace(/\\/g, '/'),
+    expectedFiles: SKILL_NAMES.map(s => `${s}/SKILL.md`)
+  },
+  {
+    host: 'kilocode',
+    extensionId: 'kilocode.kilo-code',
+    destinationFor: ({ workspaceRoot }) =>
+      workspaceRoot ? path.join(workspaceRoot, '.kilocodemodes').replace(/\\/g, '/') : null,
+    expectedFiles: [] // single merged file, presence checked via destinationExists
+  },
+  {
+    host: 'cline',
+    extensionId: 'saoudrizwan.claude-dev',
+    destinationFor: ({ workspaceRoot }) =>
+      workspaceRoot ? path.join(workspaceRoot, '.clinerules').replace(/\\/g, '/') : null,
+    expectedFiles: SKILL_NAMES.map(s => `${s}.md`)
+  },
+  {
+    host: 'cursor',
+    extensionId: null,
+    destinationFor: ({ workspaceRoot }) =>
+      workspaceRoot ? path.join(workspaceRoot, '.cursor', 'rules').replace(/\\/g, '/') : null,
+    expectedFiles: SKILL_NAMES.map(s => `${s}.mdc`)
+  },
+  {
+    host: 'antigravity',
+    extensionId: null,
+    destinationFor: ({ workspaceRoot }) =>
+      workspaceRoot ? path.join(workspaceRoot, '.agent', 'rules').replace(/\\/g, '/') : null,
+    expectedFiles: SKILL_NAMES.map(s => `${s}.md`)
+  },
+  {
+    host: 'windsurf',
+    extensionId: 'codeium.windsurf',
+    destinationFor: ({ workspaceRoot }) =>
+      workspaceRoot ? path.join(workspaceRoot, '.windsurf', 'rules').replace(/\\/g, '/') : null,
+    expectedFiles: SKILL_NAMES.map(s => `${s}.md`)
+  },
+  {
+    host: 'kiro',
+    extensionId: 'amazon.kiro',
+    destinationFor: ({ workspaceRoot }) =>
+      workspaceRoot ? path.join(workspaceRoot, '.kiro', 'steering').replace(/\\/g, '/') : null,
+    expectedFiles: SKILL_NAMES.map(s => `${s}.md`)
+  },
+  {
+    host: 'continue',
+    extensionId: 'Continue.continue',
+    destinationFor: ({ workspaceRoot }) =>
+      workspaceRoot ? path.join(workspaceRoot, '.continue', 'prompts').replace(/\\/g, '/') : null,
+    expectedFiles: SKILL_NAMES.map(s => `${s}.prompt`)
+  }
+];
+
+function safeReadFile(p: string): string | null {
+  try {
+    return fs.readFileSync(p, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+function safeStat(p: string): fs.Stats | null {
+  try {
+    return fs.statSync(p);
+  } catch {
+    return null;
+  }
+}
+
+export function buildWorkspaceSection(workspaceRoot: string | null): WorkspaceSection {
+  if (!workspaceRoot) {
+    return {
+      workspaceRoot: null,
+      autoclawDirExists: false,
+      autoclawInGitignore: null,
+      gitignorePresent: false
+    };
+  }
+  const autoclawDir = path.join(workspaceRoot, '.autoclaw');
+  const gitignorePath = path.join(workspaceRoot, '.gitignore');
+  const gitignoreContent = safeReadFile(gitignorePath);
+  return {
+    workspaceRoot,
+    autoclawDirExists: fs.existsSync(autoclawDir),
+    autoclawInGitignore:
+      gitignoreContent === null ? null : isAutoclawInGitignore(gitignoreContent),
+    gitignorePresent: gitignoreContent !== null
+  };
+}
+
+export function buildKdreamStateSection(workspaceRoot: string | null): KdreamStateSection {
+  if (!workspaceRoot) {
+    return { initialised: false };
+  }
+  const statePath = getStatePath(workspaceRoot);
+  const raw = safeReadFile(statePath);
+  if (raw === null) {
+    return { initialised: false };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      initialised: true,
+      status: typeof parsed.status === 'string' ? parsed.status : undefined,
+      tick: typeof parsed.tick === 'number' ? parsed.tick : undefined,
+      lastDream: typeof parsed.lastDream === 'string' ? parsed.lastDream : undefined,
+      started: typeof parsed.started === 'string' ? parsed.started : undefined,
+      raw: parsed
+    };
+  } catch (e) {
+    return {
+      initialised: true,
+      error: `state.json present but unparseable: ${(e as Error).message}`
+    };
+  }
+}
+
+export function buildMemorySection(workspaceRoot: string | null): MemorySection {
+  if (!workspaceRoot) {
+    return {
+      present: false,
+      lineCount: 0,
+      openFollowups: 0,
+      doneFollowups: 0,
+      hasFollowupsSection: false,
+      hasFactsSection: false,
+      hasObservationsSection: false
+    };
+  }
+  const memoryPath = getMemoryPath(workspaceRoot);
+  const content = safeReadFile(memoryPath);
+  if (content === null) {
+    return {
+      present: false,
+      lineCount: 0,
+      openFollowups: 0,
+      doneFollowups: 0,
+      hasFollowupsSection: false,
+      hasFactsSection: false,
+      hasObservationsSection: false
+    };
+  }
+  const lines = content.split(/\r?\n/);
+  // Use multiline-aware regexes that anchor to the start of a line.
+  const openMatches = content.match(/^\s*-\s*\[\s\]/gm) ?? [];
+  const doneMatches = content.match(/^\s*-\s*\[[xX]\]/gm) ?? [];
+  return {
+    present: true,
+    lineCount: lines.length,
+    openFollowups: openMatches.length,
+    doneFollowups: doneMatches.length,
+    hasFollowupsSection: /^##\s+Follow-?ups\s*$/im.test(content),
+    hasFactsSection: /^##\s+Facts\s*$/im.test(content),
+    hasObservationsSection: /^##\s+Observations\s*$/im.test(content)
+  };
+}
+
+export function buildLogsSection(workspaceRoot: string | null): LogsSection {
+  if (!workspaceRoot) {
+    return {
+      todayLogPresent: false,
+      todayLogSizeBytes: 0,
+      todayLogLastEntryTimestamp: null,
+      totalLogFiles: 0
+    };
+  }
+  const logsDir = path.join(getKdreamDirPath(workspaceRoot), 'logs');
+  let totalLogFiles = 0;
+  try {
+    if (fs.existsSync(logsDir)) {
+      totalLogFiles = fs
+        .readdirSync(logsDir)
+        .filter(f => f.endsWith('.md'))
+        .length;
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const todayLog = getTodayLogPath(workspaceRoot);
+  const stats = safeStat(todayLog);
+  if (!stats) {
+    return {
+      todayLogPresent: false,
+      todayLogSizeBytes: 0,
+      todayLogLastEntryTimestamp: null,
+      totalLogFiles
+    };
+  }
+  const content = safeReadFile(todayLog) ?? '';
+  // Heuristic: lines starting with `- ` plus an ISO-ish timestamp at the head,
+  // OR `## YYYY-MM-DD HH:MM` markdown subheadings.
+  const tsMatches = content.match(
+    /\b(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)/g
+  );
+  return {
+    todayLogPresent: true,
+    todayLogSizeBytes: stats.size,
+    todayLogLastEntryTimestamp: tsMatches && tsMatches.length > 0 ? tsMatches[tsMatches.length - 1] : null,
+    totalLogFiles
+  };
+}
+
+export function buildAdapterDriftSection(extensionPath: string): AdapterDriftSection {
+  const checkScript = path.join(extensionPath, 'out', 'scripts', 'check-adapters.js');
+  if (!fs.existsSync(checkScript)) {
+    return {
+      status: 'skipped',
+      exitCode: null,
+      driftedFiles: 0,
+      message: 'adapter drift check skipped — run `npm run adapters:compile` first',
+      output: ''
+    };
+  }
+  try {
+    const result = spawnSync(process.execPath, [checkScript], {
+      cwd: extensionPath,
+      encoding: 'utf8',
+      timeout: 30000
+    });
+    const stdout = result.stdout ?? '';
+    const stderr = result.stderr ?? '';
+    const combined = [stdout, stderr].filter(s => s.length > 0).join('\n');
+    if (result.status === 0) {
+      return {
+        status: 'ok',
+        exitCode: 0,
+        driftedFiles: 0,
+        message: 'Adapters in sync with skills/.',
+        output: combined.trim()
+      };
+    }
+    const driftMatch = stderr.match(/Adapter drift detected in (\d+) file/);
+    return {
+      status: 'drift',
+      exitCode: result.status ?? -1,
+      driftedFiles: driftMatch ? parseInt(driftMatch[1], 10) : 0,
+      message: 'Adapter drift detected — run `npm run adapters:build`',
+      output: combined.trim()
+    };
+  } catch (e) {
+    return {
+      status: 'error',
+      exitCode: null,
+      driftedFiles: 0,
+      message: `failed to invoke check-adapters: ${(e as Error).message}`,
+      output: ''
+    };
+  }
+}
+
+export function buildAdapterInstallationSection(
+  shim: DoctorVscodeShim
+): AdapterInstallationSection {
+  const home = os.homedir();
+  const isAntigravityHost = !!shim.isAntigravityHost;
+  const isInstalled = shim.isExtensionInstalled ?? (() => false);
+
+  const hosts: AdapterHostStatus[] = HOST_SPECS.map(spec => {
+    const dest = spec.destinationFor({
+      workspaceRoot: shim.workspaceRoot ?? null,
+      home,
+      isAntigravityHost
+    });
+    const extInstalled = spec.extensionId ? isInstalled(spec.extensionId) : false;
+    if (!dest) {
+      return {
+        host: spec.host,
+        extensionId: spec.extensionId,
+        extensionInstalled: extInstalled,
+        destination: '(no workspace open)',
+        destinationExists: false,
+        expectedFiles: spec.expectedFiles.map(f => ({ file: f, present: false })),
+        notes: 'workspace not open'
+      };
+    }
+    const destinationExists = fs.existsSync(dest);
+    const expectedFiles = spec.expectedFiles.map(f => ({
+      file: f,
+      present: fs.existsSync(path.join(dest, f))
+    }));
+    let notes: string | undefined;
+    if (spec.host === 'antigravity' && isAntigravityHost) {
+      notes = 'host detected via vscode.env.appName';
+    }
+    return {
+      host: spec.host,
+      extensionId: spec.extensionId,
+      extensionInstalled: extInstalled,
+      destination: dest,
+      destinationExists,
+      expectedFiles,
+      notes
+    };
+  });
+
+  return { hosts };
+}
+
+export function buildAutobuildSection(workspaceRoot: string | null): AutobuildSection {
+  if (!workspaceRoot) {
+    return {
+      workflowsDir: '(no workspace)',
+      workflowCount: 0,
+      registryPresent: false,
+      workflows: []
+    };
+  }
+  const workflowsDir = getWorkflowsDir(workspaceRoot).replace(/\\/g, '/');
+  const registryPath = getRegistryPath(workspaceRoot);
+  const registryPresent = fs.existsSync(registryPath);
+  const registry = readRegistry(workspaceRoot);
+  const registryByName = new Map<string, typeof registry.workflows[number]>();
+  for (const r of registry.workflows) {
+    registryByName.set(r.name, r);
+  }
+
+  const discovered = discoverWorkflows(workspaceRoot);
+  const seen = new Set<string>();
+  const workflows: AutobuildWorkflowStatus[] = [];
+  for (const d of discovered) {
+    seen.add(d.workflow.name);
+    let cronValid = true;
+    let cronError: string | undefined;
+    try {
+      parseCron(d.workflow.cron);
+    } catch (e) {
+      cronValid = false;
+      cronError = (e as Error).message;
+    }
+    const reg = registryByName.get(d.workflow.name);
+    workflows.push({
+      name: d.workflow.name,
+      cron: d.workflow.cron,
+      workflowPresent: true,
+      cronValid,
+      cronError,
+      lastRun: reg?.lastRun ?? null,
+      status: reg?.status ?? 'scheduled',
+      lastLog: reg?.lastLog
+    });
+  }
+  // Surface registry-only entries (workflow file removed but registry not pruned).
+  for (const r of registry.workflows) {
+    if (seen.has(r.name)) { continue; }
+    workflows.push({
+      name: r.name,
+      cron: r.cron,
+      workflowPresent: false,
+      cronValid: false,
+      cronError: 'workflow YAML missing',
+      lastRun: r.lastRun,
+      status: r.status,
+      lastLog: r.lastLog
+    });
+  }
+
+  return {
+    workflowsDir,
+    workflowCount: discovered.length,
+    registryPresent,
+    workflows
+  };
+}
+
+export function buildSkillsSourceSection(extensionPath: string): SkillsSourceSection {
+  const skillsRoot = path.join(extensionPath, 'skills').replace(/\\/g, '/');
+  const skills = SKILL_NAMES.map(name => {
+    const skillMdPath = path.join(skillsRoot, name, 'SKILL.md').replace(/\\/g, '/');
+    return {
+      name,
+      skillMdPath,
+      present: fs.existsSync(skillMdPath)
+    };
+  });
+  return {
+    skillsRoot,
+    skills,
+    allPresent: skills.every(s => s.present)
+  };
+}
+
+/**
+ * Run all doctor checks and return a structured report.
+ *
+ * `shim` lets the extension inject its `vscode` view of the world (workspace,
+ * installed extensions, host name, ZMLR config) without this module importing
+ * the `vscode` namespace. Tests can pass a synthetic shim.
+ */
+export async function runDoctor(
+  extensionPath: string,
+  shim: DoctorVscodeShim = {}
+): Promise<DoctorReport> {
+  const workspaceRoot = shim.workspaceRoot ?? null;
+  const zippymeshUrl = shim.zippymeshUrl ?? 'http://localhost:20128';
+
+  const workspace = buildWorkspaceSection(workspaceRoot);
+  const kdreamState = buildKdreamStateSection(workspaceRoot);
+  const memory = buildMemorySection(workspaceRoot);
+  const logs = buildLogsSection(workspaceRoot);
+  const adapterDrift = buildAdapterDriftSection(extensionPath);
+  const adapterInstallation = buildAdapterInstallationSection(shim);
+  const skillsSource = buildSkillsSourceSection(extensionPath);
+  const autobuild = buildAutobuildSection(workspaceRoot);
+  const zmlr = await checkZippyMeshHealth(zippymeshUrl);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    extensionPath,
+    workspace,
+    kdreamState,
+    memory,
+    logs,
+    adapterDrift,
+    adapterInstallation,
+    zmlr,
+    skillsSource,
+    autobuild
+  };
+}
+
+/**
+ * Render a `DoctorReport` to a single multi-line string suitable for an
+ * OutputChannel. Plain text for most sections; a markdown-style table for
+ * adapter installation.
+ */
+export function renderReport(report: DoctorReport): string {
+  const lines: string[] = [];
+  lines.push('AutoClaw Doctor — Health Report');
+  lines.push(`Generated: ${report.generatedAt}`);
+  lines.push(`Extension: ${report.extensionPath.replace(/\\/g, '/')}`);
+  lines.push(`Today: ${getTodayDate()}`);
+  lines.push('');
+
+  // Workspace
+  lines.push('## Workspace');
+  if (!report.workspace.workspaceRoot) {
+    lines.push('  workspace: (none open)');
+  } else {
+    lines.push(`  workspace: ${report.workspace.workspaceRoot.replace(/\\/g, '/')}`);
+    lines.push(`  .autoclaw/ exists: ${report.workspace.autoclawDirExists ? 'yes' : 'no'}`);
+    lines.push(
+      `  .gitignore: ${
+        report.workspace.gitignorePresent
+          ? report.workspace.autoclawInGitignore
+            ? '.autoclaw/ ignored'
+            : '.autoclaw/ NOT ignored'
+          : '(no .gitignore)'
+      }`
+    );
+  }
+  lines.push('');
+
+  // KDream state
+  lines.push('## KDream State');
+  if (!report.kdreamState.initialised) {
+    lines.push('  not initialised (no state.json)');
+  } else if (report.kdreamState.error) {
+    lines.push(`  error: ${report.kdreamState.error}`);
+  } else {
+    lines.push(`  status:    ${report.kdreamState.status ?? '(unset)'}`);
+    lines.push(`  tick:      ${report.kdreamState.tick ?? '(unset)'}`);
+    lines.push(`  started:   ${report.kdreamState.started ?? '(unset)'}`);
+    lines.push(`  lastDream: ${report.kdreamState.lastDream ?? '(unset)'}`);
+  }
+  lines.push('');
+
+  // MEMORY.md
+  lines.push('## MEMORY.md');
+  if (!report.memory.present) {
+    lines.push('  not present');
+  } else {
+    lines.push(`  lines:               ${report.memory.lineCount}`);
+    lines.push(`  open follow-ups:     ${report.memory.openFollowups}`);
+    lines.push(`  done follow-ups:     ${report.memory.doneFollowups}`);
+    lines.push(`  ## Follow-ups:       ${report.memory.hasFollowupsSection ? 'present' : 'missing'}`);
+    lines.push(`  ## Facts:            ${report.memory.hasFactsSection ? 'present' : 'missing'}`);
+    lines.push(`  ## Observations:     ${report.memory.hasObservationsSection ? 'present' : 'missing'}`);
+  }
+  lines.push('');
+
+  // Logs
+  lines.push('## Logs');
+  lines.push(`  total log files:        ${report.logs.totalLogFiles}`);
+  if (!report.logs.todayLogPresent) {
+    lines.push("  today's log:            not present");
+  } else {
+    lines.push(`  today's log size:       ${report.logs.todayLogSizeBytes} bytes`);
+    lines.push(
+      `  today's last timestamp: ${report.logs.todayLogLastEntryTimestamp ?? '(none parsed)'}`
+    );
+  }
+  lines.push('');
+
+  // Adapter drift
+  lines.push('## Adapter Drift');
+  lines.push(`  status:  ${report.adapterDrift.status}`);
+  lines.push(`  message: ${report.adapterDrift.message}`);
+  if (report.adapterDrift.exitCode !== null) {
+    lines.push(`  exit:    ${report.adapterDrift.exitCode}`);
+  }
+  if (report.adapterDrift.driftedFiles > 0) {
+    lines.push(`  drifted files: ${report.adapterDrift.driftedFiles}`);
+  }
+  lines.push('');
+
+  // Adapter installation table
+  lines.push('## Adapter Installation');
+  lines.push('');
+  lines.push('| Host | Extension Installed | Destination Exists | Expected Files | Destination |');
+  lines.push('| --- | --- | --- | --- | --- |');
+  for (const h of report.adapterInstallation.hosts) {
+    const filesSummary =
+      h.expectedFiles.length === 0
+        ? h.destinationExists
+          ? '(file)'
+          : '(missing)'
+        : `${h.expectedFiles.filter(f => f.present).length}/${h.expectedFiles.length}`;
+    lines.push(
+      `| ${h.host} | ${h.extensionInstalled ? 'yes' : 'no'} | ${
+        h.destinationExists ? 'yes' : 'no'
+      } | ${filesSummary} | ${h.destination} |`
+    );
+  }
+  lines.push('');
+
+  // ZMLR
+  lines.push('## ZippyMesh LLM Router');
+  lines.push(`  status:  ${report.zmlr.status}`);
+  lines.push(`  details: ${report.zmlr.details}`);
+  lines.push('');
+
+  // Skills source
+  lines.push('## Skills Source (VSIX sanity)');
+  for (const s of report.skillsSource.skills) {
+    lines.push(`  ${s.name}/SKILL.md: ${s.present ? 'present' : 'MISSING'}`);
+  }
+  lines.push('');
+
+  // AutoBuild
+  lines.push('## AutoBuild');
+  lines.push(`  workflows dir:    ${report.autobuild.workflowsDir}`);
+  lines.push(`  workflow files:   ${report.autobuild.workflowCount}`);
+  lines.push(`  registry.json:    ${report.autobuild.registryPresent ? 'present' : 'absent'}`);
+  if (report.autobuild.workflows.length === 0) {
+    lines.push('  (no workflows scheduled)');
+  } else {
+    for (const w of report.autobuild.workflows) {
+      const cronStatus = w.cronValid ? w.cron : `${w.cron}  [INVALID: ${w.cronError}]`;
+      const fileStatus = w.workflowPresent ? '' : '  [WORKFLOW MISSING]';
+      lines.push(
+        `  - ${w.name}: cron="${cronStatus}" status=${w.status} lastRun=${w.lastRun ?? '(never)'}${fileStatus}`
+      );
+    }
+  }
+  lines.push('');
+
+  return lines.join('\n');
+}

@@ -3,6 +3,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Helper: run a git subcommand asynchronously in a workspace and return stdout.
+ * Falls back to empty string on any error so callers can stay simple.
+ */
+async function runGit(cwd: string, args: string[]): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', args, { cwd, encoding: 'utf8' });
+    return stdout;
+  } catch {
+    return '';
+  }
+}
 import {
   parseMemoryTasks,
   addTaskToContent,
@@ -21,9 +38,22 @@ import {
   getTodayLogPath,
   checkZippyMeshHealth
 } from './kdream-helpers';
-import type { ParsedTask, AdapterHealth, TodoItem } from './kdream-helpers';
+import type { ParsedTask, AdapterHealth, TodoItem, CodeChurnMetrics, ProductivityInsights, ProjectHealthIndicators } from './kdream-helpers';
+import { runDoctor, renderReport } from './doctor';
+import type { DoctorReport, DoctorVscodeShim } from './doctor';
+import { buildSnapshot } from './snapshot';
+import {
+  tick as autobuildTick,
+  discoverWorkflows,
+  runWorkflow,
+  getRunsDir,
+  findLatestRunLog
+} from './autobuild';
 
 const fsPromises = fs.promises;
+let doctorOutputChannel: vscode.OutputChannel | undefined;
+let autobuildOutputChannel: vscode.OutputChannel | undefined;
+let autobuildIntervalId: NodeJS.Timeout | undefined;
 
 // Re-export helpers for external use (e.g., tests)
 export {
@@ -44,14 +74,11 @@ export {
   getTodayLogPath,
   checkZippyMeshHealth
 };
-export type { ParsedTask, AdapterHealth, TodoItem };
+export type { ParsedTask, AdapterHealth, TodoItem, CodeChurnMetrics, ProductivityInsights, ProjectHealthIndicators };
 
 let kdreamView: vscode.WebviewView | undefined = undefined;
 let stateWatcher: vscode.FileSystemWatcher | undefined = undefined;
-let scanResults: { file: string; line: number; type: string; text: string }[] = [];
 let refreshIntervalId: NodeJS.Timeout | undefined = undefined;
-let todoScanDebounceTimer: NodeJS.Timeout | undefined = undefined;
-let pendingTodoScan: boolean = false;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('AutoClaw activated — skills ready');
@@ -84,6 +111,33 @@ export function activate(context: vscode.ExtensionContext) {
       await installAdapters(adaptersDir, context.extensionPath);
     })
   );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.doctor', async () => {
+      await runDoctorCommand(context.extensionPath);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.exportSnapshot', async () => {
+      await runExportSnapshotCommand(context.extensionPath);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.autobuild.runNow', async () => {
+      await autobuildRunNowCommand();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.autobuild.tail', async () => {
+      await autobuildTailCommand();
+    })
+  );
+
+  // AutoBuild scheduler: single setInterval in the extension host.
+  startAutobuildScheduler(context);
 
   // KDream Dashboard commands
   context.subscriptions.push(
@@ -209,6 +263,17 @@ async function installAdapters(
     installed.push('Continue');
   }
 
+  // Antigravity — workspace .agent/rules/
+  // Antigravity is a standalone IDE fork (not a VS Code extension), so detect via
+  // the host app name or an existing .agent/ directory in the workspace.
+  const agentDir = path.join(workspaceRoot, '.agent');
+  const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
+  if (isAntigravityHost || fs.existsSync(agentDir)) {
+    const dest = path.join(workspaceRoot, '.agent', 'rules');
+    copyDir(path.join(adaptersDir, 'antigravity'), dest);
+    installed.push('Antigravity');
+  }
+
   // ZippyMesh LLM Router — drop setup guide if ZMLR is running or was recently detected
   let zmlrDetected = false;
   if (workspaceRoot) {
@@ -287,23 +352,94 @@ function copySkillDir(src: string, dest: string): void {
   }
 }
 
+/**
+ * AutoClaw modes block marker — used to detect and replace previously installed
+ * KiloCode modes content from any earlier AutoClaw release.
+ */
+const AUTOCLAW_MODES_MARKER = '# AutoClaw modes';
+const AUTOCLAW_MODE_SLUGS = ['slug: kdream', 'slug: autobuild', 'slug: mateam'];
+
+/**
+ * Computes the merged content for a KiloCode `.kilocodemodes` file.
+ *
+ * Behavior:
+ *   - No existing content      -> return new modes verbatim.
+ *   - Existing has marker      -> replace from marker through EOF with the new
+ *                                 marker block (upgrade path).
+ *   - Existing has our slugs   -> previous install without a marker; prepend a
+ *                                 warning comment and append a fresh marked
+ *                                 block (don't auto-overwrite user data).
+ *   - Otherwise                -> append a marked block.
+ */
+export function computeKiloModesContent(
+  existingContent: string | null,
+  newModesContent: string
+): string {
+  const block = '\n' + AUTOCLAW_MODES_MARKER + '\n' + newModesContent;
+
+  if (existingContent === null || existingContent.length === 0) {
+    return newModesContent;
+  }
+
+  const markerIdx = existingContent.indexOf(AUTOCLAW_MODES_MARKER);
+  if (markerIdx !== -1) {
+    // Replace from the marker comment line through the end of file.
+    const before = existingContent.slice(0, markerIdx).replace(/\s+$/, '');
+    return before + block;
+  }
+
+  const hasOurSlugs = AUTOCLAW_MODE_SLUGS.some(s => existingContent.includes(s));
+  if (hasOurSlugs) {
+    // Slugs present without our marker — keep user data, append a warning.
+    const warning =
+      '\n# WARNING: AutoClaw detected mode slugs (kdream/autobuild/mateam) ' +
+      'in this file but no "# AutoClaw modes" marker. The block below was ' +
+      'appended without removing the existing entries; please de-duplicate ' +
+      'manually if needed.\n';
+    return existingContent + warning + block;
+  }
+
+  return existingContent + block;
+}
+
 function mergeKiloModes(src: string, dest: string): void {
   if (!fs.existsSync(src)) { return; }
-  // If no existing modes file, just copy ours
-  if (!fs.existsSync(dest)) {
-    fs.copyFileSync(src, dest);
-    return;
-  }
-  // Append our modes below a separator if the file already exists
-  const existing = fs.readFileSync(dest, 'utf8');
-  if (existing.includes('slug: kdream')) { return; } // already installed
-  const addition = '\n# AutoClaw modes\n' + fs.readFileSync(src, 'utf8');
-  fs.appendFileSync(dest, addition);
+  const newContent = fs.readFileSync(src, 'utf8');
+  const existing = fs.existsSync(dest) ? fs.readFileSync(dest, 'utf8') : null;
+  const merged = computeKiloModesContent(existing, newContent);
+  fs.writeFileSync(dest, merged);
 }
 
 function hasCursorConfig(workspaceRoot: string): boolean {
   const indicators = ['.cursorrules', '.cursor'];
   return indicators.some(f => fs.existsSync(path.join(workspaceRoot, f)));
+}
+
+/**
+ * Builds the ordered list of candidate paths to look for a ZippyMesh LLM Router
+ * installation. Workspace-relative candidates come first, then $HOME-relative
+ * ones, then any user-configured paths from `autoclaw.kdream.zippymeshSearchPaths`.
+ * No hard-coded developer drives (K:/, S:/) are included by default.
+ */
+export function getZippyMeshCandidatePaths(
+  workspaceRoot: string | undefined,
+  homeDir: string,
+  userPaths: string[] = []
+): string[] {
+  const candidates: string[] = [];
+  if (workspaceRoot) {
+    candidates.push(path.join(workspaceRoot, 'zippymesh-router'));
+    candidates.push(path.join(workspaceRoot, '..', 'zippymesh-router'));
+  }
+  candidates.push(path.join(homeDir, 'zippymesh-router'));
+  candidates.push(path.join(homeDir, 'Downloads', 'zippymesh-router'));
+  candidates.push(path.join(homeDir, 'Projects', 'zippymesh-router'));
+  for (const p of userPaths) {
+    if (typeof p === 'string' && p.length > 0) {
+      candidates.push(p);
+    }
+  }
+  return candidates;
 }
 
 async function offerZippyMeshMcpSetup(adaptersDir: string): Promise<void> {
@@ -336,18 +472,16 @@ async function offerZippyMeshMcpSetup(adaptersDir: string): Promise<void> {
 
   if (action !== 'Yes, Add MCP Server') { return; }
 
-  // Find ZMLR install path — check common locations
-  const zmlrPaths = [
-    path.join(os.homedir(), 'zippymesh-router'),
-    path.join(os.homedir(), 'Downloads', 'zippymesh-router'),
-    'C:/zippymesh-router',
-    'C:/Program Files/zippymesh-router'
-  ];
+  // Find ZMLR install path — check workspace, then home dir, then user-configured paths.
+  const config = vscode.workspace.getConfiguration('autoclaw.kdream');
+  const userPaths = config.get<string[]>('zippymeshSearchPaths', []);
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const zmlrPaths = getZippyMeshCandidatePaths(workspaceRoot, os.homedir(), userPaths);
 
   // Ask user to confirm path
   const zmlrPath = await vscode.window.showInputBox({
     prompt: 'Enter the path to your ZippyMesh LLM Router installation',
-    placeHolder: 'e.g., C:/zippymesh-router or ~/zippymesh-router',
+    placeHolder: 'e.g., ~/zippymesh-router',
     value: zmlrPaths.find(p => {
       try { return fs.existsSync(p); } catch { return false; }
     }) ?? ''
@@ -379,6 +513,200 @@ async function offerZippyMeshMcpSetup(adaptersDir: string): Promise<void> {
   vscode.window.showInformationMessage(
     'ZippyMesh MCP server added to ~/.claude/mcp.json. Restart Claude Code to activate.'
   );
+}
+
+export async function getCodeChurnMetrics(workspaceRoot: string): Promise<CodeChurnMetrics> {
+  const defaultMetrics: CodeChurnMetrics = {
+    totalCommits: 0,
+    commitsLast7Days: 0,
+    commitsLast30Days: 0,
+    linesAdded: 0,
+    linesDeleted: 0,
+    churnRate: 0,
+    avgCommitSize: 0,
+    mostActiveDay: ''
+  };
+
+  if (!fs.existsSync(path.join(workspaceRoot, '.git'))) {
+    return defaultMetrics;
+  }
+
+  try {
+    // Commit counts
+    const totalCommits = parseInt((await runGit(workspaceRoot, ['rev-list', '--count', 'HEAD'])).trim()) || 0;
+    const commitsLast7Days = parseInt((await runGit(workspaceRoot, ['rev-list', '--count', 'HEAD', '--since=7 days ago'])).trim()) || 0;
+    const commitsLast30Days = parseInt((await runGit(workspaceRoot, ['rev-list', '--count', 'HEAD', '--since=30 days ago'])).trim()) || 0;
+
+    // Lines changed — aggregate over the last 30 days (B1 fix). Each shortstat
+    // line looks like " 3 files changed, 17 insertions(+), 4 deletions(-)" with
+    // either insertions OR deletions optional, so we parse them independently.
+    const shortstatOut = await runGit(workspaceRoot, [
+      'log', '--since=30 days ago', '--pretty=tformat:', '--shortstat'
+    ]);
+    let linesAdded = 0, linesDeleted = 0;
+    for (const line of shortstatOut.split('\n')) {
+      const ins = line.match(/(\d+)\s+insertions?\(\+\)/);
+      const del = line.match(/(\d+)\s+deletions?\(-\)/);
+      if (ins) { linesAdded += parseInt(ins[1]); }
+      if (del) { linesDeleted += parseInt(del[1]); }
+    }
+
+    // Most active day + active-days count (used for churnRate)
+    const logOutput = await runGit(workspaceRoot, ['log', '--pretty=format:%ai', '--since=30 days ago']);
+    const dates = logOutput.split('\n').filter(line => line.trim()).map(line => line.split(' ')[0]);
+    const dateCounts: { [key: string]: number } = {};
+    dates.forEach(date => dateCounts[date] = (dateCounts[date] || 0) + 1);
+    const mostActiveDay = Object.keys(dateCounts).reduce((a, b) => dateCounts[a] > dateCounts[b] ? a : b, '');
+
+    // B2: distinct formulas.
+    //   avgCommitSize = lines changed per commit (size of a typical commit)
+    //   churnRate     = lines changed per day across the 30-day window
+    const avgCommitSize = totalCommits > 0 ? (linesAdded + linesDeleted) / totalCommits : 0;
+    const churnRate = (linesAdded + linesDeleted) / 30;
+
+    return {
+      totalCommits,
+      commitsLast7Days,
+      commitsLast30Days,
+      linesAdded,
+      linesDeleted,
+      churnRate: Math.round(churnRate * 100) / 100,
+      avgCommitSize: Math.round(avgCommitSize * 100) / 100,
+      mostActiveDay
+    };
+  } catch (e) {
+    console.error('Error collecting code churn metrics:', e);
+    return defaultMetrics;
+  }
+}
+
+export async function getProductivityInsights(workspaceRoot: string, logs: string[], todos: TodoItem[]): Promise<ProductivityInsights> {
+  const defaultInsights: ProductivityInsights = {
+    todoResolutionRate: 0,
+    avgTimeToResolveTodo: 0,
+    commitFrequency: 0,
+    activeDays: 0,
+    memorySize: 0,
+    logsSize: 0
+  };
+
+  try {
+    // Memory size
+    const memoryPath = getMemoryPath(workspaceRoot);
+    let memorySize = 0;
+    try {
+      const stats = await fsPromises.stat(memoryPath);
+      memorySize = Math.round(stats.size / 1024); // KB
+    } catch {}
+
+    // Logs size - estimate from today's log
+    const logPath = getTodayLogPath(workspaceRoot);
+    let logsSize = 0;
+    try {
+      const stats = await fsPromises.stat(logPath);
+      logsSize = Math.round(stats.size / 1024); // KB
+    } catch {}
+
+    // TODO resolution - simplified, assume resolved if not in current scan
+    const openTodos = todos.length;
+    // For resolution rate, we'd need historical data, placeholder
+    const todoResolutionRate = 0; // Need better tracking
+
+    // Commit frequency - commits per day last 30 days
+    let commitFrequency = 0;
+    if (fs.existsSync(path.join(workspaceRoot, '.git'))) {
+      const commits30d = (await runGit(workspaceRoot, ['rev-list', '--count', 'HEAD', '--since=30 days ago'])).trim();
+      commitFrequency = Math.round((parseInt(commits30d) || 0) / 30 * 100) / 100;
+    }
+
+    // Active days - unique days with commits
+    let activeDays = 0;
+    if (fs.existsSync(path.join(workspaceRoot, '.git'))) {
+      const logOutput = await runGit(workspaceRoot, ['log', '--pretty=format:%ai', '--since=30 days ago']);
+      const dates = logOutput.split('\n').filter(line => line.trim()).map(line => line.split(' ')[0]);
+      const uniqueDates = new Set(dates);
+      activeDays = uniqueDates.size;
+    }
+
+    return {
+      todoResolutionRate,
+      avgTimeToResolveTodo: 0, // Placeholder
+      commitFrequency,
+      activeDays,
+      memorySize,
+      logsSize
+    };
+  } catch (e) {
+    console.error('Error collecting productivity insights:', e);
+    return defaultInsights;
+  }
+}
+
+export async function getProjectHealthIndicators(workspaceRoot: string, todos: TodoItem[], adapterHealth: AdapterHealth[]): Promise<ProjectHealthIndicators> {
+  const defaultIndicators: ProjectHealthIndicators = {
+    totalFiles: 0,
+    sourceFiles: 0,
+    openTodos: 0,
+    uncommittedChanges: 0,
+    staleChangesHours: 0,
+    memoryCompleteness: 0,
+    adapterCoverage: 0
+  };
+
+  try {
+    // File counts - use findFiles for source files
+    const sourceFiles = await vscode.workspace.findFiles('**/*.{ts,js,tsx,jsx,py,java,cpp,c,h,hpp,rs,go}', '**/node_modules/**');
+    const totalFiles = await vscode.workspace.findFiles('**/*', '**/node_modules/**');
+
+    // Open TODOs
+    const openTodos = todos.length;
+
+    // Uncommitted changes
+    let uncommittedChanges = 0;
+    let staleChangesHours = 0;
+    if (fs.existsSync(path.join(workspaceRoot, '.git'))) {
+      const statusStr = await runGit(workspaceRoot, ['status', '--porcelain']);
+      uncommittedChanges = statusStr.split('\n').filter(line => line.trim()).length;
+
+      // Stale changes - time since last commit if uncommitted
+      if (uncommittedChanges > 0) {
+        const lastCommitTime = (await runGit(workspaceRoot, ['log', '-1', '--format=%ct'])).trim();
+        const lastCommitSeconds = parseInt(lastCommitTime);
+        if (!isNaN(lastCommitSeconds)) {
+          staleChangesHours = Math.round((Date.now() / 1000 - lastCommitSeconds) / 3600);
+        }
+      }
+    }
+
+    // Memory completeness - check if sections exist
+    const memoryPath = getMemoryPath(workspaceRoot);
+    let memoryCompleteness = 0;
+    try {
+      const content = await fsPromises.readFile(memoryPath, 'utf8');
+      const sections = ['## Follow-ups', '## Facts', '## Observations'];
+      const presentSections = sections.filter(s => content.includes(s)).length;
+      memoryCompleteness = Math.round((presentSections / sections.length) * 100);
+    } catch {}
+
+    // Adapter coverage
+    const healthyAdapters = adapterHealth.filter(a => a.status === 'healthy').length;
+    const adapterCoverage = adapterHealth.length === 0
+      ? 0
+      : Math.round((healthyAdapters / adapterHealth.length) * 100);
+
+    return {
+      totalFiles: totalFiles.length,
+      sourceFiles: sourceFiles.length,
+      openTodos,
+      uncommittedChanges,
+      staleChangesHours,
+      memoryCompleteness,
+      adapterCoverage
+    };
+  } catch (e) {
+    console.error('Error collecting project health indicators:', e);
+    return defaultIndicators;
+  }
 }
 
 export async function refreshDashboardData(view: vscode.WebviewView): Promise<void> {
@@ -426,6 +754,11 @@ export async function refreshDashboardData(view: vscode.WebviewView): Promise<vo
   // Scan for TODOs/FIXMEs
   const todos = await scanWorkspaceForTodos();
   
+  // Collect analytics data
+  const codeChurn = await getCodeChurnMetrics(workspaceRoot);
+  const productivity = await getProductivityInsights(workspaceRoot, logs, todos);
+  const health = await getProjectHealthIndicators(workspaceRoot, todos, adapterHealth);
+
   // Send data to webview
   try {
     view.webview.postMessage({ command: 'updateStatus', data: stateData });
@@ -433,24 +766,71 @@ export async function refreshDashboardData(view: vscode.WebviewView): Promise<vo
     view.webview.postMessage({ command: 'updateLogs', data: logs });
     view.webview.postMessage({ command: 'updateAdapterHealth', data: adapterHealth });
     view.webview.postMessage({ command: 'updateTodos', data: todos });
+    view.webview.postMessage({ command: 'updateCodeChurn', data: codeChurn });
+    view.webview.postMessage({ command: 'updateProductivity', data: productivity });
+    view.webview.postMessage({ command: 'updateHealth', data: health });
   } catch (e) {
     console.error('Error sending message to webview:', e);
   }
 }
 
+// In-memory cache for ZippyMesh health probes to avoid hammering the router on
+// every dashboard refresh (default refresh = 30 s; we cache for 60 s + jitter).
+interface ZmlrHealthCacheEntry {
+  url: string;
+  expiresAt: number;
+  result: AdapterHealth;
+}
+let zmlrHealthCache: ZmlrHealthCacheEntry | undefined;
+
+/**
+ * Test seam: clear the in-memory ZippyMesh health cache.
+ */
+export function _resetZmlrHealthCache(): void {
+  zmlrHealthCache = undefined;
+}
+
+/**
+ * Returns a cached ZippyMesh health probe if fresh, or runs a new probe.
+ * Uses a 60 s TTL with ±5 s jitter to avoid synchronized fan-out across
+ * multiple windows refreshing in lockstep.
+ */
+export async function getCachedZippyMeshHealth(
+  zmlrUrl: string,
+  now: number = Date.now(),
+  probe: (url: string) => Promise<AdapterHealth> = checkZippyMeshHealth
+): Promise<AdapterHealth> {
+  if (
+    zmlrHealthCache &&
+    zmlrHealthCache.url === zmlrUrl &&
+    zmlrHealthCache.expiresAt > now
+  ) {
+    return zmlrHealthCache.result;
+  }
+  const result = await probe(zmlrUrl);
+  // 60 s TTL with ±5 s jitter
+  const jitterMs = Math.round((Math.random() * 10000) - 5000);
+  zmlrHealthCache = {
+    url: zmlrUrl,
+    expiresAt: now + 60000 + jitterMs,
+    result
+  };
+  return result;
+}
+
 export async function getAdapterHealth(): Promise<AdapterHealth[]> {
   const config = vscode.workspace.getConfiguration('autoclaw.kdream');
   const adapters: { name: string; id: string }[] = config.get('adapters', DEFAULT_ADAPTERS);
-  
+
   const extensionResults = adapters.map(adapter => {
     const extension = vscode.extensions.getExtension(adapter.id);
     return getAdapterHealthEntry(adapter.name, !!extension);
   });
 
-  // Check ZippyMesh LLM Router (async network check)
+  // Check ZippyMesh LLM Router (async network check, cached for 60 s)
   const zmlrUrl = config.get<string>('zippymeshUrl', 'http://localhost:20128');
-  const zmlrHealth = await checkZippyMeshHealth(zmlrUrl);
-  
+  const zmlrHealth = await getCachedZippyMeshHealth(zmlrUrl);
+
   return [...extensionResults, zmlrHealth];
 }
 
@@ -494,26 +874,7 @@ async function scanWorkspaceForTodos(): Promise<TodoItem[]> {
     }
   });
 
-  scanResults = results;
   return results;
-}
-
-/**
- * Debounced wrapper for scanWorkspaceForTodos.
- * Prevents rapid successive scans when files change quickly.
- */
-function debouncedScanWorkspaceForTodos(delayMs: number = 1000): Promise<TodoItem[]> {
-  return new Promise((resolve) => {
-    if (todoScanDebounceTimer) {
-      clearTimeout(todoScanDebounceTimer);
-    }
-    pendingTodoScan = true;
-    todoScanDebounceTimer = setTimeout(async () => {
-      pendingTodoScan = false;
-      const results = await scanWorkspaceForTodos();
-      resolve(results);
-    }, delayMs);
-  });
 }
 
 function getNotificationLevel(): string {
@@ -623,6 +984,53 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
         case 'getInitialData':
           await refreshDashboardData(webviewView);
           break;
+        case 'markTaskComplete': {
+          // Mark a task as complete in the MEMORY.md file
+          const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+          if (workspaceRoot) {
+            const memPath = getMemoryPath(workspaceRoot);
+            try {
+              const content = await fsPromises.readFile(memPath, 'utf8');
+              // Replace "[ ] <taskDescription>" with "[x] <taskDescription>"
+              const escaped = (message.taskDescription as string).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              const updated = content.replace(
+                new RegExp(`\\[ \\]\\s+${escaped}`, 'g'),
+                `[x] ${message.taskDescription}`
+              );
+              if (updated !== content) {
+                await fsPromises.writeFile(memPath, updated, 'utf8');
+                await refreshDashboardData(webviewView);
+                vscode.window.showInformationMessage(`Task marked complete: ${message.taskDescription}`);
+              }
+            } catch {
+              vscode.window.showWarningMessage('Could not update MEMORY.md to mark task complete.');
+            }
+          }
+          break;
+        }
+        case 'scanTodos': {
+          // Trigger a TODO scan from the webview and refresh the dashboard
+          try {
+            const todos = await scanWorkspaceForTodos();
+            webviewView.webview.postMessage({ command: 'updateTodos', data: todos });
+            vscode.window.showInformationMessage(`Scan complete: ${todos.length} TODO/FIXME item(s) found.`);
+          } catch {
+            vscode.window.showWarningMessage('TODO scan failed. Check that a workspace is open.');
+          }
+          break;
+        }
+        case 'exportSnapshot': {
+          // Route to the same logic as the autoclaw.exportSnapshot command so
+          // the dashboard button and command palette stay in lockstep.
+          try {
+            await vscode.commands.executeCommand('autoclaw.exportSnapshot');
+          } catch (e) {
+            vscode.window.showWarningMessage(
+              `Snapshot export failed: ${(e as Error).message}`
+            );
+          }
+          break;
+        }
       }
     });
     
@@ -677,6 +1085,8 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
         <header>
             <h1>KDream Dashboard</h1>
             <button id="refresh-btn">Refresh</button>
+            <button id="scan-todos-btn" title="Scan workspace for TODO and FIXME comments">Scan TODOs</button>
+            <button id="export-snapshot-btn" title="Export a Markdown health snapshot (doctor + state + logs + follow-ups)">Export Snapshot</button>
         </header>
         <main>
             <section id="status-section">
@@ -699,6 +1109,18 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
                 <h2>TODOs & FIXMEs</h2>
                 <div id="todos-content">Loading...</div>
             </section>
+            <section id="code-churn-section">
+                <h2>Code Churn Metrics</h2>
+                <div id="code-churn-content">Loading...</div>
+            </section>
+            <section id="productivity-section">
+                <h2>Productivity Insights</h2>
+                <div id="productivity-content">Loading...</div>
+            </section>
+            <section id="health-section">
+                <h2>Project Health</h2>
+                <div id="health-content">Loading...</div>
+            </section>
         </main>
     </div>
     <script nonce="${nonce}" src="${jsUri}"></script>
@@ -711,6 +1133,212 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
   }
 }
 
+async function runExportSnapshotCommand(extensionPath: string): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showWarningMessage(
+      'AutoClaw: open a workspace folder before exporting a snapshot.'
+    );
+    return;
+  }
+
+  const config = vscode.workspace.getConfiguration('autoclaw.kdream');
+  const zippymeshUrl = config.get<string>('zippymeshUrl', 'http://localhost:20128');
+  const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
+
+  const shim: DoctorVscodeShim = {
+    workspaceRoot,
+    isExtensionInstalled: (id: string) => !!vscode.extensions.getExtension(id),
+    isAntigravityHost,
+    zippymeshUrl
+  };
+
+  let snapshot: string;
+  try {
+    snapshot = await buildSnapshot(workspaceRoot, extensionPath, shim);
+  } catch (e) {
+    vscode.window.showErrorMessage(
+      `AutoClaw: failed to build snapshot — ${(e as Error).message}`
+    );
+    return;
+  }
+
+  const today = getTodayDate();
+  const defaultUri = vscode.Uri.file(
+    path.join(workspaceRoot, `autoclaw-snapshot-${today}.md`)
+  );
+  const target = await vscode.window.showSaveDialog({
+    defaultUri,
+    filters: { Markdown: ['md'] },
+    saveLabel: 'Save Snapshot'
+  });
+  if (!target) {
+    return; // user cancelled
+  }
+
+  try {
+    await fsPromises.writeFile(target.fsPath, snapshot, 'utf8');
+  } catch (e) {
+    vscode.window.showErrorMessage(
+      `AutoClaw: failed to write snapshot — ${(e as Error).message}`
+    );
+    return;
+  }
+
+  const action = await vscode.window.showInformationMessage(
+    `Snapshot saved: ${target.fsPath}`,
+    'Open'
+  );
+  if (action === 'Open') {
+    await vscode.window.showTextDocument(target);
+  }
+}
+
+async function runDoctorCommand(extensionPath: string): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const config = vscode.workspace.getConfiguration('autoclaw.kdream');
+  const zippymeshUrl = config.get<string>('zippymeshUrl', 'http://localhost:20128');
+  const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
+
+  const report: DoctorReport = await runDoctor(extensionPath, {
+    workspaceRoot,
+    isExtensionInstalled: (id: string) => !!vscode.extensions.getExtension(id),
+    isAntigravityHost,
+    zippymeshUrl
+  });
+
+  if (!doctorOutputChannel) {
+    doctorOutputChannel = vscode.window.createOutputChannel('AutoClaw Doctor');
+  }
+  doctorOutputChannel.clear();
+  doctorOutputChannel.appendLine(renderReport(report));
+  doctorOutputChannel.show(true);
+}
+
+function getAutobuildOutputChannel(): vscode.OutputChannel {
+  if (!autobuildOutputChannel) {
+    autobuildOutputChannel = vscode.window.createOutputChannel('AutoClaw AutoBuild');
+  }
+  return autobuildOutputChannel;
+}
+
+function startAutobuildScheduler(context: vscode.ExtensionContext): void {
+  if (autobuildIntervalId) {
+    clearInterval(autobuildIntervalId);
+    autobuildIntervalId = undefined;
+  }
+  const config = vscode.workspace.getConfiguration('autoclaw.autobuild');
+  const enabled = config.get<boolean>('enabled', true);
+  if (!enabled) {
+    return;
+  }
+  const intervalSeconds = Math.max(10, config.get<number>('tickIntervalSeconds', 30));
+
+  const runTick = async () => {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      // Quietly no-op when no workspace is open.
+      return;
+    }
+    try {
+      const cfg = vscode.workspace.getConfiguration('autoclaw.autobuild');
+      const report = await autobuildTick(workspaceRoot, new Date(), {
+        enabled: cfg.get<boolean>('enabled', true),
+        runner: runWorkflow
+      });
+      if (report.ranNow.length > 0) {
+        getAutobuildOutputChannel().appendLine(
+          `[${new Date().toISOString()}] tick fired: ${report.ranNow.join(', ')}`
+        );
+      }
+      for (const err of report.errors) {
+        getAutobuildOutputChannel().appendLine(
+          `[${new Date().toISOString()}] error in workflow ${err.name}: ${err.message}`
+        );
+      }
+    } catch (e) {
+      console.error('autobuild tick failed:', e);
+    }
+  };
+
+  autobuildIntervalId = setInterval(runTick, intervalSeconds * 1000);
+  // Kick off an immediate tick so a freshly-activated extension picks up
+  // due workflows without waiting a full interval.
+  runTick().catch(() => { /* logged inside */ });
+
+  context.subscriptions.push({
+    dispose: () => {
+      if (autobuildIntervalId) {
+        clearInterval(autobuildIntervalId);
+        autobuildIntervalId = undefined;
+      }
+    }
+  });
+}
+
+async function autobuildRunNowCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showErrorMessage('AutoBuild: open a workspace first.');
+    return;
+  }
+  const discovered = discoverWorkflows(workspaceRoot);
+  if (discovered.length === 0) {
+    vscode.window.showInformationMessage(
+      'AutoBuild: no workflows found in .autoclaw/autobuild/workflows/.'
+    );
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    discovered.map(d => ({
+      label: d.workflow.name,
+      description: d.workflow.cron,
+      detail: d.filePath,
+      filePath: d.filePath
+    })),
+    { placeHolder: 'Select an AutoBuild workflow to run now' }
+  );
+  if (!pick) { return; }
+  const channel = getAutobuildOutputChannel();
+  channel.show(true);
+  channel.appendLine(`[runNow] starting ${pick.label}`);
+  try {
+    const result = await runWorkflow(pick.filePath, getRunsDir(workspaceRoot));
+    channel.appendLine(`[runNow] ${result.workflow}: ${result.status} (log: ${result.logPath})`);
+    if (shouldShowNotification('info')) {
+      vscode.window.showInformationMessage(`AutoBuild ${result.workflow}: ${result.status}`);
+    }
+  } catch (e) {
+    channel.appendLine(`[runNow] error: ${(e as Error).message}`);
+    vscode.window.showErrorMessage(`AutoBuild run failed: ${(e as Error).message}`);
+  }
+}
+
+async function autobuildTailCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showErrorMessage('AutoBuild: open a workspace first.');
+    return;
+  }
+  const discovered = discoverWorkflows(workspaceRoot);
+  if (discovered.length === 0) {
+    vscode.window.showInformationMessage('AutoBuild: no workflows found.');
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    discovered.map(d => ({ label: d.workflow.name, description: d.workflow.cron })),
+    { placeHolder: 'Select a workflow to tail the most recent run log' }
+  );
+  if (!pick) { return; }
+  const logPath = findLatestRunLog(workspaceRoot, pick.label);
+  if (!logPath) {
+    vscode.window.showInformationMessage(`AutoBuild: no run logs yet for ${pick.label}.`);
+    return;
+  }
+  const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(logPath));
+  await vscode.window.showTextDocument(doc);
+}
+
 export function deactivate() {
   if (stateWatcher) {
     stateWatcher.dispose();
@@ -719,8 +1347,16 @@ export function deactivate() {
     clearInterval(refreshIntervalId);
     refreshIntervalId = undefined;
   }
-  if (todoScanDebounceTimer) {
-    clearTimeout(todoScanDebounceTimer);
-    todoScanDebounceTimer = undefined;
+  if (autobuildIntervalId) {
+    clearInterval(autobuildIntervalId);
+    autobuildIntervalId = undefined;
+  }
+  if (doctorOutputChannel) {
+    doctorOutputChannel.dispose();
+    doctorOutputChannel = undefined;
+  }
+  if (autobuildOutputChannel) {
+    autobuildOutputChannel.dispose();
+    autobuildOutputChannel = undefined;
   }
 }

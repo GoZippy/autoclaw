@@ -1,36 +1,115 @@
 ---
 inclusion: manual
 name: autobuild
-description: AutoBuild autonomous workflow engine. Reference with #autobuild when scheduling builds, running workflows, or automating CI steps.
+description: Autonomous scheduled build workflows and pipelines. Trigger on "/autobuild schedule", "run workflow", "automate build", or "schedule task".
 ---
 
 # AutoBuild — Autonomous Workflow Engine
 
-Sub-commands: `schedule "<cron>" <name>`, `run <name>`, `list`, `cancel <name>`, `status <name>`, or infer one-shot from description.
+## Operating Rules (read first)
 
-## schedule
-Create `.autoclaw/autobuild/workflows/<name>.yaml` with cron expression and default steps (install/build/test). Register in `.autoclaw/autobuild/registry.json`. Confirm and prompt user to customize YAML.
+1. **Use file tools, not shell, for files and directories.** Create `.autoclaw/autobuild/...` paths with the host's file/write tool. Do NOT use `mkdir -p`, `touch`, or `New-Item` — they break across Bash/PowerShell/cmd.
+2. **Forward slashes in paths.** Always.
+3. **Idempotency.** `schedule` with an existing `<name>` updates the workflow in place — do not duplicate registry entries. `cancel` on a missing name reports "no such workflow" and exits cleanly.
+4. **Step commands are platform-aware.** Default templates use cross-platform npm scripts (`npm run build`, `npm test`). If a step needs a shell builtin, prefer Node/npm scripts in `package.json` over raw shell so it works on every host.
+5. **Output discipline.** Confirm in ≤3 lines: what changed, file path, next action. No reasoning narration.
 
-## run
-Load workflow YAML. Create run log at `.autoclaw/autobuild/runs/<name>-<timestamp>.log`. Execute each step via bash — log step ID, stdout/stderr, exit code. Stop on failure. Update registry. Notify pass/fail.
+## On Invocation
 
-## list / cancel / status
-- **list**: registry table with name/cron/last-run/status.
-- **cancel**: delete YAML and registry entry.
-- **status**: last 20 lines of most recent run log.
+Determine the sub-command from the user's message:
 
-## One-Shot
-Infer steps from user's description → create `oneshot-<timestamp>` → run → delete.
+- `schedule "<cron>" <name>` → **Schedule a workflow**
+- `run <name>` → **Run a workflow immediately**
+- `list` → **List all workflows**
+- `cancel <name>` / `delete <name>` → **Remove a workflow**
+- `status <name>` → **Show last run result**
+- No sub-command + task description → **Create and run a one-shot workflow**
 
-## Workflow YAML Format
+---
+
+## schedule — Create a Scheduled Workflow
+
+1. Parse the cron expression and workflow name from the user's input.
+2. Create `.autoclaw/autobuild/workflows/<name>.yaml` with this structure:
+   ```yaml
+   name: <name>
+   cron: "<expression>"
+   created: <ISO timestamp>
+   steps:
+     - id: plan
+       run: echo "Planning step — customize me"
+     - id: build
+       run: npm run build
+     - id: test
+       run: npm test
+   notify: true
+   ```
+3. Register it in `.autoclaw/autobuild/registry.json` (create if missing):
+   ```json
+   { "workflows": [{ "name": "<name>", "cron": "<expr>", "lastRun": null, "status": "scheduled" }] }
+   ```
+4. Confirm: "Workflow `<name>` scheduled (`<cron>`). Edit `.autoclaw/autobuild/workflows/<name>.yaml` to customize the steps."
+
+## run — Execute a Workflow
+
+1. Load `.autoclaw/autobuild/workflows/<name>.yaml`.
+2. Create a run log at `.autoclaw/autobuild/runs/<name>-<ISO timestamp>.log`.
+3. Execute each step in order:
+   - Log `[STEP: <id>]` before running.
+   - Run the command via bash.
+   - Log stdout/stderr and exit code.
+   - On non-zero exit: log `[FAILED: <id>]`, skip remaining steps, set status to `failed`.
+   - On success: log `[OK: <id>]`.
+4. Write final status (`passed` / `failed`) to the run log and update `registry.json`.
+5. Notify user: "Workflow `<name>` — `<passed|failed>`. Check `.autoclaw/autobuild/runs/` for full log."
+
+## list — Show All Workflows
+
+Read `registry.json` and display a table:
+```
+Name           Cron            Last Run             Status
+───────────────────────────────────────────────────────────
+nightly-build  0 2 * * *       2026-04-01 02:00     passed
+```
+
+## cancel — Remove a Workflow
+
+1. Delete `.autoclaw/autobuild/workflows/<name>.yaml`.
+2. Remove entry from `registry.json`.
+3. Confirm removal.
+
+## status — Show Last Run
+
+Read the most recent log file matching `.autoclaw/autobuild/runs/<name>-*.log` and display the last 20 lines plus overall pass/fail.
+
+---
+
+## One-Shot Workflow (no sub-command)
+
+If the user describes a task without a sub-command (e.g. "autobuild run my tests and deploy"):
+1. Infer steps from the description.
+2. Create a temporary workflow named `oneshot-<timestamp>`.
+3. Run it immediately via the **run** flow above.
+4. Delete the workflow file after completion.
+
+---
+
+## Workflow YAML Reference
+
 ```yaml
 name: my-workflow
-cron: "0 2 * * *"
+cron: "0 2 * * *"        # standard 5-field cron
+created: 2026-04-01T00:00:00Z
 steps:
+  - id: install
+    run: npm ci
   - id: build
     run: npm run build
   - id: test
     run: npm test
-notify: true
-timeout: 600
+  - id: deploy
+    run: npm run deploy
+    condition: "{{test.exit_code}} == 0"   # optional gate
+notify: true              # VS Code notification on completion
+timeout: 600              # seconds per step, default 120
 ```
