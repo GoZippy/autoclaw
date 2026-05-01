@@ -4,6 +4,11 @@ out/
 .vscode-test/
 tsconfig.tsbuildinfo
 
+# Local secrets — NEVER commit. Use .env.example as the template.
+.env
+.env.local
+.env.*.local
+
 # Workspace files generated at runtime by the extension itself
 .kilocodemodes
 

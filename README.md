@@ -34,7 +34,7 @@ Plus extension-level commands:
 
 ## Installation
 
-Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ZippyTechnologiesLLC.autoclaw).
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ZippyTechnologiesLLC.autoclaw) (VS Code, GitHub Codespaces) or from [Open VSX](https://open-vsx.org/extension/ZippyTechnologiesLLC/autoclaw) (VSCodium, Cursor, Windsurf, Antigravity, Theia, and other Eclipse-Open-VSX clients).
 
 On first activation AutoClaw automatically detects which AI extensions you have installed and copies the correct skill files to each tool's expected location. No manual setup needed.
 
@@ -451,8 +451,27 @@ once you have ZippyMesh running locally.
 ## Source & Issues
 
 - GitHub: [GoZippy/autoclaw](https://github.com/GoZippy/autoclaw)
+- VS Code Marketplace: [ZippyTechnologiesLLC.autoclaw](https://marketplace.visualstudio.com/items?itemName=ZippyTechnologiesLLC.autoclaw)
+- Open VSX: [ZippyTechnologiesLLC/autoclaw](https://open-vsx.org/extension/ZippyTechnologiesLLC/autoclaw)
 - Report bugs or request features via [GitHub Issues](https://github.com/GoZippy/autoclaw/issues)
 - Changelog: [CHANGELOG.md](https://github.com/GoZippy/autoclaw/blob/master/CHANGELOG.md)
+
+### Publishing (maintainers)
+
+Credentials live in a local, never-committed `.env` file (template: `.env.example`). One-time setup:
+
+1. `cp .env.example .env`
+2. Fill in `VSCE_PAT` (Azure DevOps PAT with **Marketplace > Manage** scope) and `OVSX_TOKEN` (from https://open-vsx.org/user-settings/tokens).
+
+Then a release is:
+
+```bash
+npm version patch              # or minor / major
+npm run package                # build the VSIX
+npm run publish:all            # package + push to both Marketplace and Open VSX
+```
+
+The `publish:vscode` and `publish:ovsx` scripts read tokens from `.env` and work cross-platform (bash, PowerShell, cmd). `.env` is gitignored.
 
 ---
 

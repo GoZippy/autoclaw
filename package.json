@@ -200,8 +200,9 @@
     "sample:snapshot": "node scripts/sample-snapshot.js",
     "sample:autobuild": "node scripts/sample-autobuild-run.js",
     "package": "vsce package",
-    "publish:vscode": "vsce publish",
-    "publish:ovsx": "ovsx publish autoclaw-$(node -p \"require('./package.json').version\").vsix --token $OVSX_TOKEN"
+    "publish:vscode": "node scripts/publish-vsce.js",
+    "publish:ovsx": "node scripts/publish-ovsx.js",
+    "publish:all": "npm run package && npm run publish:vscode && npm run publish:ovsx"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",

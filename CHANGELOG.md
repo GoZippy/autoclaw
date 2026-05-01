@@ -26,7 +26,9 @@
 
 ### Distribution
 - VSIX is now runtime-only: 45 files / ~150 KB. `out/test/`, `out/scripts/`, source maps, and dev-only workspace artifacts (`.autoclaw/`, `.kilocodemodes`, `.voidspec/`, `.kilo/`) are excluded from the published package.
-- Published to the VS Code Marketplace as `ZippyTechnologiesLLC.autoclaw v1.2.5`. Open VSX republish pending an `OVSX_TOKEN` refresh.
+- Published to the VS Code Marketplace as `ZippyTechnologiesLLC.autoclaw v1.2.5` (2026-04-30T12:40:23Z).
+- Published to Open VSX as `ZippyTechnologiesLLC.autoclaw v1.2.5` (2026-05-01T05:59:03Z) — VSCodium, Cursor, Windsurf, Antigravity, Theia and other Eclipse-Open-VSX clients can now install AutoClaw.
+- Cross-platform publish wrappers `scripts/publish-vsce.js` and `scripts/publish-ovsx.js` load credentials from a local `.env` (template at `.env.example`). New `npm run publish:all` packages and pushes to both registries.
 
 ## [1.2.4] - 2026-04-29
 
