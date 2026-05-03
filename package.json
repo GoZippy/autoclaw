@@ -1,7 +1,7 @@
 {
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
-  "description": "Persistent background agents, autonomous build workflows, and multi-agent teams. Zero setup. Works with Claude, Copilot, and any Agent Skills compatible AI.",
+  "description": "Background agents, parallel sprint orchestration, and multi-agent teams. Type @autoclaw in any chat. Works with Claude, Copilot, Kiro, KiloCode, Cline, Cursor, Windsurf, and Continue. Zero setup.",
   "version": "2.1.0",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
@@ -17,7 +17,14 @@
     "copilot",
     "background-agent",
     "multi-agent",
-    "workflow"
+    "orchestrate",
+    "parallel-agents",
+    "sprint",
+    "cross-agent",
+    "workflow",
+    "kiro",
+    "kilocode",
+    "cline"
   ],
   "repository": {
     "type": "git",

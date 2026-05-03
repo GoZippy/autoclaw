@@ -3,15 +3,15 @@
 ## [2.1.0] - 2026-05-03
 
 ### Added
-- **`@autoclaw` VS Code Chat Participant** (`src/chatparticipant.ts`) — invoke any AutoClaw skill directly in chat without copy-pasting. `@autoclaw /orchestrate plan`, `/kdream start`, `/autobuild run`, `/mateam launch`, `/inbox`. Injects SKILL.md + live state.json as context. Falls back to clipboard when no LM available. Registered via `contributes.chatParticipants` in package.json. Works in VS Code, Kiro, KiloCode, Continue — degrades gracefully on Cursor/Windsurf.
-- **Event-driven inbox watcher** — `FileSystemWatcher` on `.autoclaw/orchestrator/comms/inboxes/shared/*.json`. On `task_complete`: shows notification with "Run Consensus Review" / "Show Status" buttons. On critical `finding_report`: shows warning notification. Refreshes dashboard automatically.
-- **Agent identity registry** (`src/orchestrate.ts: writeAgentRegistry/readAgentRegistry`) — `autoclaw.orchestrate.assign` now detects active agents and writes `.autoclaw/orchestrator/agents.json` mapping `WA-1/WA-2/...` → platform IDs (`kiro`, `kilocode`, `cline`, ...) with inbox paths. Eliminates the WA-N ↔ platform mismatch.
-- **`autoclaw.orchestrate.review` command** — reads vote files from `comms/consensus/active/*.json`, calls `evaluateConsensus()` with the full consensus config, reports per-task verdict in the output channel, and blocks or enables merge based on the result. Security findings require unanimous approval. Registered in package.json and keyed to the existing `workbench.action.chat.open` flow.
-- **Orchestrate added to adapter generator** — `SKILL_NAMES` in `scripts/adapters/index.ts` now includes `orchestrate`. All 8 platform adapters (claude-code, cline, cursor, antigravity, windsurf, kiro, continue, kilocode) regenerate from `skills/orchestrate/SKILL.md` on `npm run adapters:build`.
-- **Kiro adapters now `inclusion: auto`** — `scripts/adapters/kiro.ts` changed from `inclusion: manual` to `inclusion: auto` for all skills. Kiro users no longer need to manually enable AutoClaw steering rules.
+- **`@autoclaw` chat participant** — type `@autoclaw /orchestrate plan`, `@autoclaw /kdream start`, or `@autoclaw /inbox` directly in VS Code Chat (or any compatible panel like KiloCode, Kiro, Continue). AutoClaw reads the relevant skill and your live workspace state, then drives the AI — no copy-pasting prompts required. Degrades gracefully to clipboard fallback on hosts that don't support the Chat Participant API (Cursor, Windsurf).
+- **Inbox notifications** — when a parallel agent drops a completion signal into the shared inbox (`.autoclaw/orchestrator/comms/inboxes/shared/`), you get a VS Code notification with one-click buttons to run a consensus review or check status. Critical security findings trigger a warning notification immediately.
+- **Agent identity registry** — `autoclaw.orchestrate.assign` now auto-detects which AI tools are active (Kiro, KiloCode, Cline, Claude Code, etc.) and writes `.autoclaw/orchestrator/agents.json` mapping each sprint work-agent slot (WA-1, WA-2, …) to the actual platform and inbox path. Eliminates the manual bookkeeping when mixing different AI tools on the same sprint.
+- **Consensus review command** — `AutoClaw: Orchestrate — Run Consensus Review` (Command Palette or dashboard button) reads all agent votes for the current sprint and applies the consensus rules: 2/3 majority required, unanimous approval for security findings, veto blocking. Results are displayed per-task with pass/fail verdict. Merge is gated until the sprint is approved.
+- **Orchestrate adapters regenerated for all 8 platforms** — the adapter generator now includes the Orchestrate skill, so claude-code, cline, cursor, antigravity, windsurf, kiro, continue, and kilocode adapters all stay in sync with `skills/orchestrate/SKILL.md` automatically on `npm run adapters:build`.
+- **Kiro auto-activation** — AutoClaw steering rules in Kiro now use `inclusion: auto` instead of `inclusion: manual`. Kiro users no longer need to manually opt in to each skill.
 
 ### Fixed
-- Path traversal guard in `readAgentRegistry` and `writeAgentRegistry` — input paths are resolved with `path.resolve()` before file operations, collapsing any `..` segments.
+- Consensus review and agent registry operations now resolve all file paths to absolute paths before reading or writing, preventing any path traversal from manifests or config values that contain `..` segments.
 
 ## [2.0.3] - 2026-05-03
 

@@ -1,8 +1,8 @@
 # AutoClaw — Autonomous AI Agents
 
-Persistent background agents, autonomous build workflows, and multi-agent teams — all inside VS Code. Install once, zero configuration required.
+Persistent background agents, autonomous build workflows, multi-agent teams, and parallel sprint orchestration — all inside VS Code. Install once, zero configuration required.
 
-Works with **GitHub Copilot, Claude Code, Cursor, Kiro, Windsurf, KiloCode, Cline, Continue, Antigravity**, and any Agent Skills compatible AI.
+Works with **GitHub Copilot, Claude Code, Cursor, Kiro, Windsurf, KiloCode, Cline, Continue, Antigravity**, and any Agent Skills compatible AI. Type `@autoclaw` in any chat to invoke skills without copy-pasting.
 
 ---
 
@@ -18,47 +18,51 @@ Works with **GitHub Copilot, Claude Code, Cursor, Kiro, Windsurf, KiloCode, Clin
 
 1. **Install** from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ZippyTechnologiesLLC.autoclaw) or [Open VSX](https://open-vsx.org/extension/ZippyTechnologiesLLC/autoclaw).
 2. **Open any workspace.** AutoClaw activates automatically and installs skill files for every AI extension it detects.
-3. **Open GitHub Copilot Chat** (or whichever AI tool you use) and type:
+3. **Open any AI chat** and type:
    ```
-   @kdream /kdream start
+   @autoclaw /kdream start
    ```
-   KDream initialises its state, scans your workspace, and reports your first snapshot: uncommitted changes, open TODOs, and any follow-ups from previous sessions.
-4. **Press `Ctrl+Alt+K`** (Mac: `Cmd+Alt+K`) to open the KDream Dashboard and see everything at a glance.
-5. **Press `Ctrl+Alt+D`** (Mac: `Cmd+Alt+D`) to run the Doctor health check — it surfaces any configuration or adapter issues in one read-only report.
-
-That's it. KDream is running. Come back to any AI chat window and type `/kdream ps` to check in.
+   Or on Claude Code/Copilot: `@kdream /kdream start`. KDream initialises its state, scans your workspace, and reports your first snapshot.
+4. **Press `Ctrl+Alt+K`** (Mac: `Cmd+Alt+K`) to open the KDream Dashboard.
+5. **Press `Ctrl+Alt+D`** (Mac: `Cmd+Alt+D`) to run the Doctor health check.
 
 ---
 
 ## What's Included
 
-AutoClaw ships three skills:
+AutoClaw ships four skills and a native chat participant:
 
 | Skill | What it does |
 |---|---|
-| **KDream** | Always-on background agent that monitors your workspace, surfaces TODOs, manages persistent memory, and can implement tasks for you |
+| **KDream** | Always-on background agent that monitors your workspace, surfaces TODOs, manages persistent memory, and can implement tasks |
 | **AutoBuild** | Autonomous scheduled build and workflow pipelines with an in-process cron scheduler, cross-host lockfile, and per-workflow log rotation |
-| **MAteam** | Multi-agent coordinator — Researcher → Coder → Reviewer → Verifier — with real parallel subagent dispatch on Claude Code and graceful in-session fallback elsewhere |
+| **MAteam** | Multi-agent coordinator — Researcher → Coder → Reviewer → Verifier — with real parallel subagent dispatch on Claude Code |
+| **Orchestrate** | Multi-agent sprint orchestrator — reads task manifests, builds dependency DAGs, generates sprint plans, assigns parallel agents with isolated scopes, and enforces consensus review gates |
 
-Plus extension-level commands and dashboard:
+Plus the `@autoclaw` **chat participant**: type `@autoclaw /kdream start` (or any skill command) directly in VS Code chat — no copy-pasting, no adapter file lookup required.
+
+Extension-level features:
 
 | Feature | Access |
 |---|---|
+| **@autoclaw Chat Participant** | Type `@autoclaw` in any VS Code chat |
 | **KDream Dashboard** | Activity bar (lobster icon), or `Ctrl+Alt+K` |
 | **Doctor health report** | `Ctrl+Alt+D`, or Command Palette → `AutoClaw: Doctor` |
 | **Doctor JSON output** | Command Palette → `AutoClaw: Doctor (JSON output)` |
 | **Export Health Snapshot** | Dashboard toolbar, or Command Palette → `AutoClaw: Export Health Snapshot` |
-| **AutoBuild Run Now** | `Ctrl+Alt+B`, or Command Palette → `AutoClaw: AutoBuild — Run Workflow Now` |
+| **AutoBuild Run Now** | `Ctrl+Alt+B`, or Command Palette |
+| **Orchestrate Plan** | `Ctrl+Alt+O`, or Command Palette |
+| **Launch Skill** | `Ctrl+Alt+L` — quick-pick copies platform-aware prompt to clipboard |
 
 ---
 
 ## Installation
 
-Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ZippyTechnologiesLLC.autoclaw) (VS Code, GitHub Codespaces) or from [Open VSX](https://open-vsx.org/extension/ZippyTechnologiesLLC/autoclaw) (VSCodium, Cursor, Windsurf, Antigravity, Theia, and other Eclipse-Open-VSX clients).
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ZippyTechnologiesLLC.autoclaw) (VS Code, GitHub Codespaces) or from [Open VSX](https://open-vsx.org/extension/ZippyTechnologiesLLC/autoclaw) (VSCodium, Cursor, Windsurf, Antigravity, Theia).
 
-On first activation AutoClaw automatically detects which AI extensions you have installed and copies the correct skill files to each tool's expected location. No manual setup needed.
+On first activation AutoClaw automatically detects which AI extensions you have installed and copies the correct skill files. No manual setup needed.
 
-To re-run adapter installation at any time:
+To re-run adapter installation:
 `Ctrl+Shift+P` → **AutoClaw: Install Adapters for Detected AI Extensions**
 
 ---
@@ -67,17 +71,19 @@ To re-run adapter installation at any time:
 
 | AI Tool | How skills load | Adapter files |
 |---|---|---|
-| **GitHub Copilot Chat** | Built-in via VS Code `chatSkills` | none (native) |
-| **Claude Code** | `SKILL.md` files in `~/.claude/skills/` | `adapters/claude-code/` |
-| **Antigravity** | `.md` rules in `.agent/rules/` (workspace) | `adapters/antigravity/` |
-| **Cursor** | `.mdc` rules in `.cursor/rules/` (workspace) | `adapters/cursor/` |
-| **Kiro** | Steering files in `.kiro/steering/` (workspace) | `adapters/kiro/` |
-| **Windsurf** | Rules in `.windsurf/rules/` (workspace) | `adapters/windsurf/` |
-| **KiloCode** | Custom modes merged into `.kilocodemodes` (workspace) | `adapters/kilocode/` |
-| **Cline** | Rules in `.clinerules/` (workspace) | `adapters/cline/` |
-| **Continue** | `.prompt` files in `.continue/prompts/` (workspace) | `adapters/continue/` |
+| **GitHub Copilot Chat** | `chatSkills` + `@autoclaw` participant | native |
+| **Claude Code** | `SKILL.md` files in `~/.claude/skills/` + `@autoclaw` | `adapters/claude-code/` |
+| **Kiro** | Steering files in `.kiro/steering/` — auto-loaded (`inclusion: auto`) | `adapters/kiro/` |
+| **KiloCode** | Custom modes in `.kilocodemodes` + `.clinerules/` fallback | `adapters/kilocode/` |
+| **Cline** | Rules in `.clinerules/` | `adapters/cline/` |
+| **Windsurf** | Rules in `.windsurf/rules/` | `adapters/windsurf/` |
+| **Cursor** | `.mdc` rules in `.cursor/rules/` | `adapters/cursor/` |
+| **Continue** | `.prompt` files in `.continue/prompts/` | `adapters/continue/` |
+| **Antigravity** | `.md` rules in `.agent/rules/` | `adapters/antigravity/` |
 
-All adapter files are generated from a single source of truth (`skills/*/SKILL.md`) using `npm run adapters:build`. If you ever suspect adapter drift, run `npm run adapters:check` — it exits non-zero and prints a diff if any adapter is out of sync.
+All adapter files are generated from a single source of truth (`skills/*/SKILL.md`) via `npm run adapters:build`. Run `npm run adapters:check` to detect drift.
+
+**Note on Kiro:** All AutoClaw adapters use `inclusion: auto` in Kiro — they activate immediately without manual opt-in in the steering rules UI.
 
 ---
 
@@ -89,172 +95,114 @@ All adapter files are generated from a single source of truth (`skills/*/SKILL.m
 | `Ctrl+Alt+R` | `Cmd+Alt+R` | Refresh KDream Dashboard |
 | `Ctrl+Alt+D` | `Cmd+Alt+D` | Doctor (Health Check) |
 | `Ctrl+Alt+B` | `Cmd+Alt+B` | AutoBuild — Run Workflow Now |
+| `Ctrl+Alt+O` | `Cmd+Alt+O` | Orchestrate — Plan Sprints |
+| `Ctrl+Alt+L` | `Cmd+Alt+L` | Launch Skill (copy prompt to clipboard) |
 
 All shortcuts are rebindable via `Preferences → Keyboard Shortcuts`.
 
 ---
 
+## @autoclaw Chat Participant
+
+The `@autoclaw` chat participant is the fastest way to invoke any skill. It loads the skill's full instruction set as context, injects live state where relevant, and streams the response — no copy-pasting, no file lookup.
+
+```
+@autoclaw /kdream start
+@autoclaw /kdream ps
+@autoclaw /autobuild schedule "0 2 * * *" nightly-build
+@autoclaw /mateam launch "refactor the auth module"
+@autoclaw /orchestrate plan
+@autoclaw /orchestrate status
+@autoclaw /inbox
+```
+
+**Available subcommands:**
+
+| Subcommand | Skill invoked |
+|---|---|
+| `/kdream` | KDream background agent (start, ps, work, add, logs, dream) |
+| `/autobuild` | AutoBuild workflow scheduler (schedule, run, list, status) |
+| `/mateam` | MAteam multi-agent coordinator (launch) |
+| `/orchestrate` | Sprint orchestrator (init, plan, assign, status, review, merge, next) |
+| `/inbox` | Show cross-agent shared inbox messages |
+
+**How it works:** The participant reads the SKILL.md for the requested skill, optionally appends the current `state.json` (for Orchestrate), and sends everything as the system prompt to the VS Code language model API. It falls back to the clipboard if no LM is available (Cursor, Windsurf, older VS Code builds).
+
+---
+
 ## KDream — Persistent Background Agent
 
-KDream monitors your workspace in the background, tracks git status, scans for TODO/FIXME items, and consolidates activity into persistent memory. Unlike a one-shot prompt, KDream accumulates context across sessions — every tick reads previous memory so it understands the history of your project, not just the current question.
+KDream monitors your workspace, tracks git status, scans for TODO/FIXME items, and consolidates activity into persistent memory. Unlike a one-shot prompt, KDream accumulates context across sessions — every tick reads previous memory so it understands the history of your project.
 
 ### Starting KDream
 
-**GitHub Copilot Chat / Claude Code (via Copilot) / Continue:**
 ```
-@kdream /kdream start
-```
-
-**Claude Code CLI:**
-```
-/kdream start
+@autoclaw /kdream start
 ```
 
-**KiloCode:** Switch to **KDream** mode in the mode selector, then type `start`.
-
-**Cursor / Windsurf / Kiro / Cline / Antigravity:** Describe what you want — the rule activates automatically. For example: "Start the KDream background agent."
+Or on specific tools:
+- **GitHub Copilot / Claude Code via Copilot / Continue:** `@kdream /kdream start`
+- **Claude Code CLI:** `/kdream start`
+- **KiloCode:** Switch to **KDream** mode, then type `start`
+- **Kiro / Cline / Cursor / Windsurf / Antigravity:** Describe it — "Start the KDream background agent"
 
 ### KDream Commands
 
 | Command | What it does |
 |---|---|
-| `/kdream start` | Start the background agent, initialise state, run first tick |
+| `/kdream start` | Start the daemon, initialise state, run first tick |
 | `/kdream ps` | Show status: running/stopped, tick count, open TODOs, open follow-ups |
 | `/kdream logs` | View last 30 lines of today's activity log |
 | `/kdream stop` | Gracefully shut down and save state |
-| `/kdream dream` | Run memory consolidation immediately (normally happens every 20 ticks) |
-| `/kdream add <note>` | Append a task or reminder to `MEMORY.md` under `## Follow-ups` |
-| `/kdream todo` | List all open TODO/FIXME items currently found in the workspace |
-| `/kdream work <item>` | Implement or resolve an item — KDream reads relevant files and acts |
+| `/kdream dream` | Run memory consolidation immediately |
+| `/kdream add <note>` | Append a task or reminder to `MEMORY.md` |
+| `/kdream todo` | List all open TODO/FIXME items in the workspace |
+| `/kdream work <item>` | Implement or resolve a specific item |
 
 ### Example session
 
 ```
-You:    /kdream ps
+You:    @autoclaw /kdream ps
 KDream: Status: running | Tick #12 | 3 open TODOs | 2 open follow-ups
         TODOs: src/auth.ts:42 (add input validation), src/api.ts:87 (handle 429 retry)
         Follow-ups: "investigate memory leak", "update API docs before merge"
 
-You:    /kdream work the 429 retry in src/api.ts
-KDream: Reading src/api.ts… implementing exponential backoff for 429 responses…
-        ✓ Done. Added retryWithBackoff() helper, wired into fetchWithAuth(). Mark TODO resolved? [y/n]
-
-You:    /kdream add check if rate-limit tests cover the new backoff logic
-KDream: Added to MEMORY.md follow-ups. Will surface on next tick.
+You:    @autoclaw /kdream work the 429 retry in src/api.ts
+KDream: Reading src/api.ts… implementing exponential backoff…
+        ✓ Done. Added retryWithBackoff(). Mark TODO resolved? [y/n]
 ```
 
-### How to give KDream work
+### Adding tasks
 
-There are three ways to assign tasks:
+**Via chat:** `/kdream add check if rate-limit tests cover the new backoff logic`
 
-#### 1. TODO/FIXME comments in your code (automatic)
-
-KDream scans every source file on each tick. Any of these markers are picked up automatically:
-
+**Via TODO comments** (picked up automatically on the next tick):
 ```typescript
 // TODO: add input validation here
-// FIXME: this crashes when array is empty
-// HACK: temporary workaround, needs proper fix
-// BUG: race condition when two users submit simultaneously
-// XXX: revisit this before 2.0
+// FIXME: crashes when array is empty
 ```
 
-On the next tick KDream surfaces new items and asks if you want it to work on them. When the comment is removed (because the issue is fixed), KDream logs it as completed automatically.
-
-#### 2. Quick-add via chat
-
-```
-/kdream add remind me to update the API docs after merging this branch
-/kdream add check if the nightly build is passing after the CI change
-/kdream add the login flow needs error handling for expired tokens
-```
-
-Items are appended to `MEMORY.md` under `## Follow-ups`. KDream picks them up on the next tick.
-
-#### 3. Edit MEMORY.md directly
-
-Open `.autoclaw/kdream/memory/MEMORY.md` and add items under `## Follow-ups`:
-
+**Via MEMORY.md directly:**
 ```markdown
 ## Follow-ups
 - [ ] Investigate the memory leak reported in issue #42
 - [ ] Run load tests before the v2.0 release
-- [ ] Review the database migration script with the team
-- [ ] Check if dependency X has a security patch available
-```
-
-Use `- [ ]` for open items and `- [x]` for completed ones. KDream moves completed items to `## Observations` during the next autoDream cycle.
-
-### What KDream does on each tick
-
-Each time you invoke KDream in chat, it runs one tick:
-
-1. **Git check** — runs `git status` and flags uncommitted changes older than 1 hour
-2. **TODO scan** — globs all source files for `TODO`, `FIXME`, `HACK`, `XXX`, `BUG` markers; reports new ones, marks resolved ones as done
-3. **Follow-up review** — reads `## Follow-ups` in `MEMORY.md`; reports any open `- [ ]` items
-4. **Act or stay silent** — if anything needs attention, surfaces a compact summary; otherwise logs a silent heartbeat
-
-### The autoDream cycle
-
-After 20 ticks or 24 hours KDream consolidates everything it has observed:
-
-1. **Orient** — lists all memory files and archives
-2. **Gather** — reads last 7 days of logs, extracts new TODOs, resolved items, warnings
-3. **Consolidate** — merges into `MEMORY.md`, deduplicates, converts relative dates to ISO, moves completed follow-ups to `## Observations`
-4. **Prune** — if `MEMORY.md` exceeds 200 lines or 25 KB, archives the oldest 20% to `archive-YYYY-MM-DD.md`
-5. **Finalize** — updates `lastDream` timestamp in `state.json`
-
-Run it on-demand any time with `/kdream dream`.
-
-### MEMORY.md structure
-
-```markdown
-# KDream Memory
-
-## Follow-ups
-<!-- KDream checks this section on every tick. Add tasks here. -->
-- [ ] Open item KDream will watch and act on
-- [x] Completed item (moved to Observations on next dream)
-
-## Facts
-<!-- Consolidated knowledge about this workspace. -->
-- Project uses npm workspaces with 3 packages
-- Main branch is protected, PRs required, squash merges preferred
-
-## Observations
-<!-- Notable events and patterns observed over time. -->
-- 2026-04-01: Resolved login flow error handling TODO in src/auth.ts
-- 2026-04-15: Nightly build failing after dependency update — fixed by pinning lodash@4.17.21
 ```
 
 ### Where KDream stores data
 
 ```
 .autoclaw/kdream/
-├── state.json              ← status, tick count, lastDream, todoSnapshot
-├── logs/
-│   └── YYYY-MM-DD.md       ← append-only daily activity log
+├── state.json              ← status, tick count, lastDream
+├── logs/YYYY-MM-DD.md      ← append-only daily activity log
 └── memory/
     ├── MEMORY.md            ← live memory (< 200 lines)
-    └── archive-YYYY-MM-DD.md  ← overflow archives
+    └── archive-YYYY-MM-DD.md
 ```
 
 ### KDream Dashboard
 
-The KDream Dashboard provides a visual real-time overview of your background agent.
-
-**Opening:** Click the lobster icon in the activity bar, or press `Ctrl+Alt+K` / `Cmd+Alt+K`.
-
-| Section | What it shows |
-|---|---|
-| **Status** | KDream state (running/stopped), tick count, last dream time |
-| **Tasks & Follow-ups** | All items from `MEMORY.md ## Follow-ups` |
-| **Recent Activity** | Last 10 lines from today's activity log |
-| **Adapter Health** | Live status of all detected AI extension integrations |
-| **TODOs** | All `TODO`/`FIXME` markers found in workspace source files |
-| **Export Snapshot** | Button to capture a point-in-time health report |
-
-**Auto-refresh:** The dashboard watches `.autoclaw/kdream/state.json` for changes — it updates live when KDream writes a new tick without you having to press refresh.
+Open with `Ctrl+Alt+K`. Shows: KDream status, tasks and follow-ups, recent activity, adapter health, TODOs, export button. Auto-refreshes when `state.json` changes.
 
 ### Configuration
 
@@ -263,10 +211,9 @@ The KDream Dashboard provides a visual real-time overview of your background age
 | `autoclaw.kdream.enableFileWatcher` | `true` | Auto-refresh dashboard when state changes |
 | `autoclaw.kdream.notifyNewTodos` | `true` | Show notification when new TODOs are detected |
 | `autoclaw.kdream.refreshInterval` | `30` | Dashboard refresh interval in seconds |
-| `autoclaw.kdream.scanPatterns` | `["**/*.ts","**/*.js","**/*.tsx","**/*.jsx","**/*.py","**/*.md"]` | Patterns to scan for TODOs/FIXMEs |
-| `autoclaw.kdream.notificationLevel` | `"all"` | Verbosity: `"all"`, `"warnings"`, `"errors"`, or `"none"` |
+| `autoclaw.kdream.scanPatterns` | `["**/*.ts","**/*.js",...]` | Patterns to scan for TODOs/FIXMEs |
+| `autoclaw.kdream.notificationLevel` | `"all"` | Verbosity: `"all"`, `"warnings"`, `"errors"`, `"none"` |
 | `autoclaw.kdream.autoInstallAdapters` | `true` | Auto-install adapters on activation |
-| `autoclaw.kdream.adapters` | _(see below)_ | AI adapters to monitor (name + extension ID pairs) |
 | `autoclaw.kdream.zippymeshUrl` | `"http://localhost:20128"` | ZippyMesh health-check URL |
 | `autoclaw.kdream.zippymeshSearchPaths` | `[]` | Extra paths to search for a ZippyMesh installation |
 
@@ -274,40 +221,27 @@ The KDream Dashboard provides a visual real-time overview of your background age
 
 ## AutoBuild — Autonomous Workflow Engine
 
-AutoBuild creates, schedules, and executes multi-step pipelines. Workflows are plain YAML — readable, version-controllable, and trivial to customise. A real in-process cron scheduler (30-second tick, configurable) fires due workflows without any external daemon, cron tab, or task runner.
+AutoBuild creates, schedules, and executes multi-step pipelines. Workflows are plain YAML — version-controllable and trivial to customise. A real in-process cron scheduler fires due workflows without any external daemon or cron tab.
 
 ### Creating a workflow
 
-**Via chat (generates YAML for you):**
 ```
-/autobuild schedule "0 2 * * *" nightly-build
+@autoclaw /autobuild schedule "0 2 * * *" nightly-build
 ```
 
-**Run an existing workflow immediately:**
-```
-/autobuild run nightly-build
-```
-Or press `Ctrl+Alt+B` / `Cmd+Alt+B` and pick from the list.
-
-**Tail the most recent log:**
-```
-/autobuild status nightly-build
-```
-Or: Command Palette → `AutoClaw: AutoBuild — Tail Most Recent Run Log`.
+Run immediately: `@autoclaw /autobuild run nightly-build` or `Ctrl+Alt+B`.
 
 ### AutoBuild Commands
 
 | Command | What it does |
 |---|---|
 | `/autobuild schedule "<cron>" <name>` | Create a named scheduled workflow |
-| `/autobuild run <name>` | Run a named workflow immediately, bypassing its schedule |
-| `/autobuild list` | Show all workflows with last run status and next scheduled run |
-| `/autobuild cancel <name>` | Delete a workflow from the registry |
-| `/autobuild status <name>` | Print the most recent log output for a workflow |
+| `/autobuild run <name>` | Run immediately, bypassing schedule |
+| `/autobuild list` | Show all workflows with last run status |
+| `/autobuild cancel <name>` | Remove workflow from registry |
+| `/autobuild status <name>` | Print most recent log output |
 
 ### Cron expression reference
-
-AutoBuild supports standard 5-field cron expressions (minute hour day month weekday):
 
 | Expression | Meaning |
 |---|---|
@@ -316,100 +250,34 @@ AutoBuild supports standard 5-field cron expressions (minute hour day month week
 | `"*/15 * * * *"` | Every 15 minutes |
 | `"0 9 * * 1-5"` | Weekdays at 9 am |
 | `"0 0 * * 0"` | Every Sunday at midnight |
-| `"30 8 1 * *"` | 8:30 am on the 1st of each month |
 
 ### Workflow YAML format
-
-Workflows live in `.autoclaw/autobuild/workflows/<name>.yaml`. Full example:
 
 ```yaml
 name: nightly-build
 cron: "0 2 * * *"
-notify: true          # VS Code notification on completion/failure
-timeout: 300          # seconds per step (default 120, max 1 MB log per step)
+notify: true
+timeout: 300   # seconds per step
 
 steps:
   - id: deps
     run: npm ci
-
-  - id: lint
-    run: npm run lint
-
   - id: build
     run: npm run build
-
   - id: test
     run: npm test
-    timeout: 600       # override per-step timeout
-
-  - id: deploy-staging
+    timeout: 600
+  - id: deploy
     run: npm run deploy:staging
-    condition: "{{test.exit_code}} == 0"   # gate on test success
-
-  - id: notify-team
-    run: curl -s -X POST "$SLACK_WEBHOOK" -d '{"text":"Nightly build passed ✓"}'
-    condition: "{{deploy-staging.exit_code}} == 0"
-```
-
-**Practical patterns:**
-
-```yaml
-# Lint + typecheck on every push (triggered manually or on /autobuild run)
-name: pre-commit-checks
-cron: "*/30 * * * *"   # every 30 minutes during active hours
-steps:
-  - id: typecheck
-    run: npx tsc --noEmit
-  - id: lint
-    run: npx eslint src --max-warnings 0
-  - id: test-unit
-    run: npm run test:unit
-
-# Weekly dependency audit
-name: dep-audit
-cron: "0 8 * * 1"     # Monday 8am
-steps:
-  - id: audit
-    run: npm audit --audit-level=high
-  - id: outdated
-    run: npm outdated || true
-
-# Database backup
-name: db-backup
-cron: "0 3 * * *"
-steps:
-  - id: dump
-    run: pg_dump $DATABASE_URL > backups/$(date +%Y-%m-%d).sql
-  - id: compress
-    run: gzip backups/$(date +%Y-%m-%d).sql
-  - id: upload
-    run: aws s3 cp backups/$(date +%Y-%m-%d).sql.gz s3://my-bucket/backups/
-    condition: "{{compress.exit_code}} == 0"
+    condition: "{{test.exit_code}} == 0"
 ```
 
 ### How the scheduler works
 
-The AutoBuild scheduler runs in the VS Code extension host process — no separate process, cron tab, or system service required.
-
-- Ticks every 30 seconds (configurable via `autoclaw.autobuild.tickIntervalSeconds`, minimum 10).
-- Acquires a cross-host lockfile (`.autoclaw/autobuild/.lock`) before firing, so two VS Code windows on the same workspace directory cannot double-trigger the same workflow.
-- Stale locks from dead processes (PID not alive, or lock older than 30 seconds) are taken over automatically.
-- Each workflow run streams stdout/stderr to a timestamped log file in `.autoclaw/autobuild/runs/`. Logs over 1 MB are truncated with a `[truncated]` marker.
-- After each run the scheduler keeps the most recent 50 logs per workflow and deletes older ones automatically.
-
-### Where AutoBuild stores data
-
-```
-.autoclaw/autobuild/
-├── .lock                   ← cross-host lockfile (ephemeral)
-├── registry.json           ← index: all workflows + last run status
-├── workflows/
-│   ├── nightly-build.yaml  ← workflow definitions (edit these directly)
-│   └── dep-audit.yaml
-└── runs/
-    ├── nightly-build-2026-04-01T02-00-00.log
-    └── dep-audit-2026-04-07T08-00-00.log
-```
+- Ticks every 30 seconds (configurable via `autoclaw.autobuild.tickIntervalSeconds`, min 10).
+- Acquires a cross-host lockfile (`.autoclaw/autobuild/.lock`) — two VS Code windows on the same workspace cannot double-trigger a workflow.
+- Stale locks from dead processes are taken over automatically.
+- Logs over 1 MB are truncated. Keeps the 50 most recent logs per workflow.
 
 ### Configuration
 
@@ -422,148 +290,296 @@ The AutoBuild scheduler runs in the VS Code extension host process — no separa
 
 ## MAteam — Multi-Agent Coordinator
 
-MAteam decomposes a complex task and delegates each part to a specialised agent role. On **Claude Code**, each role is dispatched as a real parallel subagent call (`Agent` tool). On all other hosts (Copilot, KiloCode, Cursor, etc.) the roles execute in-session sequentially with the same scratchpad protocol.
+MAteam decomposes a task and delegates each part to a specialised agent role. On **Claude Code**, each role is a real parallel subagent (`Agent` tool). On all other hosts, roles execute in-session sequentially.
 
 ### Launching a team
 
 ```
-/mateam launch "refactor the authentication module to use JWT"
-/mateam launch "audit the API layer for security issues and propose fixes"
-/mateam launch "write integration tests for the payment service"
+@autoclaw /mateam launch "refactor the authentication module to use JWT"
+@autoclaw /mateam launch "audit the API layer for security issues"
 ```
-
-MAteam assigns only the roles the task actually requires — a pure research question won't spin up a Coder.
 
 ### The agent roles
 
 | Role | What it does |
 |---|---|
-| **Researcher** | Reads relevant files, greps for symbols, maps the call graph, identifies patterns and constraints. Writes findings to `context.md`. |
-| **Coder** | Implements changes based on the Researcher's `context.md`. Writes deliverables to `output.md`. |
-| **Reviewer** | Audits `output.md` for correctness, security, style, and test coverage. Writes blockers to `review.md`. **Can halt the pipeline before anything is committed.** |
-| **Verifier** | Runs test commands, checks acceptance criteria, confirms nothing regressed. Writes results to `verify.md`. |
+| **Researcher** | Maps the codebase, identifies patterns. Writes `context.md`. |
+| **Coder** | Implements changes from Researcher's findings. Writes `output.md`. |
+| **Reviewer** | Audits output for correctness and security. Writes `review.md`. Can halt the pipeline. |
+| **Verifier** | Runs tests, confirms nothing regressed. Writes `verify.md`. |
 
 ### MAteam Commands
 
 | Command | What it does |
 |---|---|
-| `/mateam launch "<task>"` | Decompose and execute a task with a full agent team |
-| `/mateam status` | Show all active sessions: current phase and last update |
-| `/mateam list-peers` | List each role, its assigned task, and current state |
-| `/mateam cancel` | Halt all active agent sessions |
+| `/mateam launch "<task>"` | Decompose and execute with a full agent team |
+| `/mateam status` | Show all active sessions |
+| `/mateam cancel` | Halt all active sessions |
 | `/mateam result` | Show final output from the most recent session |
-
-### Controlling which roles run
-
-```
-/mateam launch "review my last commit for security issues" --roles Researcher,Reviewer
-/mateam launch "add JSDoc to all exported functions in src/api.ts" --roles Coder
-```
 
 ### Example output
 
 ```
-/mateam launch "add retry logic to all HTTP calls in src/api.ts"
+@autoclaw /mateam launch "add retry logic to all HTTP calls in src/api.ts"
 
-MAteam: Decomposing task…
-  → Researcher: mapping HTTP call sites in src/api.ts
-  → Coder: implementing retryWithBackoff wrapper
-  → Reviewer: checking for race conditions and missing error types
-  → Verifier: running npm test to confirm no regressions
-
-Session: .autoclaw/mateam/scratch/2026-05-01-add-retry-logic/
-  context.md  — 4 HTTP call sites found, currently no retry handling
-  output.md   — retryWithBackoff() added, wired into fetchJson, postJson, patchJson, deleteJson
-  review.md   — LGTM; note: add jitter to backoff to avoid thundering herd
-  verify.md   — 47 tests passing, 0 failures, 0 regressions
-
-Result: PR-ready. Review note about jitter saved to MEMORY.md follow-ups.
+MAteam: Researcher → 4 HTTP call sites found, no retry handling
+        Coder → retryWithBackoff() added, wired into fetchJson/postJson/patchJson/deleteJson
+        Reviewer → LGTM; note: add jitter to avoid thundering herd
+        Verifier → 47 tests passing, 0 failures
+Result: PR-ready. Jitter note saved to MEMORY.md follow-ups.
 ```
 
-### Where MAteam stores data
+---
+
+## Orchestrate — Multi-Agent Sprint Orchestrator
+
+Orchestrate turns a task manifest into a parallelised sprint plan, assigns work to multiple agents with isolated file scopes, and coordinates a consensus review gate before any sprint branch is merged. It is designed for large projects that benefit from multiple AI agents working simultaneously on non-overlapping parts of a codebase.
+
+### How it works
 
 ```
-.autoclaw/mateam/scratch/
-└── 2026-05-01-add-retry-logic/
-    ├── plan.md      ← task breakdown and role assignments
-    ├── context.md   ← Researcher findings
-    ├── output.md    ← Coder deliverables
-    ├── review.md    ← Reviewer notes and blockers
-    └── verify.md    ← Verifier test results
+Manifest YAML → DAG planner → Sprint plan → Assign to agents → Consensus review → Merge
 ```
 
-All scratchpad files are plain Markdown — read, edit, or annotate them any time during execution.
+1. **You write a task manifest** with tasks, dependencies, file scopes, and effort estimates.
+2. **Orchestrate builds a DAG**, topologically sorts tasks, detects scope conflicts, and bin-packs tasks into sprint batches — maximising parallelism while preventing file collisions.
+3. **Each sprint is assigned to N agents** (default 4). Each agent gets a scoped work package: task list, allowed file patterns, branch name.
+4. **Agents work in parallel**, checking their mailbox at `.autoclaw/orchestrator/comms/inboxes/<agent>/` and writing `task_complete` messages when done.
+5. **The extension watches the shared inbox** — when a `task_complete` arrives, it notifies you and prompts a consensus review.
+6. **Consensus review** collects vote files from `comms/consensus/active/`, runs `evaluateConsensus()` (2/3 majority, security findings unanimous), and reports a per-task verdict. Only approved sprints can advance.
+
+### Getting started
+
+```
+@autoclaw /orchestrate init
+```
+
+This creates `.autoclaw/orchestrator/` with `config.yaml`, `manifests/`, `sprints/`, and `reviews/`. If a Kiro spec `tasks.md` exists in your workspace, Orchestrate offers to generate a manifest from it automatically.
+
+### Task manifest format
+
+```yaml
+project:
+  name: my-project
+  test_command: npm test
+  build_command: npm run build
+
+tasks:
+  - id: task-1
+    name: CLI foundation
+    depends_on: []
+    scope:
+      - "src/cli/**"
+    effort: M
+    subtasks:
+      - Implement argument parser
+      - Add help command
+
+  - id: task-2
+    name: Auth system
+    depends_on: [task-1]
+    scope:
+      - "src/auth/**"
+    effort: L
+    subtasks:
+      - JWT token generation
+      - Session middleware
+
+  - id: task-3
+    name: REST API
+    depends_on: [task-1]
+    scope:
+      - "src/api/**"
+    effort: L
+
+constraints:
+  mutual_exclusion:
+    - [task-2, task-3]   # run these in separate sprints
+  affinity:
+    - [task-4, task-5]   # co-locate on the same agent
+```
+
+### Orchestrate Commands
+
+| Command | What it does |
+|---|---|
+| `/orchestrate init` | Scaffold config, manifests, and sprint directories |
+| `/orchestrate plan` | Build DAG, detect conflicts, generate sprint YAMLs |
+| `/orchestrate assign` | Assign current sprint to agents, write assignment docs |
+| `/orchestrate status` | Show sprint progress across all agents |
+| `/orchestrate review` | Collect consensus votes and report verdict |
+| `/orchestrate merge` | Merge an approved sprint branch to develop |
+| `/orchestrate next` | Assign next sprint whose dependencies are satisfied |
+
+### Sprint plan format
+
+After `/orchestrate plan`, sprint files appear in `.autoclaw/orchestrator/sprints/`:
+
+```yaml
+sprint: 1
+level: 0
+status: pending
+assignments:
+  - agent: WA-1
+    tasks: [{ id: task-1, name: CLI foundation }]
+    scope: ["src/cli/**"]
+    branch: feat/sprint-1-wa1-cli
+  - agent: WA-2
+    tasks: [{ id: task-3, name: REST API }]
+    scope: ["src/api/**"]
+    branch: feat/sprint-1-wa2-api
+dependencies_met: true
+estimated_days: 4
+```
+
+### Cross-agent communication
+
+Agents coordinate via a filesystem mailbox at `.autoclaw/orchestrator/comms/`. No external service required.
+
+- **Inboxes:** `.autoclaw/orchestrator/comms/inboxes/<agent-id>/` — each agent reads its inbox before and after every task.
+- **Shared inbox:** `.autoclaw/orchestrator/comms/inboxes/shared/` — broadcast messages (task completions, findings).
+- **Consensus votes:** `.autoclaw/orchestrator/comms/consensus/active/<task-id>-<agent>.json`
+
+The extension watches the shared inbox in real time — when a `task_complete` message lands, you get an immediate VS Code notification with a "Run Consensus Review" button.
+
+### Consensus review
+
+Agents vote by writing files to `consensus/active/`. Vote structure:
+
+```json
+{
+  "voter": "kiro",
+  "task_id": "task-1",
+  "vote": "approve",
+  "confidence": 0.9,
+  "findings": []
+}
+```
+
+Valid votes: `approve`, `needs_changes`, `blocked`, `abstain`.
+
+Running **AutoClaw: Orchestrate — Run Consensus Review** (or `@autoclaw /orchestrate review`) reads all vote files, calls the consensus engine, and reports:
+
+```
+✅ task-1: consensus_reached — verdict: approved (3 votes)
+⏳ task-2: consensus_pending — verdict: needs_changes (2 votes, 1 pending)
+   [major] security: Missing input validation in src/api/users.ts:47
+```
+
+Security findings require **unanimous** approval. Any `blocked` vote vetoes the sprint.
+
+### Agent identity registry
+
+When you run `/orchestrate assign`, AutoClaw detects which agent platforms are active (Kiro, KiloCode, Cline, etc.) and writes `.autoclaw/orchestrator/agents.json` mapping sprint agent IDs to platforms:
+
+```json
+{
+  "agents": [
+    { "id": "WA-1", "platform": "kiro",     "inbox": ".autoclaw/orchestrator/comms/inboxes/kiro/" },
+    { "id": "WA-2", "platform": "kilocode", "inbox": ".autoclaw/orchestrator/comms/inboxes/kilocode/" }
+  ]
+}
+```
+
+### OpenClaw HTTP bridge (optional)
+
+For remote agents on separate machines, start the HTTP bridge:
+
+```
+Command Palette → AutoClaw: Start OpenClaw Bridge Server
+```
+
+The bridge runs on `127.0.0.1:9876` (configurable). Remote agents authenticate with a Bearer token:
+
+```
+Command Palette → AutoClaw: Register Remote Agent (Generate Token)
+```
+
+REST endpoints: `POST /api/v1/messages`, `GET /api/v1/messages`, `POST /api/v1/heartbeat`, `GET /api/v1/status`, `POST /api/v1/consensus/vote`.
+
+### Where Orchestrate stores data
+
+```
+.autoclaw/orchestrator/
+├── config.yaml              ← planner settings (agents, gates, branch prefix)
+├── agents.json              ← WA-N → platform identity registry
+├── manifests/               ← your task YAML files (edit these)
+├── sprints/
+│   ├── plan-summary.yaml    ← overview: total tasks, sprints, critical path
+│   ├── sprint-1.yaml        ← sprint plan with agent assignments
+│   └── sprint-1-WA-1.md    ← rendered assignment doc for WA-1
+├── reviews/                 ← sprint review reports
+├── logs/                    ← execution logs
+└── comms/
+    ├── inboxes/             ← per-agent and shared message inboxes
+    │   ├── shared/          ← broadcast messages (task_complete, findings)
+    │   ├── kiro/            ← Kiro agent inbox
+    │   └── kilocode/        ← KiloCode agent inbox
+    └── consensus/
+        └── active/          ← vote files awaiting evaluation
+```
+
+### Configuration
+
+| Setting | Default | Description |
+|---|---|---|
+| `autoclaw.orchestrate.workAgents` | `4` | Number of parallel work agents |
+| `autoclaw.orchestrate.maxTasksPerAgent` | `3` | Max tasks per agent per sprint |
+| `autoclaw.orchestrate.maxSubtasksPerSprint` | `15` | Max subtasks across all agents per sprint |
+| `autoclaw.orchestrate.branchPrefix` | `"feat/"` | Git branch prefix for sprint branches |
+| `autoclaw.orchestrate.migrationRangeSize` | `4` | DB migration slots reserved per agent |
+| `autoclaw.bridge.enabled` | `false` | Enable HTTP bridge for remote agents |
+| `autoclaw.bridge.port` | `9876` | Bridge server port |
+| `autoclaw.bridge.host` | `"127.0.0.1"` | Bridge server host (use `0.0.0.0` for external) |
 
 ---
 
 ## Doctor — Health Check
 
-The Doctor command (`Ctrl+Alt+D`) runs a read-only health audit of your AutoClaw installation and workspace. It renders a structured report in a dedicated `AutoClaw Doctor` Output Channel.
-
-```
-Command Palette → AutoClaw: Doctor (Health Check)
-```
+The Doctor command (`Ctrl+Alt+D`) runs a read-only health audit and renders a structured report in the `AutoClaw Doctor` Output Channel.
 
 ### What the Doctor checks
 
 | Section | What it audits |
 |---|---|
-| **Workspace** | Root path, whether a `.autoclaw/` directory exists |
-| **Compilation freshness** | Compares `src/` modification times against `out/` — flags stale compiled output so you know to recompile before testing |
-| **KDream state** | `state.json` presence, tick count, last dream time, running/stopped status |
-| **MEMORY.md** | File presence, required sections (`## Follow-ups`, `## Facts`, `## Observations`), open follow-up count |
-| **Logs** | Whether today's log file exists, byte size |
-| **Adapter drift** | Compares live adapter files against `skills/*/SKILL.md` source — surfaces any content drift |
-| **Adapter schema** | Verifies every per-host adapter directory exposes all three skills (kdream / autobuild / mateam). KiloCode and ZippyMesh are exempt (custom layouts). |
-| **Per-host install matrix** | Checks each of the 9 supported hosts and reports installed / not installed |
-| **Git Health** | Branch name, upstream tracking status, ahead/behind counts vs remote, uncommitted files, untracked files, hours since last commit |
-| **ZippyMesh LLM Router** | HTTP reachability check against the configured URL — distinguishes "healthy" (ZippyMesh-identifying response) from "reachable but unidentified" vs "unreachable" |
-| **Skill source** | Confirms `skills/kdream/SKILL.md`, `skills/autobuild/SKILL.md`, `skills/mateam/SKILL.md` all exist |
-| **AutoBuild** | Whether the scheduler is enabled, lists all registered workflows with last run status |
+| **Workspace** | Root path, `.autoclaw/` directory existence |
+| **Compilation freshness** | Compares `src/` vs `out/` modification times — flags stale compiled output |
+| **KDream state** | `state.json` presence, tick count, last dream time |
+| **MEMORY.md** | Required sections, open follow-up count |
+| **Logs** | Today's log file presence and size |
+| **Adapter drift** | Live adapter files vs `skills/*/SKILL.md` source |
+| **Adapter schema** | Every adapter directory exposes all four skills (kdream/autobuild/mateam/orchestrate) |
+| **Per-host install matrix** | All 9 hosts: installed / not installed |
+| **Git Health** | Branch, upstream tracking, ahead/behind, uncommitted/untracked, hours since last commit |
+| **ZippyMesh LLM Router** | HTTP reachability and identity check |
+| **Skill source** | All four `skills/*/SKILL.md` files exist |
+| **AutoBuild** | Scheduler enabled, registered workflows, last run status |
 
 ### JSON output
-
-For scripting or grep workflows:
 
 ```
 Command Palette → AutoClaw: Doctor (Health Check, JSON output)
 ```
 
-This emits the full `DoctorReport` object as pretty-printed JSON to the same Output Channel. Pipe it with the VS Code terminal, or capture it from the extension host log. Example:
-
-```bash
-# Run sample:doctor from the repo to see the full JSON schema:
-npm run sample:doctor
-```
+Or from the repo: `npm run sample:doctor`
 
 ---
 
 ## Health Snapshot Export
 
-The snapshot command captures a point-in-time archive of your workspace's agent health — useful for sharing with teammates, filing bug reports, or keeping a release audit trail.
+Captures a point-in-time archive of your workspace's agent health.
 
 ```
 Command Palette → AutoClaw: Export Health Snapshot
 ```
 
-Or click **Export Snapshot** in the KDream Dashboard toolbar.
-
-### What's in a snapshot
-
-The exported Markdown file contains:
-- Full Doctor report (all 11 sections, same as `Ctrl+Alt+D`)
-- `state.json` contents
-- Last 30 lines from today's KDream activity log
-- All open follow-ups from `MEMORY.md`
-- Extension version and export timestamp
-
-Snapshots are saved to `.autoclaw/snapshots/snapshot-YYYY-MM-DDTHH-mm-ss.md`.
+Or click **Export Snapshot** in the KDream Dashboard toolbar. The exported Markdown contains the full Doctor report, `state.json`, last 30 log lines, all open follow-ups, extension version, and timestamp. Saved to `.autoclaw/snapshots/`.
 
 ---
 
 ## Workspace State Layout
 
-All AutoClaw state lives under `.autoclaw/` in your workspace root — no hidden global state:
+All AutoClaw state lives under `.autoclaw/` — no hidden global state:
 
 ```
 .autoclaw/
@@ -580,10 +596,18 @@ All AutoClaw state lives under `.autoclaw/` in your workspace root — no hidden
 │   └── runs/               ← timestamped run logs (last 50 per workflow)
 ├── mateam/
 │   └── scratch/            ← per-session agent scratchpads
+├── orchestrator/
+│   ├── config.yaml         ← planner settings
+│   ├── agents.json         ← WA-N → platform identity registry
+│   ├── manifests/          ← task YAML files (edit these)
+│   ├── sprints/            ← generated sprint plans + assignment docs
+│   ├── reviews/            ← sprint review reports
+│   ├── logs/               ← execution logs
+│   └── comms/              ← cross-agent mailboxes and consensus votes
 └── snapshots/              ← exported health snapshots
 ```
 
-**Team workflows:** Commit `.autoclaw/autobuild/workflows/` to share build pipelines with your team. Add `.autoclaw/kdream/` and `.autoclaw/mateam/scratch/` to `.gitignore` to keep agent state local.
+**Team workflows:** Commit `.autoclaw/autobuild/workflows/` and `.autoclaw/orchestrator/manifests/` to share pipelines and task manifests. Keep `.autoclaw/kdream/`, `.autoclaw/mateam/scratch/`, and `.autoclaw/orchestrator/comms/` in `.gitignore`.
 
 ---
 
@@ -591,70 +615,55 @@ All AutoClaw state lives under `.autoclaw/` in your workspace root — no hidden
 
 | Command | Shortcut | Description |
 |---|---|---|
-| **AutoClaw: Enable All Autonomous Features** | — | Confirms all skills are active and adapters installed |
-| **AutoClaw: Start KDream Background Agent** | — | Opens chat context and launches KDream |
-| **AutoClaw: Install Adapters for Detected AI Extensions** | — | Re-runs adapter detection and file installation |
-| **AutoClaw: Doctor (Health Check)** | `Ctrl+Alt+D` | Full workspace health report in Output Channel |
+| **AutoClaw: Enable All Autonomous Features** | — | Confirms all skills are active |
+| **AutoClaw: Start KDream Background Agent** | — | Opens chat and launches KDream |
+| **AutoClaw: Install Adapters** | — | Re-run adapter detection and installation |
+| **AutoClaw: Launch Skill (Copy Prompt to Clipboard)** | `Ctrl+Alt+L` | Quick-pick skill → copies platform-aware prompt |
+| **AutoClaw: Doctor (Health Check)** | `Ctrl+Alt+D` | Full health report in Output Channel |
 | **AutoClaw: Doctor (Health Check, JSON output)** | — | Same report as structured JSON |
 | **AutoClaw: Export Health Snapshot** | — | Save timestamped Markdown health archive |
-| **AutoClaw: AutoBuild — Run Workflow Now** | `Ctrl+Alt+B` | Pick a workflow from the registry and run it immediately |
-| **AutoClaw: AutoBuild — Tail Most Recent Run Log** | — | Open the latest run log in the Output Channel |
+| **AutoClaw: AutoBuild — Run Workflow Now** | `Ctrl+Alt+B` | Pick and run a workflow immediately |
+| **AutoClaw: AutoBuild — Tail Most Recent Run Log** | — | Open latest run log |
+| **AutoClaw: Orchestrate — Plan Sprints from Manifest** | `Ctrl+Alt+O` | Load manifest and confirm planner config |
+| **AutoClaw: Orchestrate — Show Sprint Status** | — | Show current orchestration state |
+| **AutoClaw: Orchestrate — Assign Next Sprint** | — | Detect agents, write registry, assign sprint |
+| **AutoClaw: Orchestrate — Run Consensus Review** | — | Read votes, evaluate consensus, report verdict |
+| **AutoClaw: Start OpenClaw Bridge Server** | — | Start HTTP bridge for remote agents |
+| **AutoClaw: Stop OpenClaw Bridge Server** | — | Stop bridge |
+| **AutoClaw: Register Remote Agent (Generate Token)** | — | Generate auth token for a remote agent |
 | **KDream: Show Dashboard** | `Ctrl+Alt+K` | Open the activity-bar dashboard |
-| **KDream: Refresh Dashboard** | `Ctrl+Alt+R` | Manually refresh all dashboard sections |
+| **KDream: Refresh Dashboard** | `Ctrl+Alt+R` | Manually refresh all sections |
 | **KDream: Add Task** | — | Add a task to KDream memory via input prompt |
 
 ---
 
 ## Avoiding Rate Limits with ZippyMesh LLM Router
 
-When running MAteam or long KDream sessions, you may hit rate limits from free-tier AI providers (e.g., "fetch failed" errors in KiloCode with Qwen3, Groq, or Gemini free tiers).
+When running MAteam or long KDream sessions, you may hit rate limits from free-tier AI providers.
 
-**ZippyMesh LLM Router** is a companion tool from Zippy Technologies that solves this by acting as a local proxy that automatically routes requests across multiple providers with intelligent failover.
-
-### Quick Setup
+**ZippyMesh LLM Router** is a companion tool from Zippy Technologies that routes requests across multiple providers with intelligent failover.
 
 1. Download ZippyMesh LLM Router from [zippymesh.com](https://zippymesh.com)
 2. Start it: `node run.js` (runs on `http://localhost:20128`)
-3. In your AI extension (KiloCode, Cursor, Continue), set the base URL to:
-   ```
-   http://localhost:20128/v1
-   ```
-4. AutoClaw's Doctor and Dashboard will show ZippyMesh connection status in the **Adapter Health** section automatically.
-
-### For MAteam: Parallel Burst Mode
-
-When running `/mateam launch` for multi-agent tasks, ZippyMesh distributes each role's calls across different free providers instead of hammering one:
-
-```
-X-Session-Parallel: true
-X-Intent: multi-agent
-```
-
-### Supported Providers (Free Tier)
-
-- Groq (fastest free tier)
-- Google Gemini Flash (free tier)
-- GitHub Models (free with GitHub account)
-- Cerebras (free tier)
-- Ollama (fully local, unlimited)
+3. In your AI extension, set the base URL to `http://localhost:20128/v1`
+4. AutoClaw's Doctor and Dashboard show ZippyMesh connection status automatically.
 
 ---
 
 ## What's Next / Roadmap
 
-The following capabilities are planned for future releases:
-
 | Feature | Description |
 |---|---|
-| **Real-time collaboration** | Shared task boards, team memory sync, multi-user notifications |
-| **Workspace intelligence** | Automated code analysis, dependency health, security scanning |
-| **Adapter marketplace** | Community-contributed adapter packs and a custom adapter builder |
-| **Productivity tools** | Code review assistant, automated test generation, refactoring suggestions |
-| **Git enhancements** | Branch health visualisation, commit pattern analysis, merge conflict prediction |
-| **Compliance + privacy** | Local-only processing mode, data export, audit logging |
-| **AutoBuild YAML IntelliSense** | JSON Schema for workflow files so you get autocomplete in the editor |
-| **Status bar item** | KDream running/stopped indicator always visible in the VS Code status bar |
+| **Publish v2.1.0** | Release to VS Code Marketplace and Open VSX |
+| **ZippyPanel integration** | Use Orchestrate to drive ZippyPanel's 9-sprint parallel development plan |
+| **Orchestrate Dashboard panel** | Live sidebar view of sprint progress, agent statuses, and comms timeline |
+| **OpenClaw client SDK** | Client library for remote agents using the HTTP bridge |
+| **Agent ID ↔ platform mapping** | Configurable in `config.yaml` rather than auto-detected at assign time |
+| **evaluateConsensus in review flow** | Wire TypeScript consensus engine into `/orchestrate review` SKILL.md |
+| **AutoBuild YAML IntelliSense** | JSON Schema for workflow files — autocomplete in the editor |
+| **Status bar item** | KDream running/stopped indicator in the VS Code status bar |
 | **VS Code walkthrough** | Guided first-run walkthrough in the Welcome tab |
+| **Real-time collaboration** | Shared task boards, team memory sync, multi-user notifications |
 
 ---
 
@@ -668,20 +677,18 @@ The following capabilities are planned for future releases:
 
 ### Publishing (maintainers)
 
-Credentials live in a local, never-committed `.env` file (template: `.env.example`). One-time setup:
+Credentials live in a local, never-committed `.env` file (template: `.env.example`). Setup:
 
 1. `cp .env.example .env`
 2. Fill in `VSCE_PAT` (Azure DevOps PAT with **Marketplace > Manage** scope) and `OVSX_TOKEN` (from https://open-vsx.org/user-settings/tokens).
 
-Then a release is:
+Release:
 
 ```bash
-npm version patch              # or minor / major — updates package.json + git tag
+npm version patch              # or minor / major
 npm run package                # build the VSIX
-npm run publish:all            # package + push to both Marketplace and Open VSX
+npm run publish:all            # push to both Marketplace and Open VSX
 ```
-
-The `publish:vscode` and `publish:ovsx` scripts read tokens from `.env` and work cross-platform (bash, PowerShell, cmd). `.env` is gitignored.
 
 ---
 
