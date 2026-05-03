@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Persistent background agents, autonomous build workflows, and multi-agent teams. Zero setup. Works with Claude, Copilot, and any Agent Skills compatible AI.",
-  "version": "2.0.3",
+  "version": "2.1.0",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.95.0"
@@ -35,6 +35,21 @@
   "icon": "icon.png",
   "main": "./out/extension.js",
   "contributes": {
+    "chatParticipants": [
+      {
+        "id": "autoclaw.autoclaw",
+        "name": "autoclaw",
+        "description": "AutoClaw — autonomous AI agent skills (kdream, autobuild, mateam, orchestrate)",
+        "isSticky": true,
+        "commands": [
+          { "name": "kdream",      "description": "KDream background agent (start, ps, work, add)" },
+          { "name": "autobuild",   "description": "AutoBuild workflow scheduler (schedule, run, list)" },
+          { "name": "mateam",      "description": "MAteam multi-agent team (launch)" },
+          { "name": "orchestrate", "description": "Multi-agent orchestration (plan, assign, status, review, merge, next)" },
+          { "name": "inbox",       "description": "Show cross-agent shared inbox messages" }
+        ]
+      }
+    ],
     "chatSkills": [
       {
         "path": "./skills/kdream/SKILL.md"
@@ -97,6 +112,10 @@
       {
         "command": "autoclaw.orchestrate.assign",
         "title": "AutoClaw: Orchestrate — Assign Next Sprint"
+      },
+      {
+        "command": "autoclaw.orchestrate.review",
+        "title": "AutoClaw: Orchestrate — Run Consensus Review"
       },
       {
         "command": "autoclaw.bridge.start",

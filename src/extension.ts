@@ -56,8 +56,12 @@ import {
   writeStateFile,
   readStateFile,
   toYAML,
+  writeAgentRegistry,
+  evaluateConsensus,
+  DEFAULT_CONSENSUS_CONFIG,
 } from './orchestrate';
-import type { Manifest, PlannerConfig, PlanResult } from './orchestrate';
+import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry } from './orchestrate';
+import { registerChatParticipant } from './chatparticipant';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat,
   cleanupOldMessages, type CommsLogEntry,
@@ -223,6 +227,12 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.orchestrate.review', async () => {
+      await orchestrateReviewCommand();
+    })
+  );
+
   // Bridge commands
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.bridge.start', async () => {
@@ -320,6 +330,15 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Start heartbeat ticker — writes real heartbeats for detected agents
   startHeartbeatTicker(context);
+
+  // Watch shared inbox for task_complete messages — notify and auto-refresh
+  startInboxWatcher(context);
+
+  // Register @autoclaw chat participant (VS Code 1.90+; degrades on older builds / other IDEs)
+  registerChatParticipant(
+    context,
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  );
 
   // First-run welcome with IDE-specific guidance
   showWelcomeIfNeeded(context);
@@ -1974,11 +1993,101 @@ async function orchestrateAssignNextCommand(): Promise<void> {
 
   const channel = getOrchestrateOutputChannel();
   channel.show(true);
+
+  // Detect active agents and write registry so comms can route by WA-N → platform
+  const detected = detectAgents(workspaceRoot);
+  if (detected.length > 0) {
+    const registryPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'agents.json');
+    const state = await readStateFile(path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'state.json'));
+    const sprint = state?.current_sprint ?? null;
+
+    const entries: AgentRegistryEntry[] = detected.map((a, i) => ({
+      id: `WA-${i + 1}`,
+      platform: a.id,
+      inbox: `.autoclaw/orchestrator/comms/inboxes/${a.id}/`,
+      sprint,
+      assigned_at: new Date().toISOString(),
+    }));
+
+    await writeAgentRegistry(registryPath, entries);
+    channel.appendLine(`[orchestrate] Agent registry written (${entries.length} agents): ${entries.map(e => `${e.id}=${e.platform}`).join(', ')}`);
+  }
+
   channel.appendLine('[orchestrate] Use /orchestrate next in chat to assign the next available sprint.');
 
   if (shouldShowNotification('info')) {
     vscode.window.showInformationMessage(
       'Orchestrate: use /orchestrate next in chat to assign the next sprint.'
+    );
+  }
+}
+
+async function orchestrateReviewCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showErrorMessage('Orchestrate: open a workspace first.');
+    return;
+  }
+
+  const channel = getOrchestrateOutputChannel();
+  channel.show(true);
+  channel.appendLine('[orchestrate] Running consensus review...');
+
+  const consensusDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active');
+  if (!fs.existsSync(consensusDir)) {
+    channel.appendLine('[orchestrate] No consensus votes found. Agents have not yet submitted votes.');
+    vscode.window.showInformationMessage('Orchestrate: no consensus votes found yet. Wait for agents to complete their work.');
+    return;
+  }
+
+  // Load all vote files, group by task_id
+  const voteFiles = fs.readdirSync(consensusDir).filter(f => f.endsWith('.json'));
+  if (voteFiles.length === 0) {
+    channel.appendLine('[orchestrate] No vote files in consensus/active/.');
+    return;
+  }
+
+  const votesByTask = new Map<string, ValidationVote[]>();
+  for (const f of voteFiles) {
+    try {
+      const raw = await fsPromises.readFile(path.join(consensusDir, f), 'utf8');
+      const vote = JSON.parse(raw) as ValidationVote;
+      const taskId = f.split('-')[0] ?? 'unknown';
+      if (!votesByTask.has(taskId)) { votesByTask.set(taskId, []); }
+      votesByTask.get(taskId)!.push(vote);
+    } catch {
+      channel.appendLine(`[orchestrate] Warning: could not parse vote file ${f}`);
+    }
+  }
+
+  let allApproved = true;
+  for (const [taskId, votes] of votesByTask) {
+    const result = evaluateConsensus(votes, 1, DEFAULT_CONSENSUS_CONFIG);
+    const icon = result.status === 'consensus_reached' ? '✅' : result.status === 'deadlocked' ? '🔴' : '⏳';
+    channel.appendLine(`${icon} Task ${taskId}: ${result.status} — verdict: ${result.final_verdict} (${votes.length} vote${votes.length === 1 ? '' : 's'})`);
+
+    if (result.unresolved_findings.length > 0) {
+      for (const f of result.unresolved_findings.slice(0, 5)) {
+        channel.appendLine(`   [${f.severity}] ${f.category}: ${f.description}${f.file ? ` (${f.file}:${f.line ?? ''})` : ''}`);
+      }
+    }
+
+    if (result.status !== 'consensus_reached') { allApproved = false; }
+  }
+
+  if (allApproved && votesByTask.size > 0) {
+    channel.appendLine('[orchestrate] All tasks approved. Run /orchestrate merge to integrate the sprint branch.');
+    vscode.window.showInformationMessage(
+      `Orchestrate: consensus reached on ${votesByTask.size} task(s). Ready to merge.`,
+      'Assign Next Sprint'
+    ).then(action => {
+      if (action === 'Assign Next Sprint') {
+        vscode.commands.executeCommand('autoclaw.orchestrate.assign');
+      }
+    });
+  } else {
+    vscode.window.showWarningMessage(
+      `Orchestrate: ${votesByTask.size} task(s) reviewed — not all approved. Check the AutoClaw Orchestrate output for details.`
     );
   }
 }
@@ -2061,6 +2170,62 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     }
   } catch {}
   try { view.webview.postMessage({ command: 'updateTimeline', data: await readSnapshots(commsDir) }); } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Inbox watcher — event-driven task_complete detection
+// ---------------------------------------------------------------------------
+
+function startInboxWatcher(context: vscode.ExtensionContext): void {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { return; }
+
+  const pattern = new vscode.RelativePattern(
+    workspaceRoot,
+    '.autoclaw/orchestrator/comms/inboxes/shared/*.json'
+  );
+  const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+  watcher.onDidCreate(async (uri) => {
+    try {
+      const raw = await fsPromises.readFile(uri.fsPath, 'utf8');
+      const msg = JSON.parse(raw) as Record<string, unknown>;
+
+      if (msg.type === 'task_complete') {
+        const agentId = String(msg.from ?? 'an agent');
+        const taskId = String((msg.payload as Record<string, unknown>)?.task_id ?? 'a task');
+        const action = await vscode.window.showInformationMessage(
+          `AutoClaw: ${agentId} completed ${taskId}.`,
+          'Run Consensus Review',
+          'Show Status'
+        );
+        if (action === 'Run Consensus Review') {
+          vscode.commands.executeCommand('autoclaw.orchestrate.review');
+        } else if (action === 'Show Status') {
+          vscode.commands.executeCommand('autoclaw.orchestrate.status');
+        }
+      } else if (msg.type === 'finding_report') {
+        const from = String(msg.from ?? 'agent');
+        const payload = msg.payload as Record<string, unknown> | undefined;
+        const sev = String(payload?.severity ?? 'info');
+        if (sev === 'critical' || sev === 'major') {
+          vscode.window.showWarningMessage(
+            `AutoClaw: ${from} reported a ${sev} finding — ${String(payload?.description ?? '').slice(0, 80)}`,
+            'Show Inbox'
+          ).then(a => {
+            if (a === 'Show Inbox') { vscode.commands.executeCommand('workbench.action.chat.open'); }
+          });
+        }
+      }
+
+      // Refresh dashboard on any new shared message
+      if (kdreamView) { refreshOrchestratorData(kdreamView).catch(() => {}); }
+    } catch {
+      // Malformed JSON — ignore silently
+    }
+  });
+
+  context.subscriptions.push(watcher);
 }
 
 export function deactivate() {

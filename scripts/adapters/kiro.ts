@@ -1,12 +1,13 @@
 import { Skill, AdapterFile } from "./types";
 
 /**
- * Kiro steering: frontmatter with `inclusion: manual`, then the skill body.
+ * Kiro steering: all AutoClaw skills use `inclusion: auto` so they are always
+ * active in Kiro without the user needing to enable them manually.
  */
 export function transform(skill: Skill): AdapterFile {
   const frontmatter =
     `---\n` +
-    `inclusion: manual\n` +
+    `inclusion: auto\n` +
     `name: ${skill.name}\n` +
     `description: ${skill.description}\n` +
     `---\n\n`;

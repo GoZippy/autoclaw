@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.0] - 2026-05-03
+
+### Added
+- **`@autoclaw` VS Code Chat Participant** (`src/chatparticipant.ts`) — invoke any AutoClaw skill directly in chat without copy-pasting. `@autoclaw /orchestrate plan`, `/kdream start`, `/autobuild run`, `/mateam launch`, `/inbox`. Injects SKILL.md + live state.json as context. Falls back to clipboard when no LM available. Registered via `contributes.chatParticipants` in package.json. Works in VS Code, Kiro, KiloCode, Continue — degrades gracefully on Cursor/Windsurf.
+- **Event-driven inbox watcher** — `FileSystemWatcher` on `.autoclaw/orchestrator/comms/inboxes/shared/*.json`. On `task_complete`: shows notification with "Run Consensus Review" / "Show Status" buttons. On critical `finding_report`: shows warning notification. Refreshes dashboard automatically.
+- **Agent identity registry** (`src/orchestrate.ts: writeAgentRegistry/readAgentRegistry`) — `autoclaw.orchestrate.assign` now detects active agents and writes `.autoclaw/orchestrator/agents.json` mapping `WA-1/WA-2/...` → platform IDs (`kiro`, `kilocode`, `cline`, ...) with inbox paths. Eliminates the WA-N ↔ platform mismatch.
+- **`autoclaw.orchestrate.review` command** — reads vote files from `comms/consensus/active/*.json`, calls `evaluateConsensus()` with the full consensus config, reports per-task verdict in the output channel, and blocks or enables merge based on the result. Security findings require unanimous approval. Registered in package.json and keyed to the existing `workbench.action.chat.open` flow.
+- **Orchestrate added to adapter generator** — `SKILL_NAMES` in `scripts/adapters/index.ts` now includes `orchestrate`. All 8 platform adapters (claude-code, cline, cursor, antigravity, windsurf, kiro, continue, kilocode) regenerate from `skills/orchestrate/SKILL.md` on `npm run adapters:build`.
+- **Kiro adapters now `inclusion: auto`** — `scripts/adapters/kiro.ts` changed from `inclusion: manual` to `inclusion: auto` for all skills. Kiro users no longer need to manually enable AutoClaw steering rules.
+
+### Fixed
+- Path traversal guard in `readAgentRegistry` and `writeAgentRegistry` — input paths are resolved with `path.resolve()` before file operations, collapsing any `..` segments.
+
 ## [2.0.3] - 2026-05-03
 
 ### Added

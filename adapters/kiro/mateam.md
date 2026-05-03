@@ -1,5 +1,5 @@
 ---
-inclusion: manual
+inclusion: auto
 name: mateam
 description: Multi-agent coordinator that spawns specialized sub-agents working in parallel. Trigger on "/mateam launch", "spawn agents", "multi-agent", or "coordinate team".
 ---

@@ -1,5 +1,5 @@
 ---
-inclusion: manual
+inclusion: auto
 name: kdream
 description: Persistent always-on background agent with automatic memory consolidation. Trigger on "start background agent", "enable kdream", "/kdream start", "persistent daemon", or "auto-dream memory".
 ---

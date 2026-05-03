@@ -1,5 +1,5 @@
 ---
-inclusion: manual
+inclusion: auto
 name: autobuild
 description: Autonomous scheduled build workflows and pipelines. Trigger on "/autobuild schedule", "run workflow", "automate build", or "schedule task".
 ---

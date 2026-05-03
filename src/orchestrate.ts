@@ -785,6 +785,45 @@ export const DEFAULT_PLANNER_CONFIG: PlannerConfig = {
 };
 
 // ---------------------------------------------------------------------------
+// Agent Registry — maps WA-N sprint IDs to platform identities
+// ---------------------------------------------------------------------------
+
+export interface AgentRegistryEntry {
+  id: string;        // "WA-1", "WA-2", ...
+  platform: string;  // "kiro", "kilocode", "cline", "claude-code", etc.
+  inbox: string;     // relative path: ".autoclaw/orchestrator/comms/inboxes/<platform>/"
+  sprint: number | null;
+  assigned_at: string;
+}
+
+export async function writeAgentRegistry(
+  registryPath: string,
+  entries: AgentRegistryEntry[]
+): Promise<void> {
+  const resolved = path.resolve(registryPath);
+  await ensureDir(path.dirname(resolved));
+  await fsPromises.writeFile(
+    resolved,
+    JSON.stringify({ agents: entries, updated: new Date().toISOString() }, null, 2),
+    'utf8'
+  );
+}
+
+export async function readAgentRegistry(
+  registryPath: string
+): Promise<AgentRegistryEntry[]> {
+  // Resolve to absolute path first so any '..' traversal is collapsed before
+  // the read. Callers must only pass paths within their own workspace.
+  const resolved = path.resolve(registryPath);
+  try {
+    const raw = await fsPromises.readFile(resolved, 'utf8');
+    return (JSON.parse(raw) as { agents: AgentRegistryEntry[] }).agents ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Multi-Agent Consensus Validation
 // ---------------------------------------------------------------------------
 
