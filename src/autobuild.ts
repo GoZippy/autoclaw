@@ -35,7 +35,8 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 
 const DEFAULT_STEP_TIMEOUT_SECONDS = 120;
-const MAX_LOG_BYTES = 1024 * 1024; // 1 MB
+const MAX_LOG_BYTES = 1024 * 1024; // 1 MB per log
+const DEFAULT_MAX_LOGS_PER_WORKFLOW = 50; // keep last N runs per workflow
 
 // ----- Cron -----------------------------------------------------------------
 
@@ -475,9 +476,45 @@ async function runStep(
   });
 }
 
+/**
+ * Prunes old run logs for a single workflow, keeping the most recent
+ * `keep` files (sorted lexicographically — log names embed an ISO stamp,
+ * so this matches chronological order). Best-effort: any unlink error is
+ * surfaced via the returned `errors` list but never throws.
+ */
+export function pruneRunLogs(
+  runsDir: string,
+  workflowName: string,
+  keep: number = DEFAULT_MAX_LOGS_PER_WORKFLOW
+): { kept: number; deleted: number; errors: string[] } {
+  const result = { kept: 0, deleted: 0, errors: [] as string[] };
+  if (keep <= 0 || !fs.existsSync(runsDir)) { return result; }
+  const prefix = workflowName + '-';
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(runsDir).filter(f => f.startsWith(prefix) && f.endsWith('.log'));
+  } catch (e) {
+    result.errors.push((e as Error).message);
+    return result;
+  }
+  entries.sort(); // ISO stamp sorts chronologically
+  const toDelete = entries.length > keep ? entries.slice(0, entries.length - keep) : [];
+  result.kept = entries.length - toDelete.length;
+  for (const f of toDelete) {
+    try {
+      fs.unlinkSync(path.join(runsDir, f));
+      result.deleted++;
+    } catch (e) {
+      result.errors.push(`${f}: ${(e as Error).message}`);
+    }
+  }
+  return result;
+}
+
 export async function runWorkflow(
   workflowPath: string,
-  runsDir: string
+  runsDir: string,
+  options: { maxLogsPerWorkflow?: number } = {}
 ): Promise<RunResult> {
   const wf = loadWorkflow(workflowPath);
   const startedAt = new Date();
@@ -516,6 +553,12 @@ export async function runWorkflow(
   log.write(`status:   ${passed ? 'passed' : 'failed'}\n`);
   log.close();
 
+  // Best-effort log pruning so the runs/ directory doesn't grow unbounded.
+  const keep = typeof options.maxLogsPerWorkflow === 'number'
+    ? options.maxLogsPerWorkflow
+    : DEFAULT_MAX_LOGS_PER_WORKFLOW;
+  pruneRunLogs(runsDir, wf.name, keep);
+
   return {
     workflow: wf.name,
     startedAt: startedAt.toISOString(),
@@ -552,6 +595,78 @@ export function getRunsDir(workspaceRoot: string): string {
 }
 export function getRegistryPath(workspaceRoot: string): string {
   return path.join(getAutobuildDir(workspaceRoot), 'registry.json');
+}
+
+/**
+ * Cross-process lockfile for AutoBuild registry/log writes. Multiple VS Code
+ * windows opening the same workspace (e.g. on a network drive) would
+ * otherwise race on `registry.json`. Lock is opportunistic: held briefly
+ * while reading-modifying-writing the registry. Stale locks (PID no longer
+ * alive, or lock older than `LOCK_STALE_MS`) are taken over.
+ */
+const LOCK_STALE_MS = 30_000;
+
+interface LockInfo {
+  pid: number;
+  acquiredAt: number;
+}
+
+export function getLockPath(workspaceRoot: string): string {
+  return path.join(getAutobuildDir(workspaceRoot), '.lock');
+}
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) { return false; }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // ESRCH = no such process; EPERM = exists but not ours (still alive)
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Try to acquire the AutoBuild lock. Returns true if acquired, false if
+ * another live host holds it. Uses `wx` (exclusive create) so the check is
+ * atomic at the filesystem level. Stale locks are removed first.
+ */
+export function tryAcquireLock(workspaceRoot: string): boolean {
+  const lockPath = getLockPath(workspaceRoot);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+
+  // Sweep stale lock if present.
+  try {
+    const existingRaw = fs.readFileSync(lockPath, 'utf8');
+    const existing = JSON.parse(existingRaw) as LockInfo;
+    const ageMs = Date.now() - (existing.acquiredAt || 0);
+    const stale = !isPidAlive(existing.pid) || ageMs > LOCK_STALE_MS;
+    if (stale) {
+      try { fs.unlinkSync(lockPath); } catch { /* race ok */ }
+    }
+  } catch {
+    // No lock present, or unreadable — fall through to creation attempt.
+  }
+
+  try {
+    const fd = fs.openSync(lockPath, 'wx');
+    const info: LockInfo = { pid: process.pid, acquiredAt: Date.now() };
+    fs.writeSync(fd, JSON.stringify(info));
+    fs.closeSync(fd);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'EEXIST') { return false; }
+    // Anything else (EACCES, EROFS) — propagate so the caller can decide.
+    throw e;
+  }
+}
+
+export function releaseLock(workspaceRoot: string): void {
+  try {
+    fs.unlinkSync(getLockPath(workspaceRoot));
+  } catch {
+    /* lock already gone — fine */
+  }
 }
 
 export function readRegistry(workspaceRoot: string): Registry {
@@ -638,6 +753,7 @@ export interface TickReport {
   skippedNotMatching: string[];
   errors: { name: string; message: string }[];
   disabled: boolean;
+  lockHeldByOther?: boolean;
 }
 
 /**
@@ -667,7 +783,21 @@ export async function tick(
   const discovered = discoverWorkflows(workspaceRoot);
   if (discovered.length === 0) { return report; }
 
-  let registry = readRegistry(workspaceRoot);
+  // Cross-host lock: if another VS Code window owns it, skip this tick.
+  // Local in-process `inFlight` already protects same-process races.
+  const haveLock = tryAcquireLock(workspaceRoot);
+  if (!haveLock) {
+    report.lockHeldByOther = true;
+    return report;
+  }
+
+  let registry: Registry;
+  try {
+    registry = readRegistry(workspaceRoot);
+  } finally {
+    // Hold the lock only across the registry read+upsert below; release once
+    // we've spawned the runs (runs themselves don't need the lock).
+  }
   const runsDir = getRunsDir(workspaceRoot);
   const runner = options.runner ?? runWorkflow;
 
@@ -727,6 +857,10 @@ export async function tick(
     inFlight.set(workflow.name, promise);
     report.ranNow.push(workflow.name);
   }
+
+  // Release the registry lock — completion handlers update the registry via
+  // an atomic temp+rename, which is safe without holding the lock.
+  releaseLock(workspaceRoot);
 
   return report;
 }

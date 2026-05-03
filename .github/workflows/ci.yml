@@ -24,7 +24,13 @@ jobs:
       - name: Compile TypeScript
         run: npm run compile && npm run copy-webview
 
-      - name: Run tests
+      - name: Run unit tests
+        run: npm run test:unit
+
+      - name: Run integration tests
         uses: coactions/setup-xvfb@v1
         with:
           run: npm test
+
+      - name: Verify adapter sync
+        run: npm run adapters:check

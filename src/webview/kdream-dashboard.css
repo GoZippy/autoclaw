@@ -1,180 +1,397 @@
+/* AutoClaw Unified Panel — responsive sidebar layout */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
-    font-family: var(--vscode-font-family);
-    color: var(--vscode-foreground);
-    background-color: var(--vscode-editor-background);
-    padding: 10px;
-    margin: 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  margin: 0;
+  padding: 8px;
+  overflow-x: hidden;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
-#dashboard-container {
-    max-width: 800px;
-    margin: 0 auto;
+/* ── Quick Actions bar ─────────────────────────────────────────────── */
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
 }
 
-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 20px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--vscode-panel-border);
+.quick-actions button {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 4px 8px;
+  border-radius: 2px;
+  font-size: 0.8em;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-header button + button {
-    margin-left: 4px;
+.quick-actions button:hover {
+  background: var(--vscode-button-hoverBackground);
 }
 
-h1 {
-    margin: 0;
-    font-size: 1.5em;
+.quick-actions button.primary {
+  background: var(--vscode-textLink-foreground);
+  color: var(--vscode-editor-background);
+  font-weight: 600;
 }
 
-h2 {
-    font-size: 1.2em;
-    margin-top: 20px;
-    margin-bottom: 10px;
-    color: var(--vscode-descriptionForeground);
+.quick-actions button.primary:hover {
+  opacity: 0.9;
 }
 
-section {
-    margin-bottom: 20px;
-    padding: 10px;
-    background-color: var(--vscode-editor-inactiveSelectionBackground);
-    border-radius: 4px;
+/* ── Collapsible sections ──────────────────────────────────────────── */
+.panel-section {
+  margin-bottom: 6px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  overflow: hidden;
 }
 
-button {
-    background-color: var(--vscode-button-background);
-    color: var(--vscode-button-foreground);
-    border: none;
-    padding: 6px 12px;
-    cursor: pointer;
-    border-radius: 2px;
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.9em;
+  font-weight: 600;
 }
 
-button:hover {
-    background-color: var(--vscode-button-hoverBackground);
+.section-header:hover {
+  background: var(--vscode-list-hoverBackground);
 }
 
+.section-chevron {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  border-left: 4px solid var(--vscode-foreground);
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.panel-section.open .section-chevron {
+  transform: rotate(90deg);
+}
+
+.section-badge {
+  margin-left: auto;
+  font-size: 0.75em;
+  font-weight: normal;
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+}
+
+.section-body {
+  display: none;
+  padding: 6px 8px;
+  overflow: hidden;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.panel-section.open .section-body {
+  display: block;
+}
+
+/* ── Agents table ──────────────────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8em;
+  table-layout: fixed;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+th {
+  color: var(--vscode-descriptionForeground);
+  font-weight: 600;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.status-active { background: #4caf50; }
+.status-idle { background: #ff9800; }
+.status-offline { background: #f44336; }
+.status-detected { background: var(--vscode-descriptionForeground); }
+
+/* ── Sprint progress bars ──────────────────────────────────────────── */
+.sprint-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0;
+  flex-wrap: wrap;
+}
+
+.sprint-label {
+  min-width: 50px;
+  font-size: 0.8em;
+  flex-shrink: 0;
+}
+
+.sprint-progress {
+  flex: 1;
+  height: 12px;
+  background: var(--vscode-panel-border);
+  border-radius: 2px;
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.sprint-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+.sprint-fill.pending { background: var(--vscode-descriptionForeground); }
+.sprint-fill.in_progress { background: #ff9800; }
+.sprint-fill.merged { background: #4caf50; }
+.sprint-fill.approved { background: #2196f3; }
+.sprint-fill.assigned { background: #9c27b0; }
+
+.sprint-status {
+  font-size: 0.75em;
+  color: var(--vscode-descriptionForeground);
+  flex-shrink: 0;
+}
+
+/* ── Messages feed ─────────────────────────────────────────────────── */
+.msg-feed {
+  max-height: 300px;
+  overflow-y: auto;
+  font-size: 0.8em;
+}
+
+.msg-entry {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.msg-time { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
+.msg-type { font-weight: 600; color: var(--vscode-textLink-foreground); }
+.msg-from { color: #4caf50; }
+.msg-to { color: #ff9800; }
+
+/* ── Tasks & TODOs ─────────────────────────────────────────────────── */
 .task-item {
-    padding: 5px 0;
-    border-bottom: 1px solid var(--vscode-panel-border);
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
-.task-item:last-child {
-    border-bottom: none;
-}
+.task-item:last-child { border-bottom: none; }
 
-.log-entry {
-    font-family: var(--vscode-editor-font-family);
-    font-size: 0.9em;
-    padding: 3px 0;
-}
+.task-item input[type="checkbox"] { flex-shrink: 0; margin-top: 2px; }
 
-.adapter-status {
-    display: flex;
-    align-items: center;
-    padding: 5px 0;
-}
-
-.adapter-status .indicator {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    margin-right: 10px;
-}
-
-.adapter-status .indicator.healthy {
-    background-color: var(--vscode-testing-iconPassed);
-}
-
-.adapter-status .indicator.warning {
-    background-color: var(--vscode-testing-iconQueued);
-}
-
-.adapter-status .indicator.error {
-    background-color: var(--vscode-testing-iconFailed);
+.task-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .todo-item {
-    display: flex;
-    align-items: center;
-    padding: 6px 0;
-    border-bottom: 1px solid var(--vscode-panel-border);
-    gap: 8px;
+  display: flex;
+  align-items: flex-start;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  gap: 6px;
+  min-width: 0;
 }
 
-.todo-item:last-child {
-    border-bottom: none;
-}
+.todo-item:last-child { border-bottom: none; }
 
 .todo-type {
-    font-size: 0.75em;
-    font-weight: bold;
-    padding: 2px 6px;
-    border-radius: 3px;
-    text-transform: uppercase;
-    min-width: 45px;
-    text-align: center;
+  font-size: 0.7em;
+  font-weight: bold;
+  padding: 1px 4px;
+  border-radius: 2px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  line-height: 1.4;
 }
 
-.todo-type.todo {
-    background-color: var(--vscode-charts-blue);
-    color: var(--vscode-editor-background);
-}
-
-.todo-type.fixme {
-    background-color: var(--vscode-charts-orange);
-    color: var(--vscode-editor-background);
-}
+.todo-type.todo { background: var(--vscode-charts-blue); color: var(--vscode-editor-background); }
+.todo-type.fixme { background: var(--vscode-charts-orange); color: var(--vscode-editor-background); }
+.todo-type.hack { background: var(--vscode-charts-red); color: var(--vscode-editor-background); }
 
 .todo-file {
-    font-size: 0.85em;
-    color: var(--vscode-descriptionForeground);
-    font-family: var(--vscode-editor-font-family);
+  font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  font-family: var(--vscode-editor-font-family);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .todo-text {
-    flex: 1;
-    font-size: 0.9em;
+  font-size: 0.85em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
 }
 
-.metric-item {
-    margin-bottom: 8px;
+/* ── Activity log ──────────────────────────────────────────────────── */
+.log-entry {
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.85em;
+  padding: 2px 0;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
-.metric-label {
-    display: block;
-    font-weight: bold;
-    margin-bottom: 4px;
+/* ── Health / Adapter status ───────────────────────────────────────── */
+.adapter-status {
+  display: flex;
+  align-items: center;
+  padding: 4px 0;
+  gap: 8px;
+  min-height: 20px;
 }
 
-.metric-value {
-    display: block;
-    font-size: 0.9em;
+.adapter-status .indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
+
+.adapter-status .indicator.healthy { background: var(--vscode-testing-iconPassed); }
+.adapter-status .indicator.warning { background: var(--vscode-testing-iconQueued); }
+.adapter-status .indicator.error { background: var(--vscode-testing-iconFailed); }
+
+.adapter-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-item { margin-bottom: 6px; }
+.metric-label { display: block; font-weight: bold; font-size: 0.85em; margin-bottom: 2px; }
+.metric-value { display: block; font-size: 0.85em; }
 
 .progress-bar {
-    width: 100%;
-    height: 8px;
-    background-color: var(--vscode-progressBar-background);
-    border-radius: 4px;
-    overflow: hidden;
-    margin-top: 4px;
+  width: 100%;
+  height: 6px;
+  background: var(--vscode-progressBar-background);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 2px;
 }
 
 .progress-fill {
-    height: 100%;
-    background-color: var(--vscode-progressBar-foreground);
-    transition: width 0.3s ease;
+  height: 100%;
+  background: var(--vscode-progressBar-foreground);
+  transition: width 0.3s ease;
 }
 
-.progress-fill.warning {
-    background-color: var(--vscode-charts-orange);
+.progress-fill.warning { background: var(--vscode-charts-orange); }
+.progress-fill.error { background: var(--vscode-charts-red); }
+
+/* ── Health sub-group labels ───────────────────────────────────────── */
+.health-group-label {
+  font-size: 0.75em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vscode-descriptionForeground);
+  margin: 8px 0 4px 0;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--vscode-panel-border);
 }
 
-.progress-fill.error {
-    background-color: var(--vscode-charts-red);
+.health-group-label:first-child {
+  margin-top: 0;
+}
+
+/* ── Shared empty state ────────────────────────────────────────────── */
+.empty {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  font-size: 0.85em;
+  padding: 4px 0;
+}
+
+/* ── Error state ───────────────────────────────────────────────────── */
+.error-state {
+  padding: 12px;
+  text-align: center;
+}
+
+.error-state button {
+  margin-top: 8px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  padding: 4px 12px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+/* ── Narrow sidebar breakpoint ─────────────────────────────────────── */
+@media (max-width: 300px) {
+  body { padding: 4px; }
+
+  .quick-actions { gap: 3px; }
+  .quick-actions button { padding: 3px 6px; font-size: 0.75em; }
+
+  .section-header { padding: 4px 6px; font-size: 0.8em; }
+  .section-body { padding: 4px 6px; }
+
+  table { font-size: 0.75em; }
+  th, td { padding: 2px 3px; }
+
+  .sprint-bar { flex-wrap: wrap; }
+
+  .todo-item { flex-direction: column; gap: 2px; }
+  .todo-text { white-space: normal; }
+
+  .adapter-status { flex-wrap: wrap; }
+
+  .task-item { flex-direction: column; gap: 2px; }
 }

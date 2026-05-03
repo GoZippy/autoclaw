@@ -20,8 +20,13 @@ import {
   buildAdapterInstallationSection,
   buildSkillsSourceSection,
   buildAutobuildSection,
-  renderReport
+  buildCompilationSection,
+  buildAdapterSchemaSection,
+  buildGitHealthSection,
+  renderReport,
+  renderReportJson
 } from '../doctor';
+import { spawnSync } from 'child_process';
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -272,6 +277,188 @@ suite('Doctor: buildAutobuildSection()', function () {
     assert.match(text, /## AutoBuild/);
     assert.match(text, /workflow files:\s+1/);
     assert.match(text, /- wf:/);
+  });
+});
+
+suite('Doctor: buildCompilationSection()', function () {
+  let ext: string;
+
+  setup(function () {
+    ext = makeTempDir('autoclaw-doc-comp-');
+  });
+  teardown(function () {
+    fs.rmSync(ext, { recursive: true, force: true });
+  });
+
+  test('reports out/ missing when only src/ exists', function () {
+    const srcDir = path.join(ext, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'extension.ts'), 'export {};');
+    const section = buildCompilationSection(ext);
+    assert.strictEqual(section.outDirPresent, false);
+    assert.strictEqual(section.stale, true);
+    assert.match(section.message, /out\//);
+  });
+
+  test('reports stale when src/ is newer than out/', async function () {
+    const srcDir = path.join(ext, 'src');
+    const outDir = path.join(ext, 'out');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(outDir, 'extension.js'), 'module.exports={};');
+    // Backdate the out/ file by 10 seconds, then write src/.
+    const past = (Date.now() - 10_000) / 1000;
+    fs.utimesSync(path.join(outDir, 'extension.js'), past, past);
+    fs.writeFileSync(path.join(srcDir, 'extension.ts'), 'export {};');
+    const section = buildCompilationSection(ext);
+    assert.strictEqual(section.outDirPresent, true);
+    assert.strictEqual(section.extensionJsPresent, true);
+    assert.strictEqual(section.stale, true);
+    assert.ok(section.staleFiles.length > 0);
+  });
+
+  test('reports up-to-date when out/ is newer than src/', function () {
+    const srcDir = path.join(ext, 'src');
+    const outDir = path.join(ext, 'out');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(outDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'extension.ts'), 'export {};');
+    // Backdate src/ first, then write the newer out/extension.js.
+    const past = (Date.now() - 10_000) / 1000;
+    fs.utimesSync(path.join(srcDir, 'extension.ts'), past, past);
+    fs.writeFileSync(path.join(outDir, 'extension.js'), 'module.exports={};');
+    const section = buildCompilationSection(ext);
+    assert.strictEqual(section.stale, false);
+    assert.strictEqual(section.staleFiles.length, 0);
+  });
+});
+
+suite('Doctor: buildAdapterSchemaSection()', function () {
+  let ext: string;
+  setup(function () { ext = makeTempDir('autoclaw-doc-sch-'); });
+  teardown(function () { fs.rmSync(ext, { recursive: true, force: true }); });
+
+  test('flags missing adapter dir as not ok', function () {
+    const section = buildAdapterSchemaSection(ext);
+    assert.strictEqual(section.ok, false);
+  });
+
+  test('reports each skill found per host (flat .md layout)', function () {
+    const adapter = path.join(ext, 'adapters', 'cline');
+    fs.mkdirSync(adapter, { recursive: true });
+    for (const skill of ['kdream', 'autobuild', 'mateam']) {
+      fs.writeFileSync(path.join(adapter, `${skill}.md`), '# stub');
+    }
+    const section = buildAdapterSchemaSection(ext);
+    assert.strictEqual(section.ok, true);
+    const cline = section.adapters.find(a => a.name === 'cline');
+    assert.ok(cline);
+    assert.deepStrictEqual(cline!.skillsFound.sort(), ['autobuild', 'kdream', 'mateam']);
+  });
+
+  test('detects subdir layout (claude-code style)', function () {
+    const adapter = path.join(ext, 'adapters', 'claude-code');
+    for (const skill of ['kdream', 'autobuild', 'mateam']) {
+      fs.mkdirSync(path.join(adapter, skill), { recursive: true });
+      fs.writeFileSync(path.join(adapter, skill, 'SKILL.md'), '# stub');
+    }
+    const section = buildAdapterSchemaSection(ext);
+    const cc = section.adapters.find(a => a.name === 'claude-code');
+    assert.ok(cc && cc.skillsFound.length === 3);
+    assert.strictEqual(section.ok, true);
+  });
+
+  test('reports issues when an adapter is missing one or more skills', function () {
+    const adapter = path.join(ext, 'adapters', 'kiro');
+    fs.mkdirSync(adapter, { recursive: true });
+    fs.writeFileSync(path.join(adapter, 'kdream.md'), '# stub'); // only one
+    const section = buildAdapterSchemaSection(ext);
+    assert.strictEqual(section.ok, false);
+    const issue = section.issues.find(i => i.adapter === 'kiro');
+    assert.ok(issue);
+    assert.deepStrictEqual(issue!.missingSkills.sort(), ['autobuild', 'mateam']);
+  });
+
+  test('skips kilocode and zippymesh (custom layouts)', function () {
+    fs.mkdirSync(path.join(ext, 'adapters', 'kilocode'), { recursive: true });
+    fs.mkdirSync(path.join(ext, 'adapters', 'zippymesh'), { recursive: true });
+    fs.writeFileSync(path.join(ext, 'adapters', 'kilocode', 'autoclaw-modes.yaml'), '# stub');
+    fs.writeFileSync(path.join(ext, 'adapters', 'zippymesh', 'README.md'), '# stub');
+    const section = buildAdapterSchemaSection(ext);
+    // Custom layouts must not contribute issues.
+    assert.ok(!section.issues.some(i => i.adapter === 'kilocode'));
+    assert.ok(!section.issues.some(i => i.adapter === 'zippymesh'));
+  });
+});
+
+suite('Doctor: buildGitHealthSection()', function () {
+  test('returns isGitRepo=false when no .git/ exists', function () {
+    const tmp = makeTempDir('autoclaw-doc-git-');
+    try {
+      const section = buildGitHealthSection(tmp);
+      assert.strictEqual(section.isGitRepo, false);
+      assert.strictEqual(section.branch, null);
+      assert.strictEqual(section.uncommittedFiles, 0);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('returns isGitRepo=false for null workspace', function () {
+    const section = buildGitHealthSection(null);
+    assert.strictEqual(section.isGitRepo, false);
+  });
+
+  test('reports branch and clean status for an init+commit repo', function () {
+    const tmp = makeTempDir('autoclaw-doc-git2-');
+    try {
+      // Initialise a real repo so the section can shell out to git.
+      const opts = { cwd: tmp, encoding: 'utf8' as const };
+      const init = spawnSync('git', ['init', '-b', 'master'], opts);
+      if (init.status !== 0) {
+        // Some git versions don't accept -b; fall back.
+        spawnSync('git', ['init'], opts);
+      }
+      spawnSync('git', ['config', 'user.email', 't@t'], opts);
+      spawnSync('git', ['config', 'user.name', 'T'], opts);
+      spawnSync('git', ['config', 'commit.gpgsign', 'false'], opts);
+      fs.writeFileSync(path.join(tmp, 'README.md'), '# x');
+      spawnSync('git', ['add', '.'], opts);
+      spawnSync('git', ['commit', '-m', 'init', '--no-gpg-sign'], opts);
+
+      const section = buildGitHealthSection(tmp);
+      assert.strictEqual(section.isGitRepo, true);
+      assert.ok(section.branch && section.branch.length > 0);
+      assert.strictEqual(section.uncommittedFiles, 0);
+      assert.strictEqual(section.untrackedFiles, 0);
+      // No upstream — should produce a note.
+      assert.strictEqual(section.remoteName, null);
+      assert.ok(section.notes.some(n => /upstream/i.test(n)));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+suite('Doctor: renderReportJson()', function () {
+  test('produces valid JSON parseable round-trip', async function () {
+    const ws = makeTempDir('autoclaw-doc-json-ws-');
+    const ext = makeTempDir('autoclaw-doc-json-ext-');
+    try {
+      const report = await runDoctor(ext, {
+        workspaceRoot: ws,
+        isExtensionInstalled: () => false,
+        zippymeshUrl: DEAD_ZMLR_URL
+      });
+      const json = renderReportJson(report);
+      const parsed = JSON.parse(json);
+      assert.strictEqual(parsed.workspace.workspaceRoot, ws);
+      assert.ok(parsed.compilation, 'has compilation section');
+      assert.ok(parsed.adapterSchema, 'has adapterSchema section');
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+      fs.rmSync(ext, { recursive: true, force: true });
+    }
   });
 });
 

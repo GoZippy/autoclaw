@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Persistent background agents, autonomous build workflows, and multi-agent teams. Zero setup. Works with Claude, Copilot, and any Agent Skills compatible AI.",
-  "version": "1.2.5",
+  "version": "2.0.3",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.95.0"
@@ -23,6 +23,12 @@
     "type": "git",
     "url": "https://github.com/GoZippy/autoclaw.git"
   },
+  "bugs": {
+    "url": "https://github.com/GoZippy/autoclaw/issues"
+  },
+  "homepage": "https://github.com/GoZippy/autoclaw#readme",
+  "license": "SEE LICENSE IN LICENSE",
+  "qna": "marketplace",
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -38,6 +44,9 @@
       },
       {
         "path": "./skills/mateam/SKILL.md"
+      },
+      {
+        "path": "./skills/orchestrate/SKILL.md"
       }
     ],
     "commands": [
@@ -54,8 +63,16 @@
         "title": "AutoClaw: Install Adapters for Detected AI Extensions"
       },
       {
+        "command": "autoclaw.launchSkill",
+        "title": "AutoClaw: Launch Skill (Copy Prompt to Clipboard)"
+      },
+      {
         "command": "autoclaw.doctor",
         "title": "AutoClaw: Doctor (Health Check)"
+      },
+      {
+        "command": "autoclaw.doctorJson",
+        "title": "AutoClaw: Doctor (Health Check, JSON output)"
       },
       {
         "command": "autoclaw.exportSnapshot",
@@ -68,6 +85,38 @@
       {
         "command": "autoclaw.autobuild.tail",
         "title": "AutoClaw: AutoBuild — Tail Most Recent Run Log"
+      },
+      {
+        "command": "autoclaw.orchestrate.plan",
+        "title": "AutoClaw: Orchestrate — Plan Sprints from Manifest"
+      },
+      {
+        "command": "autoclaw.orchestrate.status",
+        "title": "AutoClaw: Orchestrate — Show Sprint Status"
+      },
+      {
+        "command": "autoclaw.orchestrate.assign",
+        "title": "AutoClaw: Orchestrate — Assign Next Sprint"
+      },
+      {
+        "command": "autoclaw.bridge.start",
+        "title": "AutoClaw: Start OpenClaw Bridge Server"
+      },
+      {
+        "command": "autoclaw.bridge.stop",
+        "title": "AutoClaw: Stop OpenClaw Bridge Server"
+      },
+      {
+        "command": "autoclaw.bridge.addAgent",
+        "title": "AutoClaw: Register Remote Agent (Generate Token)"
+      },
+      {
+        "command": "orchestrator.showDashboard",
+        "title": "AutoClaw: Show Orchestrator Dashboard"
+      },
+      {
+        "command": "orchestrator.refreshDashboard",
+        "title": "AutoClaw: Refresh Orchestrator Dashboard"
       },
       {
         "command": "kdream.showDashboard",
@@ -86,7 +135,7 @@
       "activitybar": [
         {
           "id": "autoclaw-kdream",
-          "title": "AutoClaw KDream",
+          "title": "AutoClaw",
           "icon": "resources/kdream-icon.svg"
         }
       ]
@@ -95,7 +144,7 @@
       "autoclaw-kdream": [
         {
           "id": "kdreamDashboard",
-          "name": "KDream Dashboard",
+          "name": "AutoClaw",
           "type": "webview"
         }
       ]
@@ -114,8 +163,41 @@
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "kdream.showDashboard",
+        "key": "ctrl+alt+k",
+        "mac": "cmd+alt+k"
+      },
+      {
+        "command": "kdream.refreshDashboard",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "view == kdreamDashboard"
+      },
+      {
+        "command": "autoclaw.doctor",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d"
+      },
+      {
+        "command": "autoclaw.autobuild.runNow",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b"
+      },
+      {
+        "command": "autoclaw.orchestrate.plan",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o"
+      },
+      {
+        "command": "autoclaw.launchSkill",
+        "key": "ctrl+alt+l",
+        "mac": "cmd+alt+l"
+      }
+    ],
     "configuration": {
-      "title": "AutoClaw KDream",
+      "title": "AutoClaw",
       "properties": {
         "autoclaw.kdream.enableFileWatcher": {
           "type": "boolean",
@@ -140,7 +222,9 @@
             { "name": "KiloCode", "id": "kilocode.kilo-code" },
             { "name": "Kiro", "id": "amazon.kiro" },
             { "name": "Windsurf", "id": "codeium.windsurf" },
-            { "name": "Continue", "id": "Continue.continue" }
+            { "name": "Continue", "id": "Continue.continue" },
+            { "name": "Cursor", "id": null },
+            { "name": "Antigravity", "id": null }
           ],
           "description": "List of AI adapters to monitor for health status. ZippyMesh LLM Router health is checked separately via HTTP."
         },
@@ -181,6 +265,51 @@
           "default": 30,
           "minimum": 10,
           "description": "How often the AutoBuild scheduler checks for due workflows (seconds, minimum 10)"
+        },
+        "autoclaw.orchestrate.workAgents": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Number of parallel work agents for orchestration"
+        },
+        "autoclaw.orchestrate.maxTasksPerAgent": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "description": "Maximum tasks assigned to a single agent per sprint"
+        },
+        "autoclaw.orchestrate.maxSubtasksPerSprint": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "description": "Maximum subtasks across all agents in a single sprint"
+        },
+        "autoclaw.orchestrate.branchPrefix": {
+          "type": "string",
+          "default": "feat/",
+          "description": "Git branch prefix for sprint feature branches"
+        },
+        "autoclaw.orchestrate.migrationRangeSize": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "description": "Number of migration slots reserved per agent per sprint"
+        },
+        "autoclaw.bridge.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the OpenClaw HTTP bridge server for remote agents"
+        },
+        "autoclaw.bridge.port": {
+          "type": "number",
+          "default": 9876,
+          "description": "Port for the OpenClaw bridge server"
+        },
+        "autoclaw.bridge.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Host for the OpenClaw bridge server (use 0.0.0.0 for external access)"
         }
       }
     }
@@ -196,9 +325,10 @@
     "pretest": "tsc -p ./",
     "test": "vscode-test",
     "test:integration": "vscode-test",
-    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js",
+    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js",
     "sample:snapshot": "node scripts/sample-snapshot.js",
     "sample:autobuild": "node scripts/sample-autobuild-run.js",
+    "sample:doctor": "node scripts/sample-doctor.js",
     "package": "vsce package",
     "publish:vscode": "node scripts/publish-vsce.js",
     "publish:ovsx": "node scripts/publish-ovsx.js",

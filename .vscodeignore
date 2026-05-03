@@ -3,6 +3,7 @@
 .vscode-test.mjs
 .gitignore
 .gitattributes
+.env
 .kilo/**
 .kilocodemodes
 .voidspec/**

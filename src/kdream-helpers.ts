@@ -219,15 +219,25 @@ export function getAdapterHealthEntry(adapterName: string, isInstalled: boolean)
 }
 
 /**
- * Default adapter configuration
+ * Default adapter configuration. `id` is the VS Code extension ID where one
+ * exists; `null` means the adapter targets a standalone host detected by
+ * other means (Cursor: `.cursor/` workspace marker; Antigravity: app name).
+ * Keep this list in sync with `adapters/` and `package.json` defaults.
  */
-export const DEFAULT_ADAPTERS = [
+export interface AdapterConfig {
+  name: string;
+  id: string | null;
+}
+
+export const DEFAULT_ADAPTERS: AdapterConfig[] = [
   { name: 'Claude Code', id: 'Anthropic.claude-code' },
   { name: 'Cline', id: 'saoudrizwan.claude-dev' },
   { name: 'KiloCode', id: 'kilocode.kilo-code' },
   { name: 'Kiro', id: 'amazon.kiro' },
   { name: 'Windsurf', id: 'codeium.windsurf' },
-  { name: 'Continue', id: 'Continue.continue' }
+  { name: 'Continue', id: 'Continue.continue' },
+  { name: 'Cursor', id: null },
+  { name: 'Antigravity', id: null }
 ];
 
 /**

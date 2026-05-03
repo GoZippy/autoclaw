@@ -39,7 +39,7 @@ import {
   checkZippyMeshHealth
 } from './kdream-helpers';
 import type { ParsedTask, AdapterHealth, TodoItem, CodeChurnMetrics, ProductivityInsights, ProjectHealthIndicators } from './kdream-helpers';
-import { runDoctor, renderReport } from './doctor';
+import { runDoctor, renderReport, renderReportJson } from './doctor';
 import type { DoctorReport, DoctorVscodeShim } from './doctor';
 import { buildSnapshot } from './snapshot';
 import {
@@ -49,6 +49,24 @@ import {
   getRunsDir,
   findLatestRunLog
 } from './autobuild';
+import {
+  generatePlan,
+  DEFAULT_PLANNER_CONFIG,
+  writeYAMLFile,
+  writeStateFile,
+  readStateFile,
+  toYAML,
+} from './orchestrate';
+import type { Manifest, PlannerConfig, PlanResult } from './orchestrate';
+import {
+  readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat,
+  cleanupOldMessages, type CommsLogEntry,
+} from './comms';
+import { readSnapshots, type Snapshot } from './timetravel';
+import {
+  startBridge, stopBridge, createRemoteAgentToken,
+  type BridgeState, type BridgeConfig,
+} from './bridge';
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -112,9 +130,59 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Skill launcher — quick pick that copies a skill prompt to clipboard
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.launchSkill', async () => {
+      const appName = vscode.env.appName || '';
+      const isKiro = /kiro/i.test(appName);
+      const isClaudeCode = !!vscode.extensions.getExtension('Anthropic.claude-code');
+
+      // Route to the correct skill file based on the active IDE/extension host.
+      // Kiro: .kiro/steering/  |  everything else: .clinerules/ (installed by KiloCode + Cline adapters)
+      const sp = (skill: string) => isKiro ? `.kiro/steering/${skill}.md` : `.clinerules/${skill}.md`;
+
+      const skills = [
+        { label: '🌙 KDream — Start', detail: 'Start the persistent background agent', prompt: `Follow the instructions in ${sp('kdream')} — run kdream start` },
+        { label: '🌙 KDream — Status', detail: 'Check background agent status', prompt: `Follow the instructions in ${sp('kdream')} — run kdream ps` },
+        { label: '🌙 KDream — Add Task', detail: 'Add a follow-up task', prompt: `Follow the instructions in ${sp('kdream')} — run kdream add "` },
+        { label: '🔨 AutoBuild — Schedule', detail: 'Schedule a build workflow', prompt: `Follow the instructions in ${sp('autobuild')} — run autobuild schedule` },
+        { label: '🔨 AutoBuild — Run', detail: 'Run a workflow now', prompt: `Follow the instructions in ${sp('autobuild')} — run autobuild run` },
+        { label: '👥 MAteam — Launch', detail: 'Spawn a multi-agent team', prompt: `Follow the instructions in ${sp('mateam')} — run mateam launch "` },
+        { label: '🎯 Orchestrate — Init', detail: 'Initialize orchestrator', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate init` },
+        { label: '🎯 Orchestrate — Plan', detail: 'Generate sprint plans', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate plan` },
+        { label: '🎯 Orchestrate — Status', detail: 'Show sprint progress', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate status` },
+        { label: '🎯 Orchestrate — Assign', detail: 'Assign next sprint', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate next` },
+        { label: '📬 Check Inbox', detail: 'Check cross-agent messages', prompt: `Read ${sp('cross-agent')} for the protocol. Check your inbox at .autoclaw/orchestrator/comms/inboxes/ for new messages and process them.` },
+      ];
+
+      const pick = await vscode.window.showQuickPick(skills, {
+        placeHolder: 'Select an AutoClaw skill to launch (copies prompt to clipboard)',
+        matchOnDetail: true,
+      });
+
+      if (pick) {
+        await vscode.env.clipboard.writeText(pick.prompt);
+        const hint = isClaudeCode
+          ? `Copied "${pick.label}" prompt. Claude Code users can also type the skill command directly in chat.`
+          : `Copied "${pick.label}" prompt to clipboard. Paste into any AI chat.`;
+        vscode.window.showInformationMessage(hint, 'Open Chat').then(action => {
+          if (action === 'Open Chat') {
+            vscode.commands.executeCommand('workbench.action.chat.open');
+          }
+        });
+      }
+    })
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.doctor', async () => {
       await runDoctorCommand(context.extensionPath);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.doctorJson', async () => {
+      await runDoctorCommand(context.extensionPath, 'json');
     })
   );
 
@@ -135,6 +203,60 @@ export function activate(context: vscode.ExtensionContext) {
       await autobuildTailCommand();
     })
   );
+
+  // Orchestrate commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.orchestrate.plan', async () => {
+      await orchestratePlanCommand();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.orchestrate.status', async () => {
+      await orchestrateStatusCommand();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.orchestrate.assign', async () => {
+      await orchestrateAssignNextCommand();
+    })
+  );
+
+  // Bridge commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.bridge.start', async () => {
+      await bridgeStartCommand();
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.bridge.stop', async () => {
+      await bridgeStopCommand();
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.bridge.addAgent', async () => {
+      await bridgeAddAgentCommand();
+    })
+  );
+
+  // Orchestrator Dashboard commands — redirect to unified panel
+  context.subscriptions.push(
+    vscode.commands.registerCommand('orchestrator.showDashboard', async () => {
+      await vscode.commands.executeCommand('kdreamDashboard.focus');
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('orchestrator.refreshDashboard', async () => {
+      if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+    })
+  );
+
+  // Auto-start bridge if enabled
+  const bridgeConfig = vscode.workspace.getConfiguration('autoclaw.bridge');
+  if (bridgeConfig.get<boolean>('enabled', false)) {
+    bridgeStartCommand().catch(e => console.error('bridge auto-start failed:', e));
+  }
 
   // AutoBuild scheduler: single setInterval in the extension host.
   startAutobuildScheduler(context);
@@ -190,6 +312,17 @@ export function activate(context: vscode.ExtensionContext) {
   if (autoInstall) {
     installAdapters(adaptersDir, context.extensionPath, true);
   }
+
+  // Auto-provision cross-agent comms infrastructure
+  provisionCrossAgentComms().catch(e =>
+    console.error('cross-agent comms provisioning failed:', e)
+  );
+
+  // Start heartbeat ticker — writes real heartbeats for detected agents
+  startHeartbeatTicker(context);
+
+  // First-run welcome with IDE-specific guidance
+  showWelcomeIfNeeded(context);
 }
 
 async function installAdapters(
@@ -223,11 +356,15 @@ async function installAdapters(
     installed.push('Cline');
   }
 
-  // KiloCode — workspace .kilocodemodes
+  // KiloCode — workspace .kilocodemodes + .clinerules/
   if (vscode.extensions.getExtension('kilocode.kilo-code')) {
     const src = path.join(adaptersDir, 'kilocode', 'autoclaw-modes.yaml');
     const dest = path.join(workspaceRoot, '.kilocodemodes');
     mergeKiloModes(src, dest);
+    // Also copy Cline-format rules to .clinerules/ since KiloCode reads them
+    // as system instructions (works in all IDEs including Kiro where custom modes may not load)
+    const clinerulesDest = path.join(workspaceRoot, '.clinerules');
+    copyDir(path.join(adaptersDir, 'cline'), clinerulesDest);
     installed.push('KiloCode');
   }
 
@@ -591,13 +728,17 @@ export async function getProductivityInsights(workspaceRoot: string, logs: strin
   };
 
   try {
-    // Memory size
+    // Memory size — ENOENT is normal (file not yet created).
     const memoryPath = getMemoryPath(workspaceRoot);
     let memorySize = 0;
     try {
       const stats = await fsPromises.stat(memoryPath);
       memorySize = Math.round(stats.size / 1024); // KB
-    } catch {}
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn(`AutoClaw: stat failed for ${memoryPath}:`, (e as Error).message);
+      }
+    }
 
     // Logs size - estimate from today's log
     const logPath = getTodayLogPath(workspaceRoot);
@@ -605,7 +746,11 @@ export async function getProductivityInsights(workspaceRoot: string, logs: strin
     try {
       const stats = await fsPromises.stat(logPath);
       logsSize = Math.round(stats.size / 1024); // KB
-    } catch {}
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn(`AutoClaw: stat failed for ${logPath}:`, (e as Error).message);
+      }
+    }
 
     // TODO resolution - simplified, assume resolved if not in current scan
     const openTodos = todos.length;
@@ -678,7 +823,7 @@ export async function getProjectHealthIndicators(workspaceRoot: string, todos: T
       }
     }
 
-    // Memory completeness - check if sections exist
+    // Memory completeness - check if sections exist (ENOENT = no MEMORY.md yet).
     const memoryPath = getMemoryPath(workspaceRoot);
     let memoryCompleteness = 0;
     try {
@@ -686,7 +831,11 @@ export async function getProjectHealthIndicators(workspaceRoot: string, todos: T
       const sections = ['## Follow-ups', '## Facts', '## Observations'];
       const presentSections = sections.filter(s => content.includes(s)).length;
       memoryCompleteness = Math.round((presentSections / sections.length) * 100);
-    } catch {}
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.warn(`AutoClaw: read failed for ${memoryPath}:`, (e as Error).message);
+      }
+    }
 
     // Adapter coverage
     const healthyAdapters = adapterHealth.filter(a => a.status === 'healthy').length;
@@ -820,11 +969,28 @@ export async function getCachedZippyMeshHealth(
 
 export async function getAdapterHealth(): Promise<AdapterHealth[]> {
   const config = vscode.workspace.getConfiguration('autoclaw.kdream');
-  const adapters: { name: string; id: string }[] = config.get('adapters', DEFAULT_ADAPTERS);
+  const adapters: { name: string; id: string | null }[] =
+    config.get('adapters', DEFAULT_ADAPTERS);
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
 
   const extensionResults = adapters.map(adapter => {
-    const extension = vscode.extensions.getExtension(adapter.id);
-    return getAdapterHealthEntry(adapter.name, !!extension);
+    if (adapter.id) {
+      const extension = vscode.extensions.getExtension(adapter.id);
+      return getAdapterHealthEntry(adapter.name, !!extension);
+    }
+    // Standalone host adapters — detected via filesystem markers / appName.
+    if (adapter.name === 'Cursor') {
+      const detected = !!workspaceRoot && hasCursorConfig(workspaceRoot);
+      return getAdapterHealthEntry(adapter.name, detected);
+    }
+    if (adapter.name === 'Antigravity') {
+      const detected = isAntigravityHost ||
+        (!!workspaceRoot && fs.existsSync(path.join(workspaceRoot, '.agent')));
+      return getAdapterHealthEntry(adapter.name, detected);
+    }
+    // Unknown standalone adapter — report as not detected rather than crashing.
+    return getAdapterHealthEntry(adapter.name, false);
   });
 
   // Check ZippyMesh LLM Router (async network check, cached for 60 s)
@@ -856,7 +1022,7 @@ async function scanWorkspaceForTodos(): Promise<TodoItem[]> {
     for (const pattern of patterns) {
       progress.report({ message: `Scanning ${pattern} (${current + 1}/${total})`, increment: (1 / total) * 100 });
       try {
-        const files = await vscode.workspace.findFiles(pattern, '**/node_modules/**');
+        const files = await vscode.workspace.findFiles(pattern, '{**/node_modules/**,**/.vscode-test/**,**/out/**,**/dist/**,**/.autoclaw/**,**/*.min.js,**/*.bundle.js}');
         for (const fileUri of files) {
           const filePath = fileUri.fsPath;
           try {
@@ -980,9 +1146,14 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
       switch (message.command) {
         case 'refresh':
           await refreshDashboardData(webviewView);
+          await refreshOrchestratorData(webviewView);
           break;
         case 'getInitialData':
           await refreshDashboardData(webviewView);
+          await refreshOrchestratorData(webviewView);
+          break;
+        case 'launchSkill':
+          await vscode.commands.executeCommand('autoclaw.launchSkill');
           break;
         case 'markTaskComplete': {
           // Mark a task as complete in the MEMORY.md file
@@ -1036,6 +1207,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
     
     // Send initial data
     refreshDashboardData(webviewView);
+    refreshOrchestratorData(webviewView);
     
     // Set up periodic refresh interval as fallback for file watcher
     const config = vscode.workspace.getConfiguration('autoclaw.kdream');
@@ -1046,6 +1218,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
     refreshIntervalId = setInterval(async () => {
       if (kdreamView) {
         await refreshDashboardData(kdreamView);
+        await refreshOrchestratorData(kdreamView);
       }
     }, refreshIntervalSeconds * 1000);
     
@@ -1077,51 +1250,93 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
     <meta charset="UTF-8">
     <meta http-equiv="Content-Security-Policy" content="${csp}">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KDream Dashboard</title>
+    <title>AutoClaw</title>
     <link rel="stylesheet" href="${cssUri}">
 </head>
 <body>
-    <div id="dashboard-container">
-        <header>
-            <h1>KDream Dashboard</h1>
-            <button id="refresh-btn">Refresh</button>
-            <button id="scan-todos-btn" title="Scan workspace for TODO and FIXME comments">Scan TODOs</button>
-            <button id="export-snapshot-btn" title="Export a Markdown health snapshot (doctor + state + logs + follow-ups)">Export Snapshot</button>
-        </header>
-        <main>
-            <section id="status-section">
-                <h2>Status</h2>
-                <div id="status-content">Loading...</div>
-            </section>
-            <section id="tasks-section">
-                <h2>Tasks & Follow-ups</h2>
-                <div id="tasks-content">Loading...</div>
-            </section>
-            <section id="logs-section">
-                <h2>Recent Activity</h2>
-                <div id="logs-content">Loading...</div>
-            </section>
-            <section id="adapter-health-section">
-                <h2>Adapter Health</h2>
-                <div id="adapter-health-content">Loading...</div>
-            </section>
-            <section id="todos-section">
-                <h2>TODOs & FIXMEs</h2>
-                <div id="todos-content">Loading...</div>
-            </section>
-            <section id="code-churn-section">
-                <h2>Code Churn Metrics</h2>
-                <div id="code-churn-content">Loading...</div>
-            </section>
-            <section id="productivity-section">
-                <h2>Productivity Insights</h2>
-                <div id="productivity-content">Loading...</div>
-            </section>
-            <section id="health-section">
-                <h2>Project Health</h2>
-                <div id="health-content">Loading...</div>
-            </section>
-        </main>
+    <div id="panel-root" role="main">
+        <!-- Quick Actions bar — always visible -->
+        <div class="quick-actions" role="toolbar" aria-label="Quick actions">
+            <button id="btn-launch-skill" class="primary" type="button" aria-label="Launch Skill">&#9889; Launch Skill</button>
+            <button id="btn-refresh" type="button" aria-label="Refresh">&#8635; Refresh</button>
+            <button id="btn-export" type="button" aria-label="Export Snapshot">&#128230; Export</button>
+        </div>
+
+        <!-- Agents section -->
+        <div class="panel-section open" id="agents-section">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="true" aria-controls="agents-body">
+                <span class="section-chevron"></span>
+                Agents
+                <span class="section-badge" id="agents-badge">0</span>
+            </div>
+            <div class="section-body" id="agents-body">
+                <div id="agents-content"><p class="empty">Loading...</p></div>
+                <div id="status-content"></div>
+            </div>
+        </div>
+
+        <!-- Sprints section -->
+        <div class="panel-section" id="sprints-section" style="display:none">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="sprints-body">
+                <span class="section-chevron"></span>
+                Sprints
+                <span class="section-badge" id="sprints-badge"></span>
+            </div>
+            <div class="section-body" id="sprints-body">
+                <div id="sprints-content"><p class="empty">Loading...</p></div>
+            </div>
+        </div>
+
+        <!-- Messages section -->
+        <div class="panel-section" id="messages-section">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="messages-body">
+                <span class="section-chevron"></span>
+                Messages
+                <span class="section-badge" id="messages-badge">0</span>
+            </div>
+            <div class="section-body" id="messages-body">
+                <div id="messages-content"><p class="empty">Loading...</p></div>
+            </div>
+        </div>
+
+        <!-- Tasks section -->
+        <div class="panel-section" id="tasks-section">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="tasks-body">
+                <span class="section-chevron"></span>
+                Tasks
+                <span class="section-badge" id="tasks-badge">0</span>
+            </div>
+            <div class="section-body" id="tasks-body">
+                <div id="tasks-content"><p class="empty">Loading...</p></div>
+                <div id="todos-content"></div>
+            </div>
+        </div>
+
+        <!-- Activity section -->
+        <div class="panel-section" id="activity-section">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="activity-body">
+                <span class="section-chevron"></span>
+                Activity
+            </div>
+            <div class="section-body" id="activity-body">
+                <div id="logs-content"><p class="empty">Loading...</p></div>
+                <div id="timeline-content"></div>
+            </div>
+        </div>
+
+        <!-- Health section -->
+        <div class="panel-section" id="health-section">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="health-body">
+                <span class="section-chevron"></span>
+                Health
+            </div>
+            <div class="section-body" id="health-body">
+                <div id="adapter-health-content"><p class="empty">Loading...</p></div>
+                <div id="code-churn-content"></div>
+                <div id="productivity-content"></div>
+                <div id="health-content"></div>
+            </div>
+        </div>
     </div>
     <script nonce="${nonce}" src="${jsUri}"></script>
 </body>
@@ -1194,7 +1409,10 @@ async function runExportSnapshotCommand(extensionPath: string): Promise<void> {
   }
 }
 
-async function runDoctorCommand(extensionPath: string): Promise<void> {
+async function runDoctorCommand(
+  extensionPath: string,
+  format: 'text' | 'json' = 'text'
+): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const config = vscode.workspace.getConfiguration('autoclaw.kdream');
   const zippymeshUrl = config.get<string>('zippymeshUrl', 'http://localhost:20128');
@@ -1211,7 +1429,9 @@ async function runDoctorCommand(extensionPath: string): Promise<void> {
     doctorOutputChannel = vscode.window.createOutputChannel('AutoClaw Doctor');
   }
   doctorOutputChannel.clear();
-  doctorOutputChannel.appendLine(renderReport(report));
+  doctorOutputChannel.appendLine(
+    format === 'json' ? renderReportJson(report) : renderReport(report)
+  );
   doctorOutputChannel.show(true);
 }
 
@@ -1339,6 +1559,510 @@ async function autobuildTailCommand(): Promise<void> {
   await vscode.window.showTextDocument(doc);
 }
 
+// ---------------------------------------------------------------------------
+// Welcome / Onboarding
+// ---------------------------------------------------------------------------
+
+async function showWelcomeIfNeeded(context: vscode.ExtensionContext): Promise<void> {
+  const WELCOME_KEY = 'autoclaw.welcomeShown.2.0.0';
+  if (context.globalState.get<boolean>(WELCOME_KEY)) { return; }
+
+  const ide = vscode.env.appName || 'VS Code';
+  const isKiro = /kiro/i.test(ide);
+  const isCursor = /cursor/i.test(ide);
+
+  let tip: string;
+  if (isKiro) {
+    tip = 'In Kiro chat: use # to attach steering files (kdream, orchestrate, etc.). In Kilo Code: type skill names naturally (e.g. "kdream start").';
+  } else if (isCursor) {
+    tip = 'Skills are loaded from .cursor/rules/. Type skill commands in chat (e.g. "kdream start", "orchestrate plan").';
+  } else {
+    tip = 'Use /kdream, /autobuild, /mateam, /orchestrate in VS Code chat. Or run "AutoClaw: Launch Skill" from the command palette.';
+  }
+
+  const action = await vscode.window.showInformationMessage(
+    `AutoClaw v2.0.0 ready (${ide}). ${tip}`,
+    'Launch Skill',
+    'Dismiss'
+  );
+
+  if (action === 'Launch Skill') {
+    await vscode.commands.executeCommand('autoclaw.launchSkill');
+  }
+
+  await context.globalState.update(WELCOME_KEY, true);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-Agent Comms Auto-Provisioning
+// ---------------------------------------------------------------------------
+
+interface DetectedAgent {
+  id: string;
+  name: string;
+  extensionId: string | null;
+  detected: boolean;
+  rulesFormat: string;
+  rulesDir: string;
+  hooksSupported: boolean;
+}
+
+const AGENT_DEFINITIONS: Omit<DetectedAgent, 'detected'>[] = [
+  { id: 'kiro', name: 'Kiro', extensionId: 'amazon.kiro', rulesFormat: 'kiro-steering', rulesDir: '.kiro/steering', hooksSupported: true },
+  { id: 'kilocode', name: 'Kilo Code', extensionId: 'kilocode.kilo-code', rulesFormat: 'clinerules', rulesDir: '.clinerules', hooksSupported: false },
+  { id: 'cline', name: 'Cline', extensionId: 'saoudrizwan.claude-dev', rulesFormat: 'clinerules', rulesDir: '.clinerules', hooksSupported: false },
+  { id: 'claude-code', name: 'Claude Code', extensionId: 'Anthropic.claude-code', rulesFormat: 'claude-rules', rulesDir: '.claude/rules', hooksSupported: false },
+  { id: 'continue', name: 'Continue', extensionId: 'Continue.continue', rulesFormat: 'continue-prompts', rulesDir: '.continue/prompts', hooksSupported: false },
+  { id: 'codex', name: 'Codex', extensionId: 'openai.codex', rulesFormat: 'codex-instructions', rulesDir: '.codex', hooksSupported: false },
+  { id: 'cursor', name: 'Cursor', extensionId: null, rulesFormat: 'cursor-rules', rulesDir: '.cursor/rules', hooksSupported: false },
+  { id: 'windsurf', name: 'Windsurf', extensionId: 'codeium.windsurf', rulesFormat: 'windsurf-rules', rulesDir: '.windsurf/rules', hooksSupported: false },
+  { id: 'antigravity', name: 'Antigravity', extensionId: null, rulesFormat: 'antigravity-rules', rulesDir: '.agent/rules', hooksSupported: false },
+];
+
+function detectAgents(workspaceRoot: string): DetectedAgent[] {
+  const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
+  const isKiroHost = /kiro/i.test(vscode.env.appName || '');
+  const isCursorHost = /cursor/i.test(vscode.env.appName || '');
+  const isWindsurfHost = /windsurf/i.test(vscode.env.appName || '');
+
+  return AGENT_DEFINITIONS.map(def => {
+    let detected = false;
+    if (def.extensionId) {
+      detected = !!vscode.extensions.getExtension(def.extensionId);
+    }
+    // Host IDE is always detected as an agent even without its own extension ID
+    if (def.id === 'kiro' && isKiroHost) { detected = true; }
+    if (def.id === 'cursor' && (isCursorHost || hasCursorConfig(workspaceRoot))) { detected = true; }
+    if (def.id === 'windsurf' && isWindsurfHost) { detected = true; }
+    if (def.id === 'antigravity' && (isAntigravityHost || fs.existsSync(path.join(workspaceRoot, '.agent')))) { detected = true; }
+    return { ...def, detected };
+  });
+}
+
+function generateCrossAgentRules(agentId: string, agentName: string, allAgents: DetectedAgent[]): string {
+  const otherAgents = allAgents.filter(a => a.detected && a.id !== agentId);
+  const otherNames = otherAgents.map(a => a.name).join(', ');
+  const inboxLines = otherAgents
+    .map(a => `- To ${a.name}: \`.autoclaw/orchestrator/comms/inboxes/${a.id}/\``)
+    .join('\n');
+
+  return `# Cross-Agent Coordination Protocol — ${agentName}
+
+## Multi-Agent Team
+
+You (${agentName}) are part of a multi-agent team. Other active agents: ${otherNames || 'none detected'}.
+All agents coordinate through the AutoClaw Orchestrator.
+
+## Your Mailbox
+
+Check at the START of every task and AFTER completing work:
+- **Inbox**: \`.autoclaw/orchestrator/comms/inboxes/${agentId}/\`
+- **Shared**: \`.autoclaw/orchestrator/comms/inboxes/shared/\`
+
+Message types: review_request, review_response, consensus_vote, task_claim,
+task_complete, finding_report, question, answer.
+
+## Send Messages
+
+Write JSON to target inbox. Filename: \`{timestamp}-{type}-${agentId}.json\`
+${inboxLines}
+- Broadcast: \`.autoclaw/orchestrator/comms/inboxes/shared/\`
+
+## On Task Completion
+
+1. Broadcast task_complete to shared/
+2. Write review_request to other agents' inboxes
+3. Check YOUR inbox for pending reviews
+
+## Consensus
+
+Tasks require 2/3 majority approval. Security findings require unanimous.
+Write votes to \`consensus/active/{task_id}-${agentId}.json\`.
+
+## Scope
+
+Check \`.autoclaw/orchestrator/sprints/plan-summary.yaml\` for assignments.
+Stay in your assigned scope. Coordinate via messages for cross-scope changes.
+`;
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat Ticker — writes real heartbeats for detected agents based on
+// actual VS Code signals (extension installed + active, visible editors,
+// recent file saves, running tasks).
+// ---------------------------------------------------------------------------
+
+let heartbeatIntervalId: NodeJS.Timeout | undefined;
+/** Tracks the last file-save timestamp per workspace folder. */
+let lastFileSaveTimestamp: number = 0;
+
+function startHeartbeatTicker(context: vscode.ExtensionContext): void {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { return; }
+
+  const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+
+  // Track file saves as a proxy for "an agent is actively editing"
+  const saveWatcher = vscode.workspace.onDidSaveTextDocument(() => {
+    lastFileSaveTimestamp = Date.now();
+  });
+  context.subscriptions.push(saveWatcher);
+
+  // Write heartbeats immediately, then every 30s
+  writeAgentHeartbeats(workspaceRoot, commsDir).catch(() => {});
+
+  heartbeatIntervalId = setInterval(() => {
+    writeAgentHeartbeats(workspaceRoot, commsDir).catch(() => {});
+  }, 30_000);
+
+  context.subscriptions.push({
+    dispose: () => {
+      if (heartbeatIntervalId) {
+        clearInterval(heartbeatIntervalId);
+        heartbeatIntervalId = undefined;
+      }
+    }
+  });
+}
+
+async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Promise<void> {
+  const agents = detectAgents(workspaceRoot);
+  const detectedAgents = agents.filter(a => a.detected);
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+
+  // A file save within the last 2 minutes means something is actively editing
+  const recentSave = (nowMs - lastFileSaveTimestamp) < 2 * 60 * 1000;
+
+  // Check if there are visible text editors (someone is working)
+  const hasVisibleEditors = vscode.window.visibleTextEditors.length > 0;
+
+  // Check active editor for a hint about what's being worked on
+  const activeFile = vscode.window.activeTextEditor?.document.fileName;
+  const currentTask = activeFile
+    ? path.relative(workspaceRoot, activeFile).replace(/\\/g, '/')
+    : null;
+
+  for (const agent of detectedAgents) {
+    // Determine agent status from real signals
+    let status: 'active' | 'idle' = 'idle';
+
+    if (agent.extensionId) {
+      const ext = vscode.extensions.getExtension(agent.extensionId);
+      if (ext?.isActive) {
+        // Extension is loaded and activated
+        status = recentSave || hasVisibleEditors ? 'active' : 'idle';
+      }
+    } else {
+      // Agents without extension IDs (Cursor, Antigravity) — detected by host
+      status = recentSave || hasVisibleEditors ? 'active' : 'idle';
+    }
+
+    const hb: import('./comms').Heartbeat = {
+      agent_id: agent.id,
+      timestamp: now,
+      status,
+      current_task: status === 'active' ? currentTask : null,
+      sprint: null,
+    };
+
+    // Try to read sprint assignment from plan-summary
+    try {
+      const planPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'sprints', 'plan-summary.yaml');
+      if (fs.existsSync(planPath)) {
+        const planContent = await fsPromises.readFile(planPath, 'utf8');
+        // Look for in_progress or assigned sprints
+        const inProgress = planContent.match(/- number: (\d+)[\s\S]*?status: in_progress/);
+        const assigned = planContent.match(/- number: (\d+)[\s\S]*?status: assigned/);
+        if (inProgress) {
+          hb.sprint = parseInt(inProgress[1]);
+        } else if (assigned) {
+          hb.sprint = parseInt(assigned[1]);
+        }
+      }
+    } catch { /* no plan, that's fine */ }
+
+    await writeHeartbeat(commsDir, hb);
+  }
+}
+
+async function provisionCrossAgentComms(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { return; }
+
+  const registryPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'registry.json');
+  const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+
+  const agents = detectAgents(workspaceRoot);
+  const detectedAgents = agents.filter(a => a.detected);
+
+  if (detectedAgents.length < 2) { return; }
+
+  // Skip if already provisioned with same agent set
+  try {
+    const existing = JSON.parse(await fsPromises.readFile(registryPath, 'utf8'));
+    const existingIds = new Set((existing.agents || []).map((a: { id: string }) => a.id));
+    const currentIds = new Set(detectedAgents.map(a => a.id));
+    if (existingIds.size === currentIds.size && [...currentIds].every(id => existingIds.has(id))) {
+      return;
+    }
+  } catch { /* proceed */ }
+
+  // Create directories
+  const dirs = [
+    path.join(commsDir, 'inboxes', 'shared'),
+    path.join(commsDir, 'consensus', 'active'),
+    path.join(commsDir, 'consensus', 'resolved'),
+    path.join(commsDir, 'reviews', 'pending'),
+    path.join(commsDir, 'reviews', 'completed'),
+    path.join(commsDir, 'heartbeats'),
+    ...detectedAgents.map(a => path.join(commsDir, 'inboxes', a.id)),
+  ];
+  for (const dir of dirs) {
+    await fsPromises.mkdir(dir, { recursive: true });
+  }
+
+  // Write cross-agent rules for each agent
+  for (const agent of detectedAgents) {
+    const rulesContent = generateCrossAgentRules(agent.id, agent.name, agents);
+    const rulesDir = path.join(workspaceRoot, agent.rulesDir);
+    await fsPromises.mkdir(rulesDir, { recursive: true });
+
+    const isKiro = agent.rulesFormat === 'kiro-steering';
+    const isCodex = agent.rulesFormat === 'codex-instructions';
+    const filename = isCodex ? 'instructions.md' : isKiro ? 'cross-agent.md' : 'cross-agent-protocol.md';
+    const content = isKiro ? '---\ninclusion: auto\n---\n\n' + rulesContent : rulesContent;
+    const rulesPath = path.join(rulesDir, filename);
+
+    if (!fs.existsSync(rulesPath)) {
+      await fsPromises.writeFile(rulesPath, content, 'utf8');
+    }
+  }
+
+  // Write registry
+  const registry = {
+    agents: detectedAgents.map(a => ({
+      id: a.id, name: a.name, extension_id: a.extensionId, detected: true,
+      rules_path: path.join(a.rulesDir, a.rulesFormat === 'codex-instructions' ? 'instructions.md' : a.rulesFormat === 'kiro-steering' ? 'cross-agent.md' : 'cross-agent-protocol.md'),
+      inbox_path: `.autoclaw/orchestrator/comms/inboxes/${a.id}/`,
+      hooks_supported: a.hooksSupported, last_heartbeat: null, status: 'detected',
+    })),
+    ide: vscode.env.appName || 'unknown',
+    provisioned_at: new Date().toISOString(),
+  };
+  await fsPromises.writeFile(registryPath, JSON.stringify(registry, null, 2), 'utf8');
+
+  // Initialize comms log
+  const logPath = path.join(commsDir, 'comms-log.jsonl');
+  if (!fs.existsSync(logPath)) {
+    const entry = JSON.stringify({
+      timestamp: new Date().toISOString(), type: 'system', from: 'autoclaw',
+      message: `Comms provisioned. Agents: ${detectedAgents.map(a => a.name).join(', ')}`,
+    }) + '\n';
+    await fsPromises.writeFile(logPath, entry, 'utf8');
+  }
+
+  console.log(`AutoClaw: cross-agent comms provisioned for ${detectedAgents.length} agents`);
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrate Commands
+// ---------------------------------------------------------------------------
+
+let orchestrateOutputChannel: vscode.OutputChannel | undefined;
+
+function getOrchestrateOutputChannel(): vscode.OutputChannel {
+  if (!orchestrateOutputChannel) {
+    orchestrateOutputChannel = vscode.window.createOutputChannel('AutoClaw Orchestrate');
+  }
+  return orchestrateOutputChannel;
+}
+
+async function orchestratePlanCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showErrorMessage('Orchestrate: open a workspace first.');
+    return;
+  }
+
+  const manifestDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'manifests');
+  if (!fs.existsSync(manifestDir)) {
+    vscode.window.showErrorMessage(
+      'Orchestrate: no manifests/ directory found. Run /orchestrate init first.'
+    );
+    return;
+  }
+
+  // Find manifest files
+  const manifestFiles = fs.readdirSync(manifestDir).filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
+  if (manifestFiles.length === 0) {
+    vscode.window.showErrorMessage('Orchestrate: no manifest YAML files found in manifests/.');
+    return;
+  }
+
+  let manifestFile = manifestFiles[0];
+  if (manifestFiles.length > 1) {
+    const pick = await vscode.window.showQuickPick(
+      manifestFiles.map(f => ({ label: f })),
+      { placeHolder: 'Select a task manifest' }
+    );
+    if (!pick) { return; }
+    manifestFile = pick.label;
+  }
+
+  const channel = getOrchestrateOutputChannel();
+  channel.show(true);
+  channel.appendLine(`[orchestrate] Planning from manifest: ${manifestFile}`);
+
+  // Read config for planner settings
+  const config = vscode.workspace.getConfiguration('autoclaw.orchestrate');
+  const plannerConfig: PlannerConfig = {
+    work_agents: config.get<number>('workAgents', DEFAULT_PLANNER_CONFIG.work_agents),
+    max_tasks_per_agent: config.get<number>('maxTasksPerAgent', DEFAULT_PLANNER_CONFIG.max_tasks_per_agent),
+    max_subtasks_per_sprint: config.get<number>('maxSubtasksPerSprint', DEFAULT_PLANNER_CONFIG.max_subtasks_per_sprint),
+    migration_range_size: config.get<number>('migrationRangeSize', DEFAULT_PLANNER_CONFIG.migration_range_size),
+    branch_prefix: config.get<string>('branchPrefix', DEFAULT_PLANNER_CONFIG.branch_prefix),
+  };
+
+  // Note: actual YAML parsing of the manifest is done by the skill prompt
+  // (the AI reads the YAML and constructs the Manifest object).
+  // The extension command provides the infrastructure; the skill provides the intelligence.
+  channel.appendLine(`[orchestrate] Config: ${plannerConfig.work_agents} agents, max ${plannerConfig.max_tasks_per_agent} tasks/agent`);
+  channel.appendLine(`[orchestrate] Manifest path: ${path.join(manifestDir, manifestFile)}`);
+  channel.appendLine(`[orchestrate] Use /orchestrate plan in chat to generate sprint plans from this manifest.`);
+
+  if (shouldShowNotification('info')) {
+    vscode.window.showInformationMessage(
+      `Orchestrate: manifest "${manifestFile}" ready. Use /orchestrate plan in chat to generate sprints.`
+    );
+  }
+}
+
+async function orchestrateStatusCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showErrorMessage('Orchestrate: open a workspace first.');
+    return;
+  }
+
+  const statePath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'state.json');
+  const state = await readStateFile(statePath);
+
+  const channel = getOrchestrateOutputChannel();
+  channel.show(true);
+
+  if (!state) {
+    channel.appendLine('[orchestrate] No orchestration state found. Run /orchestrate plan first.');
+    return;
+  }
+
+  channel.appendLine(`[orchestrate] Project: ${state.project}`);
+  channel.appendLine(`[orchestrate] Progress: ${state.tasks_complete}/${state.tasks_total} tasks`);
+  channel.appendLine(`[orchestrate] Current sprint: ${state.current_sprint ?? 'none'}`);
+  channel.appendLine(`[orchestrate] Total sprints: ${state.total_sprints}`);
+  for (const [agentId, agentState] of Object.entries(state.agents)) {
+    channel.appendLine(`[orchestrate]   ${agentId}: ${agentState.status} (sprint ${agentState.sprint ?? '-'}, tasks: ${agentState.tasks.join(', ') || 'none'})`);
+  }
+}
+
+async function orchestrateAssignNextCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showErrorMessage('Orchestrate: open a workspace first.');
+    return;
+  }
+
+  const channel = getOrchestrateOutputChannel();
+  channel.show(true);
+  channel.appendLine('[orchestrate] Use /orchestrate next in chat to assign the next available sprint.');
+
+  if (shouldShowNotification('info')) {
+    vscode.window.showInformationMessage(
+      'Orchestrate: use /orchestrate next in chat to assign the next sprint.'
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bridge Commands
+// ---------------------------------------------------------------------------
+
+let activeBridge: BridgeState | null = null;
+
+async function bridgeStartCommand(): Promise<void> {
+  if (activeBridge?.running) {
+    vscode.window.showInformationMessage(`Bridge already running on ${activeBridge.config.host}:${activeBridge.config.port}`);
+    return;
+  }
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('Bridge: open a workspace first.'); return; }
+  const cfg = vscode.workspace.getConfiguration('autoclaw.bridge');
+  const config: BridgeConfig = {
+    port: cfg.get<number>('port', 9876), host: cfg.get<string>('host', '127.0.0.1'),
+    commsDir: path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms'),
+    tokensPath: path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'tokens.json'),
+  };
+  try {
+    activeBridge = await startBridge(config);
+    vscode.window.showInformationMessage(`OpenClaw bridge started on ${config.host}:${config.port}`);
+  } catch (e) { vscode.window.showErrorMessage(`Bridge failed: ${(e as Error).message}`); }
+}
+
+async function bridgeStopCommand(): Promise<void> {
+  if (!activeBridge?.running) { vscode.window.showInformationMessage('Bridge not running.'); return; }
+  await stopBridge(activeBridge);
+  activeBridge = null;
+  vscode.window.showInformationMessage('OpenClaw bridge stopped.');
+}
+
+async function bridgeAddAgentCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('Open a workspace first.'); return; }
+  const agentId = await vscode.window.showInputBox({ prompt: 'Remote agent ID', placeHolder: 'openclaw-worker-1' });
+  if (!agentId) { return; }
+  const tokensPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'tokens.json');
+  await fsPromises.mkdir(path.dirname(tokensPath), { recursive: true });
+  const token = await createRemoteAgentToken(tokensPath, agentId);
+  await fsPromises.mkdir(path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'inboxes', agentId), { recursive: true });
+  const ch = getOrchestrateOutputChannel();
+  ch.show(true);
+  ch.appendLine(`[bridge] Registered: ${agentId} | Token: ${token.token} | Expires: ${token.expires_at}`);
+  vscode.window.showInformationMessage(`Remote agent "${agentId}" registered. Token in output channel.`);
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator Dashboard
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Orchestrator data refresh — sends agent/sprint/message/timeline data to the
+// unified panel webview (formerly a separate OrchestratorViewProvider).
+// ---------------------------------------------------------------------------
+
+async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { return; }
+  const commsDir = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+  try { view.webview.postMessage({ command: 'updateAgents', data: await getAgentStatuses(commsDir) }); } catch {}
+  try { view.webview.postMessage({ command: 'updateMessages', data: await readCommsLog(commsDir, { limit: 50 }) }); } catch {}
+  try {
+    const sp = path.join(wr, '.autoclaw', 'orchestrator', 'sprints', 'plan-summary.yaml');
+    if (fs.existsSync(sp)) {
+      const c = await fsPromises.readFile(sp, 'utf8');
+      const m = c.match(/- number: \d+[\s\S]*?(?=\n  - number:|\nnotes:|\n\n|$)/g);
+      if (m) {
+        const sprints = m.map(b => ({
+          number: parseInt(b.match(/number: (\d+)/)?.[1] || '0'),
+          tasks: parseInt(b.match(/tasks: (\d+)/)?.[1] || '0'),
+          status: b.match(/status: (\w+)/)?.[1] || 'pending',
+        }));
+        view.webview.postMessage({ command: 'updateSprints', data: sprints });
+      }
+    }
+  } catch {}
+  try { view.webview.postMessage({ command: 'updateTimeline', data: await readSnapshots(commsDir) }); } catch {}
+}
+
 export function deactivate() {
   if (stateWatcher) {
     stateWatcher.dispose();
@@ -1358,5 +2082,13 @@ export function deactivate() {
   if (autobuildOutputChannel) {
     autobuildOutputChannel.dispose();
     autobuildOutputChannel = undefined;
+  }
+  if (orchestrateOutputChannel) {
+    orchestrateOutputChannel.dispose();
+    orchestrateOutputChannel = undefined;
+  }
+  if (activeBridge?.running) {
+    stopBridge(activeBridge).catch(() => {});
+    activeBridge = null;
   }
 }

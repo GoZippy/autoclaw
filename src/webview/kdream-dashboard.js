@@ -1,342 +1,465 @@
-// KDream Dashboard JavaScript
-(function() {
-    const vscode = acquireVsCodeApi();
-    
-    // Error boundary: wrap message handler in try/catch
-    window.addEventListener('message', event => {
-        try {
-            const message = event.data;
-            switch (message.command) {
-                case 'updateStatus':
-                    updateStatus(message.data);
-                    break;
-                case 'updateTasks':
-                    updateTasks(message.data);
-                    break;
-                case 'updateLogs':
-                    updateLogs(message.data);
-                    break;
-                case 'updateAdapterHealth':
-                    updateAdapterHealth(message.data);
-                    break;
-                case 'updateTodos':
-                    updateTodos(message.data);
-                    break;
-                case 'updateCodeChurn':
-                    updateCodeChurn(message.data);
-                    break;
-                case 'updateProductivity':
-                    updateProductivity(message.data);
-                    break;
-                case 'updateHealth':
-                    updateHealth(message.data);
-                    break;
-                case 'error':
-                    showError(message.data);
-                    break;
-            }
-        } catch (err) {
-            console.error('KDream Dashboard message handler error:', err);
-            showError(err.message || 'An unexpected error occurred');
-        }
+// AutoClaw Unified Panel — merged KDream + Orchestrator dashboard
+// @ts-nocheck
+(function () {
+  const vscode = acquireVsCodeApi();
+
+  // ── Quick-action buttons ──────────────────────────────────────────
+  document.getElementById('btn-launch-skill')?.addEventListener('click', () => {
+    vscode.postMessage({ command: 'launchSkill' });
+  });
+
+  const refreshBtn = document.getElementById('btn-refresh');
+  refreshBtn?.addEventListener('click', () => {
+    vscode.postMessage({ command: 'refresh' });
+    // Visual feedback: swap label for 1.2s
+    if (refreshBtn) {
+      const orig = refreshBtn.textContent;
+      refreshBtn.textContent = 'Refreshing\u2026';
+      refreshBtn.disabled = true;
+      setTimeout(() => {
+        refreshBtn.textContent = orig;
+        refreshBtn.disabled = false;
+      }, 1200);
+    }
+  });
+
+  document.getElementById('btn-export')?.addEventListener('click', () => {
+    vscode.postMessage({ command: 'exportSnapshot' });
+  });
+
+  // ── Collapsible sections ──────────────────────────────────────────
+  document.querySelectorAll('.section-header').forEach(header => {
+    header.addEventListener('click', () => {
+      header.parentElement.classList.toggle('open');
     });
-    
-    // Error display function
-    function showError(message) {
-        const container = document.getElementById('dashboard-container');
-        if (container) {
-            container.innerHTML = `
-                <div class="error-state">
-                    <h2>Error</h2>
-                    <p>${escapeHtml(message)}</p>
-                    <button onclick="location.reload()">Reload Dashboard</button>
-                </div>
-            `;
-        }
-    }
-    
-    // Helper to escape HTML in error messages
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-    
-    // Refresh button handler
-    document.getElementById('refresh-btn').addEventListener('click', () => {
-        vscode.postMessage({ command: 'refresh' });
+    // Keyboard accessibility
+    header.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        header.parentElement.classList.toggle('open');
+      }
     });
+  });
 
-    // Scan TODOs button handler (if present in HTML)
-    const scanBtn = document.getElementById('scan-todos-btn');
-    if (scanBtn) {
-        scanBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'scanTodos' });
+  // ── Message handler ───────────────────────────────────────────────
+  window.addEventListener('message', event => {
+    try {
+      const { command, data } = event.data;
+      switch (command) {
+        // KDream data
+        case 'updateStatus': updateStatus(data); break;
+        case 'updateTasks': updateTasks(data); break;
+        case 'updateTodos': updateTodos(data); break;
+        case 'updateLogs': updateLogs(data); break;
+        case 'updateAdapterHealth': updateAdapterHealth(data); break;
+        case 'updateCodeChurn': updateCodeChurn(data); break;
+        case 'updateProductivity': updateProductivity(data); break;
+        case 'updateHealth': updateHealth(data); break;
+        // Orchestrator data
+        case 'updateAgents': renderAgents(data); break;
+        case 'updateMessages': renderMessages(data); break;
+        case 'updateSprints': renderSprints(data); break;
+        case 'updateTimeline': renderTimeline(data); break;
+        // Errors
+        case 'error': showError(data); break;
+      }
+    } catch (err) {
+      console.error('AutoClaw panel message handler error:', err);
+    }
+  });
+
+  // ── Agents section ────────────────────────────────────────────────
+  function renderAgents(agents) {
+    const el = document.getElementById('agents-content');
+    if (!el) return;
+    if (!agents?.length) {
+      el.innerHTML = '<p class="empty">No agents detected.</p>';
+      setBadge('agents-badge', '0');
+      return;
+    }
+    setBadge('agents-badge', String(agents.length));
+    let h = '<table><tr><th>Agent</th><th>Status</th><th>Task</th><th>Seen</th></tr>';
+    for (const a of agents) {
+      const s = a.live_status || a.status;
+      const task = a.heartbeat?.current_task || '\u2014';
+      const seen = a.heartbeat ? timeAgo(a.heartbeat.timestamp) : 'never';
+      h += '<tr>';
+      h += '<td><span class="status-dot status-' + esc(s) + '"></span>' + esc(a.name) + '</td>';
+      h += '<td>' + esc(s) + '</td>';
+      h += '<td>' + esc(task) + '</td>';
+      h += '<td>' + esc(seen) + '</td>';
+      h += '</tr>';
+    }
+    el.innerHTML = h + '</table>';
+  }
+
+  // ── Sprints section ───────────────────────────────────────────────
+  function renderSprints(sprints) {
+    const el = document.getElementById('sprints-content');
+    const section = document.getElementById('sprints-section');
+    if (!el) return;
+    if (!sprints?.length) {
+      el.innerHTML = '<p class="empty">No sprint plan yet.</p>';
+      if (section) section.style.display = 'none';
+      return;
+    }
+    if (section) section.style.display = '';
+    setBadge('sprints-badge', String(sprints.length));
+    let h = '';
+    for (const s of sprints) {
+      const p = s.status === 'merged' ? 100
+        : s.status === 'approved' ? 90
+        : s.status === 'in_progress' ? 50
+        : s.status === 'assigned' ? 10 : 0;
+      h += '<div class="sprint-bar">';
+      h += '<span class="sprint-label">Sprint ' + s.number + '</span>';
+      h += '<div class="sprint-progress" role="progressbar" aria-valuenow="' + p + '" aria-valuemin="0" aria-valuemax="100">';
+      h += '<div class="sprint-fill ' + esc(s.status) + '" style="width:' + p + '%"></div></div>';
+      h += '<span class="sprint-status">' + esc(s.status) + ' (' + s.tasks + 't)</span>';
+      h += '</div>';
+    }
+    el.innerHTML = h;
+  }
+
+  // ── Messages section ──────────────────────────────────────────────
+  function renderMessages(entries) {
+    const el = document.getElementById('messages-content');
+    if (!el) return;
+    if (!entries?.length) {
+      el.innerHTML = '<p class="empty">No messages yet.</p>';
+      setBadge('messages-badge', '0');
+      return;
+    }
+    setBadge('messages-badge', String(entries.length));
+    let h = '<div class="msg-feed">';
+    for (const e of entries.slice().reverse()) {
+      const t = new Date(e.timestamp).toLocaleTimeString();
+      h += '<div class="msg-entry">';
+      h += '<span class="msg-time">' + esc(t) + '</span> ';
+      h += '<span class="msg-type">' + esc(e.type) + '</span> ';
+      h += '<span class="msg-from">' + esc(e.from) + '</span>';
+      if (e.to) h += ' \u2192 <span class="msg-to">' + esc(e.to) + '</span>';
+      if (e.task_id) h += ' <em>(' + esc(e.task_id) + ')</em>';
+      h += '</div>';
+    }
+    el.innerHTML = h + '</div>';
+  }
+
+  // ── Timeline (folded into Activity) ───────────────────────────────
+  function renderTimeline(snapshots) {
+    const el = document.getElementById('timeline-content');
+    if (!el) return;
+    if (!snapshots?.length) { el.innerHTML = ''; return; }
+    let h = '<div style="margin-top:6px;border-top:1px solid var(--vscode-panel-border);padding-top:4px;font-size:0.8em;color:var(--vscode-descriptionForeground)">Orchestrator snapshots</div>';
+    for (const s of snapshots.slice().reverse().slice(0, 10)) {
+      h += '<div class="log-entry">';
+      h += '<span style="color:var(--vscode-descriptionForeground)">' + new Date(s.timestamp).toLocaleTimeString() + '</span> ';
+      h += '<strong>' + esc(s.event) + '</strong> \u2014 ' + esc(s.description);
+      h += '</div>';
+    }
+    el.innerHTML = h;
+  }
+
+  // ── KDream: Status ────────────────────────────────────────────────
+  function updateStatus(data) {
+    const el = document.getElementById('status-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!data) {
+      el.innerHTML = '<p class="empty">No status data. Run /kdream start to begin.</p>';
+      return;
+    }
+    const fields = [
+      { label: 'Status', value: data.status || 'Unknown' },
+      { label: 'Started', value: data.started ? new Date(data.started).toLocaleString() : 'N/A' },
+      { label: 'Tick Count', value: String(data.tick || 0) },
+      { label: 'Last Dream', value: data.lastDream ? new Date(data.lastDream).toLocaleString() : 'Never' }
+    ];
+    fields.forEach(f => {
+      const p = document.createElement('p');
+      p.style.margin = '2px 0';
+      p.style.fontSize = '0.85em';
+      const b = document.createElement('strong');
+      b.textContent = f.label + ':';
+      p.appendChild(b);
+      p.appendChild(document.createTextNode(' ' + f.value));
+      el.appendChild(p);
+    });
+  }
+
+  // ── KDream: Tasks & follow-ups ────────────────────────────────────
+  function updateTasks(data) {
+    const el = document.getElementById('tasks-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!data?.length) {
+      el.innerHTML = '<p class="empty">No tasks or follow-ups found.</p>';
+      setBadge('tasks-badge', '0');
+      return;
+    }
+    setBadge('tasks-badge', String(data.length));
+    data.forEach((task, index) => {
+      const item = document.createElement('div');
+      item.className = 'task-item';
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = task.completed;
+      cb.setAttribute('aria-label', task.description);
+      if (!task.completed) {
+        cb.addEventListener('change', () => {
+          if (cb.checked) {
+            cb.disabled = true;
+            vscode.postMessage({ command: 'markTaskComplete', taskIndex: index, taskDescription: task.description });
+          }
         });
+      } else {
+        cb.disabled = true;
+      }
+
+      const span = document.createElement('span');
+      span.textContent = task.description;
+      if (task.completed) {
+        span.style.textDecoration = 'line-through';
+        span.style.opacity = '0.6';
+      }
+
+      item.appendChild(cb);
+      item.appendChild(span);
+      el.appendChild(item);
+    });
+  }
+
+  // ── KDream: TODOs & FIXMEs ────────────────────────────────────────
+  function updateTodos(data) {
+    const el = document.getElementById('todos-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!data?.length) {
+      el.innerHTML = '<p class="empty">No TODOs or FIXMEs found.</p>';
+      return;
     }
+    data.forEach(todo => {
+      const item = document.createElement('div');
+      item.className = 'todo-item';
 
-    // Export Snapshot button handler (if present in HTML)
-    const exportBtn = document.getElementById('export-snapshot-btn');
-    if (exportBtn) {
-        exportBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'exportSnapshot' });
-        });
+      const typeRaw = String(todo?.type || 'TODO');
+      const badge = document.createElement('span');
+      badge.className = 'todo-type ' + typeRaw.toLowerCase();
+      badge.textContent = typeRaw;
+
+      const file = document.createElement('span');
+      file.className = 'todo-file';
+      file.textContent = (todo.file || '?') + ':' + (todo.line ?? '?');
+
+      const text = document.createElement('span');
+      text.className = 'todo-text';
+      text.textContent = todo.text || '';
+      text.title = todo.text || '';
+
+      item.appendChild(badge);
+      item.appendChild(file);
+      item.appendChild(text);
+      el.appendChild(item);
+    });
+  }
+
+  // ── KDream: Recent activity logs ──────────────────────────────────
+  function updateLogs(data) {
+    const el = document.getElementById('logs-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!data?.length) {
+      el.innerHTML = '<p class="empty">No recent activity.</p>';
+      return;
     }
-    
-    function updateStatus(data) {
-        const statusContent = document.getElementById('status-content');
-        // Clear existing content
-        while (statusContent.firstChild) {
-            statusContent.removeChild(statusContent.firstChild);
-        }
-        if (data) {
-            const fields = [
-                { label: 'Status', value: data.status || 'Unknown' },
-                { label: 'Started', value: data.started ? new Date(data.started).toLocaleString() : 'N/A' },
-                { label: 'Tick Count', value: String(data.tick || 0) },
-                { label: 'Last Dream', value: data.lastDream ? new Date(data.lastDream).toLocaleString() : 'Never' }
-            ];
-            fields.forEach(field => {
-                const p = document.createElement('p');
-                const strong = document.createElement('strong');
-                strong.textContent = field.label + ':';
-                p.appendChild(strong);
-                p.appendChild(document.createTextNode(' ' + field.value));
-                statusContent.appendChild(p);
-            });
-        } else {
-            const p = document.createElement('p');
-            p.textContent = 'No status data available. Run /kdream start to begin.';
-            statusContent.appendChild(p);
-        }
+    data.forEach(log => {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.textContent = log;
+      el.appendChild(entry);
+    });
+  }
+
+  // ── KDream: Adapter health ────────────────────────────────────────
+  function updateAdapterHealth(data) {
+    const el = document.getElementById('adapter-health-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!data?.length) {
+      el.innerHTML = '<p class="empty">No adapter health data.</p>';
+      return;
     }
-    
-    function updateTasks(data) {
-        const tasksContent = document.getElementById('tasks-content');
-        tasksContent.innerHTML = '';
-        if (data && data.length > 0) {
-            data.forEach((task, index) => {
-                const taskItem = document.createElement('div');
-                taskItem.className = 'task-item';
+    const label = document.createElement('div');
+    label.className = 'health-group-label';
+    label.textContent = 'Adapters';
+    el.appendChild(label);
+    data.forEach(adapter => {
+      const row = document.createElement('div');
+      row.className = 'adapter-status';
 
-                const checkbox = document.createElement('input');
-                checkbox.type = 'checkbox';
-                checkbox.checked = task.completed;
-                // Allow toggling incomplete tasks to mark them complete
-                if (!task.completed) {
-                    checkbox.addEventListener('change', () => {
-                        if (checkbox.checked) {
-                            checkbox.disabled = true;
-                            vscode.postMessage({ command: 'markTaskComplete', taskIndex: index, taskDescription: task.description });
-                        }
-                    });
-                } else {
-                    checkbox.disabled = true;
-                }
+      const status = String(adapter?.status || 'unknown');
+      const safeStatus = /^[a-z0-9_-]+$/i.test(status) ? status : 'unknown';
+      const dot = document.createElement('span');
+      dot.className = 'indicator ' + safeStatus;
 
-                const span = document.createElement('span');
-                span.textContent = task.description;
-                if (task.completed) {
-                    span.style.textDecoration = 'line-through';
-                    span.style.opacity = '0.6';
-                }
+      const name = document.createElement('span');
+      name.textContent = adapter.name || '(unnamed)';
 
-                taskItem.appendChild(checkbox);
-                taskItem.appendChild(span);
-                tasksContent.appendChild(taskItem);
-            });
-        } else {
-            const p = document.createElement('p');
-            p.textContent = 'No tasks or follow-ups found.';
-            tasksContent.appendChild(p);
-        }
+      const details = document.createElement('span');
+      details.textContent = adapter.details || '';
+      details.style.marginLeft = 'auto';
+      details.style.color = 'var(--vscode-descriptionForeground)';
+
+      row.appendChild(dot);
+      row.appendChild(name);
+      row.appendChild(details);
+      el.appendChild(row);
+    });
+  }
+
+  // ── KDream: Code churn metrics ────────────────────────────────────
+  function updateCodeChurn(data) {
+    const el = document.getElementById('code-churn-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!data) {
+      el.innerHTML = '<p class="empty">No git repository detected.</p>';
+      return;
     }
-    
-    function updateLogs(data) {
-        const logsContent = document.getElementById('logs-content');
-        logsContent.innerHTML = '';
-        if (data && data.length > 0) {
-            data.forEach(log => {
-                const logEntry = document.createElement('div');
-                logEntry.className = 'log-entry';
-                logEntry.textContent = log;
-                logsContent.appendChild(logEntry);
-            });
-        } else {
-            const p = document.createElement('p');
-            p.textContent = 'No recent activity.';
-            logsContent.appendChild(p);
-        }
+    const label = document.createElement('div');
+    label.className = 'health-group-label';
+    label.textContent = 'Code Churn';
+    el.appendChild(label);
+    const metrics = [
+      { label: 'Commits (7d)', value: data.commitsLast7Days },
+      { label: 'Commits (30d)', value: data.commitsLast30Days },
+      { label: 'Lines +/-', value: '+' + data.linesAdded + ' / -' + data.linesDeleted },
+      { label: 'Churn Rate', value: data.churnRate + ' lines/commit' },
+    ];
+    metrics.forEach(m => {
+      const p = document.createElement('p');
+      p.style.margin = '2px 0';
+      p.style.fontSize = '0.85em';
+      const b = document.createElement('strong');
+      b.textContent = m.label + ':';
+      p.appendChild(b);
+      p.appendChild(document.createTextNode(' ' + m.value));
+      el.appendChild(p);
+    });
+  }
+
+  // ── KDream: Productivity insights ─────────────────────────────────
+  function updateProductivity(data) {
+    const el = document.getElementById('productivity-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!data) return;
+    const label = document.createElement('div');
+    label.className = 'health-group-label';
+    label.textContent = 'Productivity';
+    el.appendChild(label);
+    const items = [
+      { label: 'TODO Resolution', value: (data.todoResolutionRate * 100).toFixed(1) + '%' },
+      { label: 'Commit Freq', value: data.commitFrequency + '/day' },
+      { label: 'Active Days (30d)', value: data.activeDays },
+    ];
+    items.forEach(m => {
+      const p = document.createElement('p');
+      p.style.margin = '2px 0';
+      p.style.fontSize = '0.85em';
+      const b = document.createElement('strong');
+      b.textContent = m.label + ':';
+      p.appendChild(b);
+      p.appendChild(document.createTextNode(' ' + m.value));
+      el.appendChild(p);
+    });
+  }
+
+  // ── KDream: Project health indicators ─────────────────────────────
+  function updateHealth(data) {
+    const el = document.getElementById('health-content');
+    if (!el) return;
+    el.innerHTML = '';
+    if (!data) {
+      el.innerHTML = '<p class="empty">No health data available.</p>';
+      return;
     }
-    
-    function updateAdapterHealth(data) {
-        const adapterContent = document.getElementById('adapter-health-content');
-        adapterContent.innerHTML = '';
-        if (data && data.length > 0) {
-            data.forEach(adapter => {
-                const adapterStatus = document.createElement('div');
-                adapterStatus.className = 'adapter-status';
-                
-                const indicator = document.createElement('span');
-                indicator.className = 'indicator ' + adapter.status;
-                
-                const nameSpan = document.createElement('span');
-                nameSpan.textContent = adapter.name;
-                
-                const detailsSpan = document.createElement('span');
-                detailsSpan.textContent = adapter.details || '';
-                detailsSpan.style.marginLeft = 'auto';
-                detailsSpan.style.color = 'var(--vscode-descriptionForeground)';
-                
-                adapterStatus.appendChild(indicator);
-                adapterStatus.appendChild(nameSpan);
-                adapterStatus.appendChild(detailsSpan);
-                adapterContent.appendChild(adapterStatus);
-            });
-        } else {
-            const p = document.createElement('p');
-            p.textContent = 'No adapter health data available.';
-            adapterContent.appendChild(p);
-        }
+    const label = document.createElement('div');
+    label.className = 'health-group-label';
+    label.textContent = 'Project Health';
+    el.appendChild(label);
+    const indicators = [
+      { label: 'Open TODOs', value: data.openTodos, showBar: false },
+      { label: 'Uncommitted Changes', value: data.uncommittedChanges, showBar: false },
+      { label: 'Memory Completeness', value: data.memoryCompleteness + '%', showBar: true, percent: data.memoryCompleteness },
+      { label: 'Adapter Coverage', value: data.adapterCoverage + '%', showBar: true, percent: data.adapterCoverage }
+    ];
+    indicators.forEach(ind => {
+      const item = document.createElement('div');
+      item.className = 'metric-item';
+
+      const label = document.createElement('span');
+      label.className = 'metric-label';
+      label.textContent = ind.label;
+
+      const value = document.createElement('span');
+      value.className = 'metric-value';
+      value.textContent = ind.value;
+
+      item.appendChild(label);
+      item.appendChild(value);
+
+      if (ind.showBar) {
+        const pct = Math.max(0, Math.min(100, Number(ind.percent) || 0));
+        const bar = document.createElement('div');
+        bar.className = 'progress-bar';
+        bar.setAttribute('role', 'progressbar');
+        bar.setAttribute('aria-valuenow', String(pct));
+        bar.setAttribute('aria-valuemin', '0');
+        bar.setAttribute('aria-valuemax', '100');
+        bar.setAttribute('aria-label', ind.label + ': ' + pct + ' percent');
+        const fill = document.createElement('div');
+        fill.className = 'progress-fill';
+        if (pct < 50) fill.classList.add('error');
+        else if (pct < 80) fill.classList.add('warning');
+        fill.style.width = pct + '%';
+        bar.appendChild(fill);
+        item.appendChild(bar);
+      }
+
+      el.appendChild(item);
+    });
+  }
+
+  // ── Error display ─────────────────────────────────────────────────
+  function showError(message) {
+    const el = document.getElementById('panel-root');
+    if (el) {
+      el.innerHTML = '<div class="error-state"><h2>Error</h2><p>' + esc(message) + '</p><button onclick="location.reload()">Reload</button></div>';
     }
-    
-    function updateTodos(data) {
-        const todosContent = document.getElementById('todos-content');
-        todosContent.innerHTML = '';
-        if (data && data.length > 0) {
-            data.forEach(todo => {
-                const todoItem = document.createElement('div');
-                todoItem.className = 'todo-item';
+  }
 
-                const typeBadge = document.createElement('span');
-                typeBadge.className = 'todo-type ' + todo.type.toLowerCase();
-                typeBadge.textContent = todo.type;
+  // ── Helpers ────────────────────────────────────────────────────────
+  function timeAgo(ts) {
+    const s = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  }
 
-                const fileSpan = document.createElement('span');
-                fileSpan.className = 'todo-file';
-                fileSpan.textContent = todo.file + ':' + todo.line;
+  function esc(str) {
+    const d = document.createElement('div');
+    d.textContent = String(str ?? '');
+    return d.innerHTML;
+  }
 
-                const textSpan = document.createElement('span');
-                textSpan.className = 'todo-text';
-                textSpan.textContent = todo.text;
+  function setBadge(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  }
 
-                todoItem.appendChild(typeBadge);
-                todoItem.appendChild(fileSpan);
-                todoItem.appendChild(textSpan);
-                todosContent.appendChild(todoItem);
-            });
-        } else {
-            const p = document.createElement('p');
-            p.textContent = 'No TODOs or FIXMEs found.';
-            todosContent.appendChild(p);
-        }
-    }
-
-    function updateCodeChurn(data) {
-        const churnContent = document.getElementById('code-churn-content');
-        churnContent.innerHTML = '';
-        if (data) {
-            const metrics = [
-                { label: 'Total Commits', value: data.totalCommits },
-                { label: 'Commits (7d)', value: data.commitsLast7Days },
-                { label: 'Commits (30d)', value: data.commitsLast30Days },
-                { label: 'Lines Added', value: data.linesAdded },
-                { label: 'Lines Deleted', value: data.linesDeleted },
-                { label: 'Churn Rate', value: data.churnRate + ' lines/commit' },
-                { label: 'Avg Commit Size', value: data.avgCommitSize + ' lines' },
-                { label: 'Most Active Day', value: data.mostActiveDay || 'N/A' }
-            ];
-            metrics.forEach(metric => {
-                const p = document.createElement('p');
-                const strong = document.createElement('strong');
-                strong.textContent = metric.label + ':';
-                p.appendChild(strong);
-                p.appendChild(document.createTextNode(' ' + metric.value));
-                churnContent.appendChild(p);
-            });
-        } else {
-            const p = document.createElement('p');
-            p.textContent = 'No git repository detected.';
-            churnContent.appendChild(p);
-        }
-    }
-
-    function updateProductivity(data) {
-        const prodContent = document.getElementById('productivity-content');
-        prodContent.innerHTML = '';
-        if (data) {
-            const insights = [
-                { label: 'TODO Resolution Rate', value: (data.todoResolutionRate * 100).toFixed(1) + '%' },
-                { label: 'Avg Time to Resolve TODO', value: data.avgTimeToResolveTodo + ' days' },
-                { label: 'Commit Frequency', value: data.commitFrequency + ' commits/day' },
-                { label: 'Active Days (30d)', value: data.activeDays },
-                { label: 'Memory Size', value: data.memorySize + ' KB' },
-                { label: 'Logs Size', value: data.logsSize + ' KB' }
-            ];
-            insights.forEach(insight => {
-                const p = document.createElement('p');
-                const strong = document.createElement('strong');
-                strong.textContent = insight.label + ':';
-                p.appendChild(strong);
-                p.appendChild(document.createTextNode(' ' + insight.value));
-                prodContent.appendChild(p);
-            });
-        } else {
-            const p = document.createElement('p');
-            p.textContent = 'No productivity data available.';
-            prodContent.appendChild(p);
-        }
-    }
-
-    function updateHealth(data) {
-        const healthContent = document.getElementById('health-content');
-        healthContent.innerHTML = '';
-        if (data) {
-            const indicators = [
-                { label: 'Total Files', value: data.totalFiles, showBar: false },
-                { label: 'Source Files', value: data.sourceFiles, showBar: false },
-                { label: 'Open TODOs', value: data.openTodos, showBar: false },
-                { label: 'Uncommitted Changes', value: data.uncommittedChanges, showBar: false },
-                { label: 'Stale Changes Age', value: data.staleChangesHours + ' hours', showBar: false },
-                { label: 'Memory Completeness', value: data.memoryCompleteness + '%', showBar: true, percent: data.memoryCompleteness },
-                { label: 'Adapter Coverage', value: data.adapterCoverage + '%', showBar: true, percent: data.adapterCoverage }
-            ];
-            indicators.forEach(indicator => {
-                const item = document.createElement('div');
-                item.className = 'metric-item';
-
-                const label = document.createElement('span');
-                label.className = 'metric-label';
-                label.textContent = indicator.label;
-
-                const value = document.createElement('span');
-                value.className = 'metric-value';
-                value.textContent = indicator.value;
-
-                item.appendChild(label);
-                item.appendChild(value);
-
-                if (indicator.showBar) {
-                    const bar = document.createElement('div');
-                    bar.className = 'progress-bar';
-                    const fill = document.createElement('div');
-                    fill.className = 'progress-fill';
-                    if (indicator.percent < 50) fill.classList.add('error');
-                    else if (indicator.percent < 80) fill.classList.add('warning');
-                    fill.style.width = indicator.percent + '%';
-                    bar.appendChild(fill);
-                    item.appendChild(bar);
-                }
-
-                healthContent.appendChild(item);
-            });
-        } else {
-            const p = document.createElement('p');
-            p.textContent = 'No health data available.';
-            healthContent.appendChild(p);
-        }
-    }
-    
-    // Request initial data
-    vscode.postMessage({ command: 'getInitialData' });
+  // ── Request initial data ──────────────────────────────────────────
+  vscode.postMessage({ command: 'getInitialData' });
 })();

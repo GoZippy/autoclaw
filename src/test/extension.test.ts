@@ -356,9 +356,19 @@ Line 3`;
       assert.ok(names.includes('KiloCode'));
     });
 
-    test('should have id for each adapter', function () {
+    test('should have id (or explicit null for standalone hosts)', function () {
+      // Cursor and Antigravity are standalone IDEs (not VS Code extensions),
+      // so their `id` is null and they're detected via filesystem markers.
+      const standaloneHosts = new Set(['Cursor', 'Antigravity']);
       for (const adapter of DEFAULT_ADAPTERS) {
-        assert.ok(adapter.id, `Adapter ${adapter.name} should have an id`);
+        if (standaloneHosts.has(adapter.name)) {
+          assert.strictEqual(
+            adapter.id, null,
+            `Standalone host ${adapter.name} should have id=null`
+          );
+        } else {
+          assert.ok(adapter.id, `Adapter ${adapter.name} should have an id`);
+        }
       }
     });
   });

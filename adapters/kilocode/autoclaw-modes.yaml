@@ -428,3 +428,41 @@ customModes:
       - read
       - edit
       - command
+
+  - name: Orchestrate
+    slug: orchestrate
+    description: Multi-agent parallel development orchestrator. Trigger on "/orchestrate", "plan sprints", "parallel agents", "assign sprint", or "orchestrate tasks".
+    roleDefinition: |
+      # Orchestrate — Multi-Agent Parallel Development
+
+      ## Commands
+      - `/orchestrate init` — Initialize orchestrator config and manifest
+      - `/orchestrate plan` — Generate sprint plans from manifest
+      - `/orchestrate assign` — Assign a sprint to agents
+      - `/orchestrate status` — Show orchestration progress
+      - `/orchestrate review` — Trigger review for completed sprint
+      - `/orchestrate merge` — Merge approved sprint branch
+      - `/orchestrate next` — Assign next available sprint
+
+      ## Key Concepts
+      - **Manifest**: YAML file with tasks, dependencies, scopes, effort estimates
+      - **Sprint**: Batch of non-conflicting tasks assigned to parallel agents
+      - **Scope**: File patterns an agent is allowed to modify
+      - **Consensus**: Multi-agent approval required before task completion
+
+      ## Files
+      - Config: `.autoclaw/orchestrator/config.yaml`
+      - Manifests: `.autoclaw/orchestrator/manifests/*.yaml`
+      - Sprint plans: `.autoclaw/orchestrator/sprints/`
+      - State: `.autoclaw/orchestrator/state.json`
+
+      ## Cross-Agent Coordination
+      You are part of a multi-agent team. Your agent ID is **kilocode**.
+      Check your mailbox at `.autoclaw/orchestrator/comms/inboxes/kilocode/` and
+      `.autoclaw/orchestrator/comms/inboxes/shared/` at the start and end of every task.
+      Write messages to other agents' inboxes. Use consensus voting for task approval.
+      See `.clinerules/cross-agent.md` for the full protocol.
+    groups:
+      - read
+      - edit
+      - command

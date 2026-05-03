@@ -121,6 +121,39 @@ export interface AutobuildSection {
   workflows: AutobuildWorkflowStatus[];
 }
 
+export interface CompilationSection {
+  outDirPresent: boolean;
+  extensionJsPresent: boolean;
+  newestSrcMs: number | null;
+  newestOutMs: number | null;
+  stale: boolean;
+  staleFiles: string[];
+  message: string;
+}
+
+export interface AdapterSchemaIssue {
+  adapter: string;
+  missingSkills: string[];
+}
+
+export interface AdapterSchemaSection {
+  adapters: { name: string; skillsFound: string[] }[];
+  issues: AdapterSchemaIssue[];
+  ok: boolean;
+}
+
+export interface GitHealthSection {
+  isGitRepo: boolean;
+  branch: string | null;
+  ahead: number;
+  behind: number;
+  uncommittedFiles: number;
+  untrackedFiles: number;
+  lastCommitAgoHours: number | null;
+  remoteName: string | null;
+  notes: string[];
+}
+
 export interface DoctorReport {
   generatedAt: string;
   extensionPath: string;
@@ -130,6 +163,9 @@ export interface DoctorReport {
   logs: LogsSection;
   adapterDrift: AdapterDriftSection;
   adapterInstallation: AdapterInstallationSection;
+  adapterSchema: AdapterSchemaSection;
+  compilation: CompilationSection;
+  gitHealth: GitHealthSection;
   zmlr: AdapterHealth;
   skillsSource: SkillsSourceSection;
   autobuild: AutobuildSection;
@@ -520,6 +556,234 @@ export function buildAutobuildSection(workspaceRoot: string | null): AutobuildSe
   };
 }
 
+/**
+ * Walks `dir` recursively and returns the newest mtime (ms) among files
+ * matching the predicate, plus the path of the newest file. Returns
+ * `{ newest: null }` if no matching files exist.
+ */
+function newestMtime(
+  dir: string,
+  predicate: (filename: string) => boolean
+): { newestMs: number | null; newestPath: string | null } {
+  let newestMs: number | null = null;
+  let newestPath: string | null = null;
+  if (!fs.existsSync(dir)) { return { newestMs, newestPath }; }
+  const stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of entries) {
+      const full = path.join(current, ent.name);
+      if (ent.isDirectory()) {
+        if (ent.name === 'node_modules' || ent.name === '.git') { continue; }
+        stack.push(full);
+        continue;
+      }
+      if (!predicate(ent.name)) { continue; }
+      const stats = safeStat(full);
+      if (!stats) { continue; }
+      if (newestMs === null || stats.mtimeMs > newestMs) {
+        newestMs = stats.mtimeMs;
+        newestPath = full;
+      }
+    }
+  }
+  return { newestMs, newestPath };
+}
+
+export function buildCompilationSection(extensionPath: string): CompilationSection {
+  const srcDir = path.join(extensionPath, 'src');
+  const outDir = path.join(extensionPath, 'out');
+  const extensionJs = path.join(outDir, 'extension.js');
+  const outDirPresent = fs.existsSync(outDir);
+  const extensionJsPresent = fs.existsSync(extensionJs);
+
+  if (!outDirPresent) {
+    return {
+      outDirPresent: false,
+      extensionJsPresent: false,
+      newestSrcMs: null,
+      newestOutMs: null,
+      stale: true,
+      staleFiles: [],
+      message: 'out/ directory missing — run `npm run compile`'
+    };
+  }
+  if (!extensionJsPresent) {
+    return {
+      outDirPresent: true,
+      extensionJsPresent: false,
+      newestSrcMs: null,
+      newestOutMs: null,
+      stale: true,
+      staleFiles: [],
+      message: 'out/extension.js missing — run `npm run compile`'
+    };
+  }
+
+  const src = newestMtime(srcDir, f => f.endsWith('.ts') && !f.endsWith('.d.ts'));
+  const out = newestMtime(outDir, f => f.endsWith('.js'));
+  const newestSrcMs = src.newestMs;
+  const newestOutMs = out.newestMs;
+
+  // 2 second slop for filesystems with low mtime resolution.
+  const slopMs = 2000;
+  if (newestSrcMs === null || newestOutMs === null) {
+    return {
+      outDirPresent,
+      extensionJsPresent,
+      newestSrcMs,
+      newestOutMs,
+      stale: false,
+      staleFiles: [],
+      message: 'no source files to compare'
+    };
+  }
+  const stale = newestSrcMs > newestOutMs + slopMs;
+  const staleFiles: string[] = [];
+  if (stale && src.newestPath) {
+    staleFiles.push(path.relative(extensionPath, src.newestPath).replace(/\\/g, '/'));
+  }
+  return {
+    outDirPresent,
+    extensionJsPresent,
+    newestSrcMs,
+    newestOutMs,
+    stale,
+    staleFiles,
+    message: stale
+      ? 'src/ has files newer than out/ — run `npm run compile`'
+      : 'compilation up to date'
+  };
+}
+
+/**
+ * Validates that every `adapters/<host>/` directory contains at least one
+ * file referencing each declared skill (kdream/autobuild/mateam). Catches
+ * the common bug where a new skill is added but the per-host adapter file
+ * is forgotten. Tolerates whatever filename convention each host uses.
+ */
+export function buildAdapterSchemaSection(extensionPath: string): AdapterSchemaSection {
+  const adaptersDir = path.join(extensionPath, 'adapters');
+  const result: AdapterSchemaSection = { adapters: [], issues: [], ok: true };
+  if (!fs.existsSync(adaptersDir)) {
+    result.ok = false;
+    result.issues.push({ adapter: '(none)', missingSkills: [...SKILL_NAMES] });
+    return result;
+  }
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(adaptersDir, { withFileTypes: true });
+  } catch {
+    result.ok = false;
+    return result;
+  }
+  for (const ent of entries) {
+    if (!ent.isDirectory()) { continue; }
+    const adapterDir = path.join(adaptersDir, ent.name);
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(adapterDir);
+    } catch {
+      continue;
+    }
+    // ZippyMesh and KiloCode use their own conventions (playbooks / single
+    // YAML), not per-skill files. Skip schema enforcement for them.
+    if (ent.name === 'zippymesh' || ent.name === 'kilocode') {
+      result.adapters.push({ name: ent.name, skillsFound: ['(custom layout)'] });
+      continue;
+    }
+    const flat = names.join('\n');
+    const subdirSkills: string[] = [];
+    for (const skill of SKILL_NAMES) {
+      // Matches either `kdream.md` / `kdream.mdc` / `kdream.prompt`, or a
+      // `kdream/SKILL.md` subdirectory layout (claude-code).
+      const subdirPath = path.join(adapterDir, skill, 'SKILL.md');
+      if (fs.existsSync(subdirPath) || new RegExp(`(^|\\n)${skill}\\.[a-z]+`, 'i').test(flat)) {
+        subdirSkills.push(skill);
+      }
+    }
+    result.adapters.push({ name: ent.name, skillsFound: subdirSkills });
+    const missing = SKILL_NAMES.filter(s => !subdirSkills.includes(s));
+    if (missing.length > 0) {
+      result.ok = false;
+      result.issues.push({ adapter: ent.name, missingSkills: missing });
+    }
+  }
+  return result;
+}
+
+/**
+ * Run a git subcommand synchronously and return trimmed stdout, or null on
+ * error. Doctor is invoked on demand so a synchronous spawn is acceptable;
+ * the timeout cap keeps a hung git from freezing the OutputChannel.
+ */
+function gitOut(cwd: string, args: string[], timeoutMs = 5000): string | null {
+  try {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: timeoutMs });
+    if (r.status !== 0) { return null; }
+    return (r.stdout ?? '').trim();
+  } catch {
+    return null;
+  }
+}
+
+export function buildGitHealthSection(workspaceRoot: string | null): GitHealthSection {
+  const empty: GitHealthSection = {
+    isGitRepo: false,
+    branch: null,
+    ahead: 0,
+    behind: 0,
+    uncommittedFiles: 0,
+    untrackedFiles: 0,
+    lastCommitAgoHours: null,
+    remoteName: null,
+    notes: []
+  };
+  if (!workspaceRoot) { return empty; }
+  if (!fs.existsSync(path.join(workspaceRoot, '.git'))) { return empty; }
+
+  const out: GitHealthSection = { ...empty, isGitRepo: true };
+
+  out.branch = gitOut(workspaceRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const status = gitOut(workspaceRoot, ['status', '--porcelain']);
+  if (status !== null) {
+    const lines = status.split('\n').filter(l => l.length > 0);
+    out.uncommittedFiles = lines.filter(l => !l.startsWith('??')).length;
+    out.untrackedFiles = lines.filter(l => l.startsWith('??')).length;
+  }
+
+  const lastCommitTs = gitOut(workspaceRoot, ['log', '-1', '--format=%ct']);
+  if (lastCommitTs) {
+    const seconds = parseInt(lastCommitTs, 10);
+    if (Number.isFinite(seconds)) {
+      out.lastCommitAgoHours = Math.round((Date.now() / 1000 - seconds) / 3600);
+    }
+  }
+
+  // Determine the upstream remote, then ahead/behind. Missing upstream is
+  // common (new branch never pushed) — surface it as a note, not an error.
+  const upstream = gitOut(workspaceRoot, ['rev-parse', '--abbrev-ref', '@{upstream}']);
+  if (upstream) {
+    out.remoteName = upstream;
+    const counts = gitOut(workspaceRoot, ['rev-list', '--left-right', '--count', `${upstream}...HEAD`]);
+    if (counts) {
+      const parts = counts.split(/\s+/);
+      out.behind = parseInt(parts[0], 10) || 0;
+      out.ahead = parseInt(parts[1], 10) || 0;
+    }
+  } else {
+    out.notes.push('no upstream tracking branch (push with --set-upstream to enable ahead/behind)');
+  }
+
+  return out;
+}
+
 export function buildSkillsSourceSection(extensionPath: string): SkillsSourceSection {
   const skillsRoot = path.join(extensionPath, 'skills').replace(/\\/g, '/');
   const skills = SKILL_NAMES.map(name => {
@@ -557,6 +821,9 @@ export async function runDoctor(
   const logs = buildLogsSection(workspaceRoot);
   const adapterDrift = buildAdapterDriftSection(extensionPath);
   const adapterInstallation = buildAdapterInstallationSection(shim);
+  const adapterSchema = buildAdapterSchemaSection(extensionPath);
+  const compilation = buildCompilationSection(extensionPath);
+  const gitHealth = buildGitHealthSection(workspaceRoot);
   const skillsSource = buildSkillsSourceSection(extensionPath);
   const autobuild = buildAutobuildSection(workspaceRoot);
   const zmlr = await checkZippyMeshHealth(zippymeshUrl);
@@ -570,10 +837,21 @@ export async function runDoctor(
     logs,
     adapterDrift,
     adapterInstallation,
+    adapterSchema,
+    compilation,
+    gitHealth,
     zmlr,
     skillsSource,
     autobuild
   };
+}
+
+/**
+ * Render a `DoctorReport` as canonical JSON. Useful for tooling that wants
+ * to filter/grep the report or feed it to another agent.
+ */
+export function renderReportJson(report: DoctorReport): string {
+  return JSON.stringify(report, null, 2);
 }
 
 /**
@@ -649,6 +927,28 @@ export function renderReport(report: DoctorReport): string {
   }
   lines.push('');
 
+  // Compilation freshness
+  lines.push('## Compilation');
+  lines.push(`  out/ present:        ${report.compilation.outDirPresent ? 'yes' : 'no'}`);
+  lines.push(`  out/extension.js:    ${report.compilation.extensionJsPresent ? 'present' : 'MISSING'}`);
+  lines.push(`  stale:               ${report.compilation.stale ? 'YES — recompile needed' : 'no'}`);
+  if (report.compilation.staleFiles.length > 0) {
+    lines.push(`  newer src files:     ${report.compilation.staleFiles.join(', ')}`);
+  }
+  lines.push(`  message: ${report.compilation.message}`);
+  lines.push('');
+
+  // Adapter schema
+  lines.push('## Adapter Schema');
+  lines.push(`  status: ${report.adapterSchema.ok ? 'ok' : 'ISSUES'}`);
+  for (const a of report.adapterSchema.adapters) {
+    lines.push(`  - ${a.name}: skills=[${a.skillsFound.join(', ')}]`);
+  }
+  for (const issue of report.adapterSchema.issues) {
+    lines.push(`  ! ${issue.adapter} missing: ${issue.missingSkills.join(', ')}`);
+  }
+  lines.push('');
+
   // Adapter drift
   lines.push('## Adapter Drift');
   lines.push(`  status:  ${report.adapterDrift.status}`);
@@ -678,6 +978,25 @@ export function renderReport(report: DoctorReport): string {
         h.destinationExists ? 'yes' : 'no'
       } | ${filesSummary} | ${h.destination} |`
     );
+  }
+  lines.push('');
+
+  // Git health
+  lines.push('## Git Health');
+  if (!report.gitHealth.isGitRepo) {
+    lines.push('  not a git repository');
+  } else {
+    lines.push(`  branch:               ${report.gitHealth.branch ?? '(detached)'}`);
+    lines.push(`  upstream:             ${report.gitHealth.remoteName ?? '(none)'}`);
+    lines.push(`  ahead/behind:         ${report.gitHealth.ahead}/${report.gitHealth.behind}`);
+    lines.push(`  uncommitted files:    ${report.gitHealth.uncommittedFiles}`);
+    lines.push(`  untracked files:      ${report.gitHealth.untrackedFiles}`);
+    if (report.gitHealth.lastCommitAgoHours !== null) {
+      lines.push(`  last commit:          ${report.gitHealth.lastCommitAgoHours}h ago`);
+    }
+    for (const note of report.gitHealth.notes) {
+      lines.push(`  note: ${note}`);
+    }
   }
   lines.push('');
 

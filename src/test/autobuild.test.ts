@@ -22,6 +22,10 @@ import {
   getWorkflowsDir,
   getRunsDir,
   getRegistryPath,
+  pruneRunLogs,
+  tryAcquireLock,
+  releaseLock,
+  getLockPath,
   _resetInFlight,
   _isInFlight
 } from '../autobuild';
@@ -320,6 +324,93 @@ suite('AutoBuild: tick()', function () {
     const r = await tick(workspace, new Date(2026, 3, 29, 9, 30));
     assert.deepStrictEqual(r.ranNow, []);
     assert.deepStrictEqual(r.skippedNotMatching, ['noon']);
+  });
+});
+
+suite('AutoBuild: pruneRunLogs', function () {
+  test('keeps the N newest logs and deletes the rest', function () {
+    const tmp = makeTempDir('autoclaw-ab-prune-');
+    try {
+      const runsDir = path.join(tmp, 'runs');
+      fs.mkdirSync(runsDir, { recursive: true });
+      const names = [
+        'wf-2025-01-01T00-00-00-000Z.log',
+        'wf-2025-02-01T00-00-00-000Z.log',
+        'wf-2025-03-01T00-00-00-000Z.log',
+        'wf-2025-04-01T00-00-00-000Z.log',
+        'wf-2025-05-01T00-00-00-000Z.log',
+        'other-2025-01-01T00-00-00-000Z.log' // different workflow — must be kept
+      ];
+      for (const n of names) {
+        fs.writeFileSync(path.join(runsDir, n), 'x');
+      }
+      const result = pruneRunLogs(runsDir, 'wf', 2);
+      assert.strictEqual(result.kept, 2);
+      assert.strictEqual(result.deleted, 3);
+      const remaining = fs.readdirSync(runsDir).sort();
+      assert.deepStrictEqual(remaining, [
+        'other-2025-01-01T00-00-00-000Z.log',
+        'wf-2025-04-01T00-00-00-000Z.log',
+        'wf-2025-05-01T00-00-00-000Z.log'
+      ]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('keep=0 is a no-op (no deletion)', function () {
+    const tmp = makeTempDir('autoclaw-ab-prune-zero-');
+    try {
+      const runsDir = path.join(tmp, 'runs');
+      fs.mkdirSync(runsDir, { recursive: true });
+      fs.writeFileSync(path.join(runsDir, 'wf-2025-01-01.log'), 'x');
+      const result = pruneRunLogs(runsDir, 'wf', 0);
+      assert.strictEqual(result.deleted, 0);
+      assert.ok(fs.existsSync(path.join(runsDir, 'wf-2025-01-01.log')));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+suite('AutoBuild: cross-host lock', function () {
+  test('acquire then release succeeds; lock file goes away', function () {
+    const tmp = makeTempDir('autoclaw-ab-lock-');
+    try {
+      assert.strictEqual(tryAcquireLock(tmp), true);
+      assert.ok(fs.existsSync(getLockPath(tmp)));
+      releaseLock(tmp);
+      assert.ok(!fs.existsSync(getLockPath(tmp)));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('second acquire by same process is rejected (EEXIST)', function () {
+    const tmp = makeTempDir('autoclaw-ab-lock2-');
+    try {
+      assert.strictEqual(tryAcquireLock(tmp), true);
+      // Same-PID re-acquire — current PID is alive, so the lock is NOT stale,
+      // so the second attempt must fail.
+      assert.strictEqual(tryAcquireLock(tmp), false);
+      releaseLock(tmp);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('stale lock from dead PID is taken over', function () {
+    const tmp = makeTempDir('autoclaw-ab-lock3-');
+    try {
+      const lockPath = getLockPath(tmp);
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      // PID 0 is never a valid live process on any supported platform.
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 0, acquiredAt: Date.now() }));
+      assert.strictEqual(tryAcquireLock(tmp), true);
+      releaseLock(tmp);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
