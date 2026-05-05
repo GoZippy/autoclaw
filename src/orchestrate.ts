@@ -823,6 +823,16 @@ export async function readAgentRegistry(
   }
 }
 
+/**
+ * Resolve a WA-N sprint slot to a real agent platform ID using the registry.
+ * WA-1 → agents[0].platform, WA-2 → agents[1].platform, etc.
+ * Falls back to the WA-N string if no registry entry exists for that index.
+ */
+export function resolveAgentId(waSlot: string, agents: AgentRegistryEntry[]): string {
+  const idx = parseInt(waSlot.replace('WA-', ''), 10) - 1;
+  return agents[idx]?.platform ?? waSlot;
+}
+
 // ---------------------------------------------------------------------------
 // Multi-Agent Consensus Validation
 // ---------------------------------------------------------------------------

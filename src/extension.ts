@@ -63,7 +63,7 @@ import {
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
 import {
-  readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat,
+  readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, type CommsLogEntry,
 } from './comms';
 import { readSnapshots, type Snapshot } from './timetravel';
@@ -230,6 +230,12 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.orchestrate.review', async () => {
       await orchestrateReviewCommand();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.orchestrate.merge', async () => {
+      await orchestrateMergeCommand();
     })
   );
 
@@ -1777,20 +1783,25 @@ async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Pr
       status = recentSave || hasVisibleEditors ? 'active' : 'idle';
     }
 
+    // Read existing heartbeat so agent-set fields (sprint, current_task) survive the tick.
+    // The tick owns timestamp/status; agents own sprint/current_task.
+    const existingHb = await readHeartbeat(commsDir, agent.id);
+
     const hb: import('./comms').Heartbeat = {
       agent_id: agent.id,
       timestamp: now,
       status,
-      current_task: status === 'active' ? currentTask : null,
-      sprint: null,
+      // Use VS Code's active file only when it has a value; otherwise keep what the agent set.
+      current_task: (status === 'active' && currentTask) ? currentTask : (existingHb?.current_task ?? null),
+      // Preserve agent-set sprint unless the plan-summary provides a better value below.
+      sprint: existingHb?.sprint ?? null,
     };
 
-    // Try to read sprint assignment from plan-summary
+    // Try to read sprint assignment from plan-summary — overrides agent-set value when found.
     try {
       const planPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'sprints', 'plan-summary.yaml');
       if (fs.existsSync(planPath)) {
         const planContent = await fsPromises.readFile(planPath, 'utf8');
-        // Look for in_progress or assigned sprints
         const inProgress = planContent.match(/- number: (\d+)[\s\S]*?status: in_progress/);
         const assigned = planContent.match(/- number: (\d+)[\s\S]*?status: assigned/);
         if (inProgress) {
@@ -2092,6 +2103,162 @@ async function orchestrateReviewCommand(): Promise<void> {
   }
 }
 
+async function orchestrateMergeCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('Orchestrate: open a workspace first.'); return; }
+
+  const sprintsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'sprints');
+  const channel = getOrchestrateOutputChannel();
+  channel.show(true);
+
+  const input = await vscode.window.showInputBox({ prompt: 'Sprint number to merge', placeHolder: '1' });
+  if (!input) { return; }
+  const sprintNum = parseInt(input, 10);
+  if (isNaN(sprintNum)) { vscode.window.showErrorMessage('Orchestrate: invalid sprint number.'); return; }
+
+  const sprintPath = path.join(sprintsDir, `sprint-${sprintNum}.yaml`);
+  if (!fs.existsSync(sprintPath)) {
+    vscode.window.showErrorMessage(`Orchestrate: sprint-${sprintNum}.yaml not found.`);
+    return;
+  }
+
+  const content = await fsPromises.readFile(sprintPath, 'utf8');
+  const statusMatch = content.match(/^status:\s*(\w+)\s*$/m);
+  const status = statusMatch?.[1];
+  if (status !== 'approved') {
+    vscode.window.showErrorMessage(`Orchestrate: Sprint ${sprintNum} must be 'approved' before merging (current: ${status ?? 'unknown'}).`);
+    return;
+  }
+
+  // Extract all branch names from the sprint YAML
+  const branchMatches = [...content.matchAll(/branch:\s*"?([^"\n]+)"?/g)];
+  const branches = branchMatches.map(m => m[1].trim()).filter(Boolean);
+  if (branches.length === 0) {
+    vscode.window.showErrorMessage(`Orchestrate: no branches found in sprint-${sprintNum}.yaml.`);
+    return;
+  }
+
+  const cfg = vscode.workspace.getConfiguration('autoclaw.orchestrate');
+  const baseBranch = cfg.get<string>('baseBranch', 'main');
+
+  channel.appendLine(`[orchestrate] Merging Sprint ${sprintNum} branches into ${baseBranch}: ${branches.join(', ')}`);
+
+  // Checkout base branch and merge each sprint branch
+  const checkoutOut = await runGit(workspaceRoot, ['checkout', baseBranch]);
+  if (checkoutOut === '' && !(await runGit(workspaceRoot, ['rev-parse', '--verify', baseBranch]))) {
+    vscode.window.showErrorMessage(`Orchestrate: could not checkout base branch '${baseBranch}'.`);
+    return;
+  }
+
+  let allMerged = true;
+  for (const branch of branches) {
+    channel.appendLine(`[orchestrate]   git merge --no-ff ${branch}`);
+    const mergeOut = await runGit(workspaceRoot, ['merge', '--no-ff', branch, '-m', `chore: merge Sprint ${sprintNum} — ${branch}`]);
+    if (mergeOut === '' && !fs.existsSync(path.join(workspaceRoot, '.git', 'MERGE_HEAD'))) {
+      // runGit returns '' on error — check if HEAD advanced
+      const headCheck = await runGit(workspaceRoot, ['log', '--oneline', '-1']);
+      if (!headCheck.includes(branch.split('/').pop() ?? '')) {
+        channel.appendLine(`[orchestrate]   WARNING: merge of ${branch} may have failed. Resolve manually.`);
+        allMerged = false;
+      }
+    }
+  }
+
+  if (!allMerged) {
+    vscode.window.showWarningMessage(`Sprint ${sprintNum}: one or more branches had merge issues. Resolve conflicts, then re-run merge.`);
+    return;
+  }
+
+  // Update sprint YAML status → merged
+  const mergedContent = content.replace(/^status:\s*approved\s*$/m, 'status: merged');
+  await fsPromises.writeFile(sprintPath, mergedContent, 'utf8');
+
+  // Update downstream sprints: find all pending sprints at a higher level and mark dependencies_met
+  await updateDownstreamDependencies(workspaceRoot, sprintsDir, sprintNum);
+
+  // Update state.json
+  const statePath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'state.json');
+  const state = await readStateFile(statePath);
+  if (state) {
+    for (const agentState of Object.values(state.agents)) {
+      if (agentState.sprint === sprintNum && agentState.status === 'review') {
+        agentState.status = 'done';
+      }
+    }
+    state.last_updated = new Date().toISOString();
+    await writeStateFile(statePath, state);
+  }
+
+  channel.appendLine(`[orchestrate] Sprint ${sprintNum} merged into ${baseBranch}. Downstream dependencies updated.`);
+  vscode.window.showInformationMessage(
+    `Sprint ${sprintNum} merged. Downstream sprints unblocked.`,
+    'Assign Next Sprint'
+  ).then(action => {
+    if (action === 'Assign Next Sprint') {
+      vscode.commands.executeCommand('autoclaw.orchestrate.assign');
+    }
+  });
+}
+
+async function updateDownstreamDependencies(
+  workspaceRoot: string,
+  sprintsDir: string,
+  mergedSprintNum: number
+): Promise<void> {
+  // Determine the level of the merged sprint
+  const mergedPath = path.join(sprintsDir, `sprint-${mergedSprintNum}.yaml`);
+  const mergedContent = await fsPromises.readFile(mergedPath, 'utf8');
+  const mergedLevelMatch = mergedContent.match(/^level:\s*(\d+)\s*$/m);
+  const mergedLevel = mergedLevelMatch ? parseInt(mergedLevelMatch[1], 10) : -1;
+  if (mergedLevel < 0) { return; }
+
+  // Collect all sprint YAML files
+  let files: string[];
+  try {
+    files = (await fsPromises.readdir(sprintsDir)).filter(f => /^sprint-\d+\.yaml$/.test(f));
+  } catch { return; }
+
+  // Read all sprint statuses and levels
+  const sprintInfos: Array<{ file: string; num: number; level: number; status: string; depsMet: boolean }> = [];
+  for (const file of files) {
+    const c = await fsPromises.readFile(path.join(sprintsDir, file), 'utf8');
+    const numMatch = c.match(/^sprint:\s*(\d+)\s*$/m);
+    const levelMatch = c.match(/^level:\s*(\d+)\s*$/m);
+    const statusMatch = c.match(/^status:\s*(\w+)\s*$/m);
+    const depsMatch = c.match(/^dependencies_met:\s*(true|false)\s*$/m);
+    if (numMatch && levelMatch && statusMatch) {
+      sprintInfos.push({
+        file,
+        num: parseInt(numMatch[1], 10),
+        level: parseInt(levelMatch[1], 10),
+        status: statusMatch[1],
+        depsMet: depsMatch?.[1] === 'true',
+      });
+    }
+  }
+
+  // For each pending sprint at level > mergedLevel, check if ALL sprints at lower levels are merged
+  for (const sprint of sprintInfos) {
+    if (sprint.level <= mergedLevel) { continue; }
+    if (sprint.status !== 'pending' && sprint.status !== 'assigned') { continue; }
+    if (sprint.depsMet) { continue; }
+
+    const lowerLevelSprints = sprintInfos.filter(s => s.level < sprint.level);
+    const allLowerMerged = lowerLevelSprints.every(s => s.status === 'merged');
+    if (allLowerMerged) {
+      const filePath = path.join(sprintsDir, sprint.file);
+      const c = await fsPromises.readFile(filePath, 'utf8');
+      const updated = c.replace(/^dependencies_met:\s*false\s*$/m, 'dependencies_met: true');
+      if (updated !== c) {
+        await fsPromises.writeFile(filePath, updated, 'utf8');
+        getOrchestrateOutputChannel().appendLine(
+          `[orchestrate] Sprint ${sprint.num} (level ${sprint.level}) unblocked — all lower-level sprints merged.`
+        );
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Bridge Commands
 // ---------------------------------------------------------------------------
@@ -2176,9 +2343,47 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
 // Inbox watcher — event-driven task_complete detection
 // ---------------------------------------------------------------------------
 
+// Transitions a sprint to 'review' status once all assigned agents have sent task_complete.
+// Uses a regex replace against the YAML string — safe because toYAML() writes `status: <word>` on its own line.
+async function transitionSprintToReview(
+  workspaceRoot: string,
+  sprintNum: number,
+  completedAgents: Set<string>
+): Promise<void> {
+  const sprintPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'sprints', `sprint-${sprintNum}.yaml`);
+  if (!fs.existsSync(sprintPath)) { return; }
+  const content = await fsPromises.readFile(sprintPath, 'utf8');
+
+  const agentLines = content.match(/^\s*- agent:/gm);
+  const expectedCount = agentLines?.length ?? 0;
+  if (expectedCount === 0 || completedAgents.size < expectedCount) { return; }
+  if (/^status:\s*(review|approved|merged)\s*$/m.test(content)) { return; }
+
+  const updated = content.replace(/^status:\s*(pending|assigned|in_progress)\s*$/m, 'status: review');
+  if (updated === content) { return; }
+  await fsPromises.writeFile(sprintPath, updated, 'utf8');
+
+  const statePath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'state.json');
+  const state = await readStateFile(statePath);
+  if (state) {
+    for (const agentId of completedAgents) {
+      if (state.agents[agentId]) { state.agents[agentId].status = 'review'; }
+    }
+    state.last_updated = new Date().toISOString();
+    await writeStateFile(statePath, state);
+  }
+
+  getOrchestrateOutputChannel().appendLine(
+    `[orchestrate] Sprint ${sprintNum} → review (${completedAgents.size}/${expectedCount} agents complete)`
+  );
+}
+
 function startInboxWatcher(context: vscode.ExtensionContext): void {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) { return; }
+
+  // Tracks which agents have sent task_complete, keyed by sprint number.
+  const sprintCompletions = new Map<number, Set<string>>();
 
   const pattern = new vscode.RelativePattern(
     workspaceRoot,
@@ -2194,6 +2399,14 @@ function startInboxWatcher(context: vscode.ExtensionContext): void {
       if (msg.type === 'task_complete') {
         const agentId = String(msg.from ?? 'an agent');
         const taskId = String((msg.payload as Record<string, unknown>)?.task_id ?? 'a task');
+        const sprintNum = typeof msg.sprint === 'number' ? msg.sprint : null;
+
+        if (sprintNum !== null) {
+          if (!sprintCompletions.has(sprintNum)) { sprintCompletions.set(sprintNum, new Set()); }
+          sprintCompletions.get(sprintNum)!.add(agentId);
+          await transitionSprintToReview(workspaceRoot, sprintNum, sprintCompletions.get(sprintNum)!).catch(() => {});
+        }
+
         const action = await vscode.window.showInformationMessage(
           `AutoClaw: ${agentId} completed ${taskId}.`,
           'Run Consensus Review',

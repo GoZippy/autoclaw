@@ -84,8 +84,25 @@ Glob all source files for lines matching `TODO`, `FIXME`, `HACK`, `XXX`, `BUG`.
 - Resolved items (present last tick, gone now) → log `[RESOLVED] <file>:<line>` and update memory.
 - Update `state.json` with current todo list.
 
-### 3. Check MEMORY.md follow-ups
-Read `.autoclaw/kdream/memory/MEMORY.md`, find all lines under `## Follow-ups`.
+### 3.5. Check orchestrate agent health (if orchestrator is active)
+If `.autoclaw/orchestrator/state.json` exists:
+- Read the file. Note `current_sprint`, `tasks_complete`, `tasks_total`.
+- Read each file in `.autoclaw/orchestrator/comms/heartbeats/`. For each agent with `sprint` set:
+  - If `timestamp` is more than 30 minutes old: log `[WARN] Stalled agent: <agent_id> on sprint <sprint>. Last heartbeat: <timestamp>` and write an `escalation` message to `.autoclaw/orchestrator/comms/inboxes/shared/`:
+    ```json
+    {
+      "type": "escalation",
+      "from": "kdream",
+      "to": "shared",
+      "timestamp": "<iso>",
+      "sprint": <N>,
+      "payload": { "body": "Agent <id> stalled on sprint <N>. Last heartbeat: <ts>" },
+      "requires_response": true
+    }
+    ```
+  - Write the file as `<iso-timestamp>-escalation-kdream.json` in the shared inbox.
+
+### 4. Decide and act
 - Lines starting with `- [ ]` are open tasks → report them to the user if any exist.
 - Lines starting with `- [x]` are done → move to `## Observations` during next autoDream.
 - If the user asks KDream to act on a follow-up: work on it, then mark `- [x]`.
@@ -167,6 +184,9 @@ Read last 7 days of log files. Extract:
 - Convert relative dates to absolute ISO dates.
 - Deduplicate identical entries.
 - Move `- [x]` completed follow-ups from Follow-ups to Observations.
+- If `.autoclaw/orchestrator/state.json` exists, upsert a sprint-progress line in `## Facts`:
+  `Sprint progress: {current_sprint}/{total_sprints} sprints, {tasks_complete}/{tasks_total} tasks complete ({percent}%). Last updated: {last_updated}.`
+  (Remove any existing sprint-progress line before writing the new one to avoid duplicates.)
 
 ### Phase 4 — Prune
 If MEMORY.md exceeds 200 lines or 25KB:

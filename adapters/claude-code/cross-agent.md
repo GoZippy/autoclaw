@@ -10,6 +10,7 @@ Check at the START of every task and AFTER completing work:
 Read any `.json` files found. Process and act on them before starting new work.
 
 ### Message Types
+- `task_assignment` — The orchestrator has assigned a sprint to you; read `payload.assignment_file` for your work brief
 - `review_request` — Another agent wants you to review their work
 - `review_response` — Response to a review you requested
 - `consensus_vote` — A vote on task approval
@@ -17,7 +18,7 @@ Read any `.json` files found. Process and act on them before starting new work.
 - `task_complete` — An agent reporting task completion
 - `finding_report` — A security or quality finding
 - `question` — A question from another agent
-- `answer` — An answer to your question
+- `answer` — An answer to your question (also used by orchestrator to explain blocked assignments)
 
 ## Sending Messages
 Write JSON files to the target agent's inbox directory.

@@ -12,6 +12,7 @@ description: Multi-agent parallel development orchestrator. Reads task manifests
 3. **Idempotency.** `plan` with an existing manifest re-generates sprints in place. `assign` on an already-assigned sprint updates the assignment.
 4. **Scope isolation is sacred.** Never assign overlapping file scopes to parallel agents in the same sprint. The planner MUST detect and prevent conflicts.
 5. **Output discipline.** Confirm in ≤5 lines: what changed, sprint count, agent assignments, next action. No reasoning narration.
+6. **Resolve WA-N → real agent IDs.** Before sending any message or writing any heartbeat, read `agents.json` and call `resolveAgentId(waSlot, agents)` to get the real platform ID (e.g. `claude-code`, `kilocode`). Never route to a WA-N slot directly.
 
 ## On Invocation
 
@@ -37,8 +38,20 @@ Determine the sub-command from the user's message:
    - `.autoclaw/orchestrator/sprints/` — directory for generated sprint plans
    - `.autoclaw/orchestrator/reviews/` — directory for review reports
    - `.autoclaw/orchestrator/logs/` — directory for execution logs
-3. If a spec `tasks.md` exists (e.g., `.kiro/specs/*/tasks.md`), offer to generate a manifest from it.
-4. Confirm: "Orchestrator initialized. Create a manifest in `.autoclaw/orchestrator/manifests/` or run `/orchestrate plan` to generate sprints."
+3. **Always** create the full comms directory tree (these are required for messaging to work):
+   - `.autoclaw/orchestrator/comms/inboxes/shared/`
+   - `.autoclaw/orchestrator/comms/inboxes/claude-code/`
+   - `.autoclaw/orchestrator/comms/inboxes/kilocode/`
+   - `.autoclaw/orchestrator/comms/heartbeats/`
+   - `.autoclaw/orchestrator/comms/consensus/active/`
+   If `agents.json` exists, create an inbox for each `platform` value in its `agents` array instead of the hard-coded defaults.
+4. Auto-detect quality gates from the workspace root and write to `config.yaml`:
+   - `Cargo.toml` present → `build: "cargo check --workspace"`, `test: "cargo test --workspace"`, `lint: "cargo clippy --workspace -- -D warnings"`
+   - `go.mod` present → `build: "go build ./..."`, `test: "go test ./..."`, `lint: "go vet ./..."`
+   - `package.json` present → `build: "npm run build"`, `test: "npm test"`, `lint: "npm run lint"`
+   - None detected → leave fields empty, note in config that manual setup is required
+5. If a spec `tasks.md` exists (e.g., `.kiro/specs/*/tasks.md`), offer to generate a manifest from it.
+6. Confirm: "Orchestrator initialized. Create a manifest in `.autoclaw/orchestrator/manifests/` or run `/orchestrate plan` to generate sprints."
 
 ---
 
@@ -87,6 +100,21 @@ Read the manifest YAML from the specified path (default: first `.yaml` in `manif
 **Phase 7: Output**
 - Write sprint plan YAML to `.autoclaw/orchestrator/sprints/sprint-{N}.yaml` for each sprint.
 - Write summary to `.autoclaw/orchestrator/sprints/plan-summary.yaml`.
+- **Write `state.json`** to `.autoclaw/orchestrator/state.json`:
+  ```json
+  {
+    "project": "<manifest.project.name>",
+    "current_sprint": null,
+    "total_sprints": <N>,
+    "tasks_complete": 0,
+    "tasks_total": <M>,
+    "agents": {
+      "WA-1": { "status": "idle", "sprint": null, "tasks": [] },
+      "WA-2": { "status": "idle", "sprint": null, "tasks": [] }
+    },
+    "last_updated": "<iso timestamp>"
+  }
+  ```
 
 ### Sprint YAML Format
 ```yaml
@@ -140,12 +168,52 @@ Confirm: "Generated {N} sprints for {M} tasks across {A} agents. Critical path: 
 ## assign — Assign Sprint to Agents
 
 1. Read the sprint YAML from `sprints/sprint-{N}.yaml`.
-2. Verify all dependency sprints are in `merged` status. If not, report which sprints are blocking.
-3. For each agent assignment in the sprint:
-   - Render the sprint assignment from `templates/sprint-assignment.md` with the agent's tasks, scope, branch name, and migration range.
-   - Write the rendered assignment to `.autoclaw/orchestrator/sprints/sprint-{N}-{agent}.md`.
-4. Update sprint status to `assigned`.
-5. Confirm: "Sprint {N} assigned to {agents}. Assignment files written. Each agent should read their assignment and begin work."
+2. Read `agents.json` to resolve WA-N slots → real agent IDs (`resolveAgentId`).
+3. **Dependency check:** verify all dependency sprints are in `merged` status. If not:
+   - Identify which sprints are blocking (status not `merged`).
+   - Write an `answer` message to the requesting agent's inbox:
+     ```json
+     {
+       "type": "answer",
+       "from": "orchestrator",
+       "to": "<requestingAgentId>",
+       "timestamp": "<iso>",
+       "sprint": <N>,
+       "payload": { "body": "Sprint N blocked. Waiting for Sprint(s) X to reach merged status." },
+       "requires_response": false
+     }
+     ```
+   - Stop — do not proceed with assignment.
+4. For each agent assignment in the sprint:
+   a. Resolve WA-N → real agent ID (e.g. `WA-1` → `claude-code`).
+   b. Render the sprint assignment from `templates/sprint-assignment.md` with the agent's tasks, scope, branch name, and migration range.
+   c. Write the rendered assignment to `.autoclaw/orchestrator/sprints/sprint-{N}-{realAgentId}.md`
+      (e.g. `sprint-1-claude-code.md`, NOT `sprint-1-WA-1.md`).
+   d. Send a `task_assignment` message to that agent's inbox:
+      ```json
+      {
+        "type": "task_assignment",
+        "from": "orchestrator",
+        "to": "<realAgentId>",
+        "timestamp": "<iso>",
+        "sprint": <N>,
+        "task_id": "<comma-separated task IDs>",
+        "payload": {
+          "assignment_file": "sprint-{N}-{realAgentId}.md",
+          "branch": "<branch-name>",
+          "scope": ["<glob1>", "<glob2>"]
+        },
+        "requires_response": false
+      }
+      ```
+      Write to `.autoclaw/orchestrator/comms/inboxes/<realAgentId>/<timestamp>-task_assignment-orchestrator.json`.
+   e. Update `state.json` `agents` entry for the real agent ID:
+      ```json
+      { "status": "working", "sprint": <N>, "tasks": ["<task-id>", ...] }
+      ```
+5. Update sprint status to `assigned` in the sprint YAML.
+6. Update `state.json` `current_sprint` to `<N>`.
+7. Confirm: "Sprint {N} assigned. Assignment files written for: {agent1}, {agent2}. Each agent should read their assignment file and begin work."
 
 ---
 
@@ -169,15 +237,20 @@ Critical path: Sprint 5 of 9
 ## review — Trigger Review
 
 1. Read the sprint YAML. Verify status is `in_progress` or all agents have signaled completion.
-2. For each agent's completed work:
+2. Read quality gates from `config.yaml` (`project.build_command`, `project.test_command`, `project.lint_command`).
+   If not set, auto-detect from workspace root:
+   - `Cargo.toml` → `cargo check --workspace`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace`
+   - `go.mod` → `go build ./...`, `go vet ./...`, `go test ./...`
+   - `package.json` → `npm run build`, `npm run lint`, `npm test`
+3. For each agent's completed work:
+   - Run configured quality gates. Report pass/fail per gate.
    - Render the review checklist from `templates/review-checklist.md`.
-   - Run configured quality gates from `config.yaml` (`go build`, `go vet`, `go test`, etc.).
    - Write gate results to the review file.
-3. Write review report to `.autoclaw/orchestrator/reviews/sprint-{N}-review.md`.
-4. Set verdict: `APPROVED`, `MINOR_ISSUES`, or `CRITICAL_ISSUES`.
-5. If `CRITICAL_ISSUES`: update sprint status to `review` and list required fixes.
-6. If `APPROVED` or `MINOR_ISSUES`: update sprint status to `approved`.
-7. Confirm: "Sprint {N} review complete. Verdict: {verdict}. {details}"
+4. Write review report to `.autoclaw/orchestrator/reviews/sprint-{N}-review.md`.
+5. Set verdict: `APPROVED`, `MINOR_ISSUES`, or `CRITICAL_ISSUES`.
+6. If `CRITICAL_ISSUES`: update sprint status to `review` and list required fixes.
+7. If `APPROVED` or `MINOR_ISSUES`: update sprint status to `approved`.
+8. Confirm: "Sprint {N} review complete. Verdict: {verdict}. {details}"
 
 ---
 
@@ -186,10 +259,10 @@ Critical path: Sprint 5 of 9
 1. Verify sprint status is `approved`.
 2. For each agent's branch (in dependency order):
    - Merge to develop branch using `--no-ff`.
-   - Run `go mod tidy` if Go files changed.
-   - Run full test suite.
+   - If the project is Go: run `go mod tidy`. If Rust: run `cargo check --workspace`.
+   - Run full test suite (from config quality gates).
 3. Update sprint status to `merged`.
-4. Check if next sprint's dependencies are now met.
+4. Check if next sprint's dependencies are now met; update `dependencies_met: true` in those sprint YAMLs.
 5. Confirm: "Sprint {N} merged. Sprint {N+1} is now unblocked. Run `/orchestrate assign {N+1}` to continue."
 
 ---
@@ -214,24 +287,45 @@ If the user describes tasks without a sub-command:
 
 ## State Tracking
 
-The orchestrator maintains state in sprint YAML files (status field) and optionally in `.autoclaw/orchestrator/state.json`:
+The orchestrator maintains state in sprint YAML files (status field) and in `.autoclaw/orchestrator/state.json`.
+The `state.json` file uses real agent IDs (not WA-N slots) in the `agents` map:
 
 ```json
 {
-  "project": "zippypanel",
+  "project": "zippycoin-core",
   "current_sprint": 2,
   "total_sprints": 9,
   "tasks_complete": 12,
   "tasks_total": 75,
   "agents": {
-    "WA-1": { "status": "working", "sprint": 2, "tasks": ["task-19"] },
-    "WA-2": { "status": "review", "sprint": 2, "tasks": ["task-20"] },
-    "WA-3": { "status": "working", "sprint": 2, "tasks": ["task-21"] },
-    "WA-4": { "status": "idle", "sprint": null, "tasks": [] }
+    "claude-code": { "status": "working", "sprint": 2, "tasks": ["task-19"] },
+    "kilocode":    { "status": "review",  "sprint": 2, "tasks": ["task-20"] }
   },
-  "last_updated": "2026-05-02T12:00:00Z"
+  "last_updated": "2026-05-03T12:00:00Z"
 }
 ```
+
+After each `plan`, `assign`, or sprint status transition, update `state.json` accordingly.
+
+---
+
+## On Task Completion (agent signal)
+
+When you finish your assigned sprint work:
+1. Broadcast `task_complete` to `.autoclaw/orchestrator/comms/inboxes/shared/`:
+   ```json
+   {
+     "type": "task_complete",
+     "from": "<your-agent-id>",
+     "to": "shared",
+     "sprint": <N>,
+     "task_id": "<task-ids>",
+     "payload": { "branch": "<branch>", "summary": "<one-line summary>" },
+     "requires_response": false
+   }
+   ```
+2. Write `review_request` to each peer agent's inbox.
+3. Update your heartbeat: `current_task: null, sprint: <N>, status: idle`.
 
 ---
 
@@ -241,7 +335,9 @@ The orchestrator maintains state in sprint YAML files (status field) and optiona
 - **Scope conflict**: Report conflicting tasks and their overlapping patterns. Suggest splitting or sequencing.
 - **Missing dependency**: Report which `depends_on` ID doesn't exist in the manifest.
 - **Gate failure**: Report which gate failed, with command output. Do not auto-merge.
-- **Agent timeout**: If an agent hasn't signaled completion within `estimated_days * 2`, flag as stalled.
+- **Agent timeout / stall**: If an agent hasn't updated their heartbeat within `estimated_days * 2` days,
+  their status will appear as `stalled` in the dashboard. Send an `escalation` to `shared/` inbox.
+- **Dependency not met**: Send `answer` message to requesting agent, list blocking sprints, stop.
 
 ---
 

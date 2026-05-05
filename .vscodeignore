@@ -4,6 +4,8 @@
 .gitignore
 .gitattributes
 .env
+.claude/**
+.clinerules/**
 .kilo/**
 .kilocodemodes
 .voidspec/**

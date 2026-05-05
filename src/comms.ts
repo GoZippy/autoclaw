@@ -22,7 +22,7 @@ const fsPromises = fs.promises;
 export type MessageType =
   | 'review_request' | 'review_response'
   | 'consensus_vote' | 'consensus_result'
-  | 'task_claim' | 'task_complete'
+  | 'task_claim' | 'task_complete' | 'task_assignment'
   | 'finding_report' | 'question' | 'answer'
   | 'scope_conflict' | 'escalation' | 'handoff' | 'system';
 
@@ -47,7 +47,7 @@ export interface Heartbeat {
   sprint: number | null;
 }
 
-export type AgentStatus = 'active' | 'idle' | 'offline' | 'detected';
+export type AgentStatus = 'active' | 'idle' | 'offline' | 'detected' | 'stalled';
 
 export interface RegisteredAgent {
   id: string;
@@ -91,7 +91,7 @@ function messageFilename(msg: Message): string {
 export async function sendMessage(commsDir: string, msg: Message): Promise<string> {
   if (!msg.id) { msg.id = generateMessageId(); }
   if (!msg.timestamp) { msg.timestamp = new Date().toISOString(); }
-  const inboxDir = path.join(commsDir, 'inboxes', msg.to);
+  const inboxDir = path.join(commsDir, 'inboxes', path.basename(msg.to));
   await fsPromises.mkdir(inboxDir, { recursive: true });
   const filename = messageFilename(msg);
   const filePath = path.join(inboxDir, filename);
@@ -149,12 +149,18 @@ export async function readCommsLog(
 export async function writeHeartbeat(commsDir: string, hb: Heartbeat): Promise<void> {
   const dir = path.join(commsDir, 'heartbeats');
   await fsPromises.mkdir(dir, { recursive: true });
-  await fsPromises.writeFile(path.join(dir, `${hb.agent_id}.json`), JSON.stringify(hb, null, 2), 'utf8');
+  await fsPromises.writeFile(
+    path.join(dir, `${path.basename(hb.agent_id)}.json`),
+    JSON.stringify(hb, null, 2),
+    'utf8'
+  );
 }
 
 export async function readHeartbeat(commsDir: string, agentId: string): Promise<Heartbeat | null> {
   try {
-    const content = await fsPromises.readFile(path.join(commsDir, 'heartbeats', `${agentId}.json`), 'utf8');
+    const content = await fsPromises.readFile(
+      path.join(commsDir, 'heartbeats', `${path.basename(agentId)}.json`), 'utf8'
+    );
     return JSON.parse(content) as Heartbeat;
   } catch { return null; }
 }
@@ -176,6 +182,8 @@ export function agentStatusFromHeartbeat(hb: Heartbeat | null, now: number = Dat
   const age = now - new Date(hb.timestamp).getTime();
   if (age < 2 * 60 * 1000) { return 'active'; }
   if (age < 5 * 60 * 1000) { return 'idle'; }
+  // Agent has an active sprint assignment but hasn't checked in for >30 min → stalled.
+  if (hb.sprint !== null && age < 24 * 60 * 60 * 1000) { return 'stalled'; }
   return 'offline';
 }
 
@@ -194,7 +202,7 @@ export async function getAgentStatuses(commsDir: string): Promise<Array<Register
   if (!reg) { return []; }
   const results = [];
   for (const agent of reg.agents) {
-    const hb = await readHeartbeat(commsDir, agent.id);
+    const hb = await readHeartbeat(commsDir, path.basename(agent.id));
     results.push({ ...agent, live_status: agentStatusFromHeartbeat(hb), heartbeat: hb });
   }
   return results;
