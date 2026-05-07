@@ -1,3 +1,4 @@
+.mcp.json
 node_modules/
 out/
 *.vsix
@@ -14,3 +15,7 @@ tsconfig.tsbuildinfo
 
 # AutoClaw KDream data
 .autoclaw/
+
+# IDE workspace state — runtime data, not product code
+.voidspec/
+.kilo/
