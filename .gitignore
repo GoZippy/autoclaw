@@ -19,3 +19,5 @@ tsconfig.tsbuildinfo
 # IDE workspace state — runtime data, not product code
 .voidspec/
 .kilo/
+.claude/
+.clinerules/
