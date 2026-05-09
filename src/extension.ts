@@ -1737,6 +1737,12 @@ Stay in your assigned scope. Coordinate via messages for cross-scope changes.
 let heartbeatIntervalId: NodeJS.Timeout | undefined;
 /** Tracks the last file-save timestamp per workspace folder. */
 let lastFileSaveTimestamp: number = 0;
+/** Stable per-extension-activation session UUID stamped into every heartbeat. */
+const sessionId: string = (() => {
+  // Node 19+ exposes crypto.randomUUID(); fall back to a hex random for older runtimes.
+  const c = require('crypto') as typeof import('crypto');
+  return typeof c.randomUUID === 'function' ? c.randomUUID() : c.randomBytes(16).toString('hex');
+})();
 
 function startHeartbeatTicker(context: vscode.ExtensionContext): void {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -1812,6 +1818,8 @@ async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Pr
       current_task: (status === 'active' && currentTask) ? currentTask : (existingHb?.current_task ?? null),
       // Preserve agent-set sprint unless the plan-summary provides a better value below.
       sprint: existingHb?.sprint ?? null,
+      // Stamp the per-activation session id so per-session heartbeat rows are renderable.
+      session_id: sessionId,
     };
 
     // Try to read sprint assignment from plan-summary — overrides agent-set value when found.

@@ -277,6 +277,23 @@ suite('Comms — v2 schemas', () => {
     assert.strictEqual(got!.queue_depth, undefined);
   });
 
+  test('writeHeartbeat: two successive writes with different session_ids both round-trip (latest wins)', async () => {
+    const dir = makeTmpDir();
+    const hb1: Heartbeat = {
+      agent_id: 'kiro', timestamp: '2026-05-09T00:00:00Z',
+      status: 'active', current_task: null, sprint: null,
+      session_id: 'session-aaa',
+    };
+    await writeHeartbeat(dir, hb1);
+    const got1 = await readHeartbeat(dir, 'kiro');
+    assert.strictEqual(got1!.session_id, 'session-aaa');
+
+    const hb2: Heartbeat = { ...hb1, timestamp: '2026-05-09T00:00:30Z', session_id: 'session-bbb' };
+    await writeHeartbeat(dir, hb2);
+    const got2 = await readHeartbeat(dir, 'kiro');
+    assert.strictEqual(got2!.session_id, 'session-bbb');
+  });
+
   test('v2 Heartbeat with all new fields round-trips', async () => {
     const dir = makeTmpDir();
     const hb: Heartbeat = {
