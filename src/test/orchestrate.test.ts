@@ -1,4 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   buildDAG,
   topologicalSort,
@@ -11,12 +14,15 @@ import {
   renderTemplate,
   toYAML,
   DEFAULT_PLANNER_CONFIG,
+  renderSprintMarkdown,
+  writeSprintArtifacts,
 } from '../orchestrate';
 import type {
   ManifestTask,
   Manifest,
   PlannerConfig,
   DAG,
+  Sprint,
 } from '../orchestrate';
 
 // ---------------------------------------------------------------------------
@@ -822,5 +828,71 @@ suite('Orchestrate — evaluateConsensus + mergeFindings', () => {
     assert.ok(result.merged_findings, 'merged_findings should be populated');
     assert.strictEqual(result.merged_findings!.length, 1);
     assert.strictEqual(result.merged_findings![0].severity, 'critical');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sprint Markdown generation (COORDINATION_IMPROVEMENTS §2.4)
+// ---------------------------------------------------------------------------
+
+function makeSprint(): Sprint {
+  return {
+    sprint: 1,
+    level: 0,
+    status: 'assigned',
+    dependencies_met: true,
+    estimated_days: 4,
+    assignments: [
+      {
+        agent: 'WA-1',
+        platform: 'claude-code',
+        inbox: '.autoclaw/orchestrator/comms/inboxes/claude-code/',
+        tasks: [{ id: 'T1', name: 'Task 1', depends_on: [], scope: ['src/foo/**'], effort: 'M', subtasks: [] }],
+        scope: ['src/foo/**'],
+        branch: 'feat/sprint-1-wa-1-task-1',
+        migration_range: { start: 100, end: 103 },
+      },
+      {
+        agent: 'WA-2',
+        platform: 'kiro',
+        inbox: '.autoclaw/orchestrator/comms/inboxes/kiro/',
+        tasks: [{ id: 'T2', name: 'Task 2', depends_on: [], scope: ['src/bar/**'], effort: 'S', subtasks: [] }],
+        scope: ['src/bar/**'],
+        branch: 'feat/sprint-1-wa-2-task-2',
+        migration_range: null,
+      },
+    ],
+  };
+}
+
+suite('Orchestrate — Sprint Markdown rendering', () => {
+  test('renderSprintMarkdown produces a non-empty string for a minimal SprintPlan', () => {
+    const sprint = makeSprint();
+    const md = renderSprintMarkdown(sprint, 'demo');
+    assert.ok(md.length > 0);
+    assert.ok(md.includes('GENERATED'));
+  });
+
+  test('renderSprintMarkdown contains sprint number, status, and assignment branches', () => {
+    const sprint = makeSprint();
+    const md = renderSprintMarkdown(sprint, 'demo');
+    assert.ok(md.includes('Sprint 1'));
+    assert.ok(md.includes('assigned'));
+    assert.ok(md.includes('feat/sprint-1-wa-1-task-1'));
+    assert.ok(md.includes('feat/sprint-1-wa-2-task-2'));
+    assert.ok(md.includes('claude-code'));
+    assert.ok(md.includes('kiro'));
+  });
+
+  test('writeSprintArtifacts writes both yaml and md siblings', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-sprint-'));
+    const sprint = makeSprint();
+    const result = await writeSprintArtifacts(tmp, sprint, 'demo');
+    assert.ok(fs.existsSync(result.yamlPath));
+    assert.ok(fs.existsSync(result.mdPath));
+    const md = fs.readFileSync(result.mdPath, 'utf8');
+    assert.ok(md.startsWith('<!-- GENERATED'));
+    const yaml = fs.readFileSync(result.yamlPath, 'utf8');
+    assert.ok(yaml.includes('sprint: 1'));
   });
 });

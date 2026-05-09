@@ -742,6 +742,77 @@ export async function writeYAMLFile(
   await fsPromises.writeFile(filePath, content, 'utf8');
 }
 
+/**
+ * Render a human-readable Markdown view of a Sprint plan.
+ * The output begins with a generated-file warning header so manual edits
+ * are obviously discouraged. The companion `sprint-N.yaml` remains the
+ * authoritative source of truth; this Markdown is a derived artifact.
+ *
+ * Replaces the deprecated docs/parallel-execution-plan.md per
+ * COORDINATION_IMPROVEMENTS §2.4.
+ */
+export function renderSprintMarkdown(sprint: Sprint, projectName: string): string {
+  const lines: string[] = [];
+  lines.push(`<!-- GENERATED — edit sprint-${sprint.sprint}.yaml instead. -->`);
+  lines.push('');
+  lines.push(`# Sprint ${sprint.sprint} — ${projectName}`);
+  lines.push('');
+  lines.push(`- **Status:** ${sprint.status}`);
+  lines.push(`- **Level:** ${sprint.level}`);
+  lines.push(`- **Dependencies met:** ${sprint.dependencies_met ? 'yes' : 'no'}`);
+  lines.push(`- **Estimated days:** ${sprint.estimated_days}`);
+  lines.push('');
+  lines.push('## Assignments');
+  lines.push('');
+  if (sprint.assignments.length === 0) {
+    lines.push('_(no assignments)_');
+  } else {
+    for (const a of sprint.assignments) {
+      const platformPart = a.platform ? ` (${a.platform})` : '';
+      lines.push(`### ${a.agent}${platformPart}`);
+      lines.push('');
+      lines.push(`- **Branch:** \`${a.branch}\``);
+      if (a.inbox) {
+        lines.push(`- **Inbox:** \`${a.inbox}\``);
+      }
+      if (a.migration_range) {
+        lines.push(`- **Migration range:** ${a.migration_range.start}-${a.migration_range.end}`);
+      }
+      lines.push('- **Tasks:**');
+      for (const t of a.tasks) {
+        lines.push(`  - \`${t.id}\` — ${t.name} (${t.effort})`);
+      }
+      lines.push('- **Scope globs:**');
+      for (const s of a.scope) {
+        lines.push(`  - \`${s}\``);
+      }
+      lines.push('');
+    }
+  }
+  lines.push('---');
+  lines.push(`_Generated ${new Date().toISOString()} by AutoClaw Orchestrator._`);
+  lines.push('');
+  return lines.join('\n');
+}
+
+/**
+ * Write both `sprint-N.yaml` and the sibling `sprint-N.md` for a single sprint.
+ * The YAML is the authoritative source of record; the Markdown is a derived
+ * human-readable view (per COORDINATION_IMPROVEMENTS §2.4).
+ */
+export async function writeSprintArtifacts(
+  sprintsDir: string,
+  sprint: Sprint,
+  projectName: string
+): Promise<{ yamlPath: string; mdPath: string }> {
+  await ensureDir(sprintsDir);
+  const yamlPath = path.join(sprintsDir, `sprint-${sprint.sprint}.yaml`);
+  const mdPath = path.join(sprintsDir, `sprint-${sprint.sprint}.md`);
+  await writeYAMLFile(yamlPath, sprint);
+  await fsPromises.writeFile(mdPath, renderSprintMarkdown(sprint, projectName), 'utf8');
+  return { yamlPath, mdPath };
+}
+
 export async function writeStateFile(
   filePath: string,
   state: OrchestratorState
