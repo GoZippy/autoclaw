@@ -16,6 +16,15 @@ import * as crypto from 'crypto';
 const fsPromises = fs.promises;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Heartbeat queue_depth at or above which a fresh agent is treated as overloaded. */
+export const OVERLOAD_QUEUE_DEPTH = 10;
+/** Heartbeat error_rate_1m at or above which a fresh agent is treated as overloaded. */
+export const OVERLOAD_ERROR_RATE = 0.5;
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -40,16 +49,51 @@ export interface Message {
 }
 
 export interface Heartbeat {
+  // --- v1 fields (unchanged) ---
   agent_id: string;
   timestamp: string;
   status: 'active' | 'idle';
   current_task: string | null;
   sprint: number | null;
+
+  // --- v2 additions (all optional; see docs/specs/heartbeat-v2.md) ---
+  /** Stable per-extension-activation session identifier. */
+  session_id?: string;
+  /** Remaining tokens in the agent's current LLM session/budget window. */
+  token_budget_remaining?: number;
+  /** Unread inbox + claimed-but-not-started task count. */
+  queue_depth?: number;
+  /** Identifier of the LLM the agent is currently using. */
+  current_llm?: string;
+  /** Most recent error surfaced by the adapter, redacted. */
+  last_error?: {
+    timestamp: string;
+    code?: string;
+    message: string;
+  };
+  /** Round-trip ms to the bridge / last peer. Local-only. */
+  network_latency_ms?: number;
+  /** Errors / total operations over the last 60 s. */
+  error_rate_1m?: number;
+  /** Optional schema marker; absence implies v1. */
+  schema_version?: '1' | '2';
 }
 
-export type AgentStatus = 'active' | 'idle' | 'offline' | 'detected' | 'stalled';
+export type AgentStatus =
+  | 'active' | 'idle' | 'offline' | 'detected' | 'stalled' | 'overloaded';
+
+export type CapabilityTag = string;
+export type ToolTag = string;
+export type TrustLevel = 'untrusted' | 'low' | 'medium' | 'high';
+
+export interface CostBudget {
+  daily_usd?: number;
+  hourly_usd?: number;
+  per_task_usd?: number;
+}
 
 export interface RegisteredAgent {
+  // --- v1 fields (unchanged) ---
   id: string;
   name: string;
   extension_id: string | null;
@@ -58,12 +102,46 @@ export interface RegisteredAgent {
   hooks_supported: boolean;
   last_heartbeat: string | null;
   status: AgentStatus;
+
+  // --- v2 additions (all optional; see docs/specs/registered-agent-v2.md) ---
+  /** Path to this agent's cross-agent-protocol rules file relative to workspace root. */
+  rules_path?: string;
+  /** Stable opaque machine identifier. */
+  machine_id?: string;
+  /** Last-known machine IP. Local-only. */
+  machine_ip?: string;
+  /** Coarse capability tags drawn from the Agent Card. */
+  capabilities?: CapabilityTag[];
+  /** Models the agent can invoke. */
+  llms_available?: string[];
+  /** Maximum context window in tokens for the agent's primary LLM. */
+  context_window?: number;
+  /** Coarse tool taxonomy. */
+  tools_supported?: ToolTag[];
+  /** Trust tier; gates auto-merge and consensus rules. */
+  trust_level?: TrustLevel;
+  /** Soft budget caps. Local-only; never reported off-machine. */
+  cost_budget?: CostBudget;
+  /** Concurrency ceiling. */
+  max_parallel_tasks?: number;
+  /** AutoClaw skill IDs available. */
+  skills_loaded?: string[];
+  /** When true, the agent will not auto-execute tool calls. */
+  human_in_loop_required?: boolean;
+  /** Pointer to the canonical Agent Card on disk. */
+  agent_card_path?: string;
+  /** SPIFFE ID, populated only when SPIRE is configured (Phase 4). */
+  spiffe_id?: string;
+  /** ISO timestamp the registry entry was last refreshed. */
+  last_detected_at?: string;
 }
 
 export interface AgentRegistry {
   agents: RegisteredAgent[];
   ide: string;
   provisioned_at: string;
+  /** Optional schema marker; absence implies v1. */
+  schema_version?: '1' | '2';
 }
 
 export interface CommsLogEntry {
@@ -180,11 +258,42 @@ export async function readAllHeartbeats(commsDir: string): Promise<Heartbeat[]> 
 export function agentStatusFromHeartbeat(hb: Heartbeat | null, now: number = Date.now()): AgentStatus {
   if (!hb) { return 'offline'; }
   const age = now - new Date(hb.timestamp).getTime();
-  if (age < 2 * 60 * 1000) { return 'active'; }
+  if (age < 2 * 60 * 1000) {
+    // Stage B (v2): even a fresh heartbeat can be flagged 'overloaded' when
+    // the agent is signaling distress via queue_depth or error_rate_1m.
+    if (
+      (typeof hb.queue_depth === 'number' && hb.queue_depth >= OVERLOAD_QUEUE_DEPTH) ||
+      (typeof hb.error_rate_1m === 'number' && hb.error_rate_1m >= OVERLOAD_ERROR_RATE)
+    ) {
+      return 'overloaded';
+    }
+    return 'active';
+  }
   if (age < 5 * 60 * 1000) { return 'idle'; }
-  // Agent has an active sprint assignment but hasn't checked in for >30 min → stalled.
+  // Agent has an active sprint assignment but hasn't checked in for >5 min → stalled.
   if (hb.sprint !== null && age < 24 * 60 * 60 * 1000) { return 'stalled'; }
   return 'offline';
+}
+
+/** Redact a heartbeat last_error.message for safe local persistence:
+ *  truncates to 500 chars, strips ANSI escapes, replaces $HOME and obvious tokens. */
+export function redactErrorMessage(s: string): string {
+  if (typeof s !== 'string') { return ''; }
+  let out = s;
+  // Strip ANSI escape sequences (CSI SGR).
+  out = out.replace(/\x1b\[[0-9;]*m/g, '');
+  // Replace user's home directory with $HOME.
+  const home = process.env.USERPROFILE || process.env.HOME;
+  if (home && home.length > 0) {
+    // Escape regex metacharacters in the home path.
+    const escaped = home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    out = out.replace(new RegExp(escaped, 'g'), '$HOME');
+  }
+  // Redact obvious token-shaped strings.
+  out = out.replace(/(acl_|sk-|ghp_)[A-Za-z0-9]+/g, '<redacted>');
+  // Truncate to 500 chars.
+  if (out.length > 500) { out = out.slice(0, 500); }
+  return out;
 }
 
 export async function readRegistry(commsDir: string): Promise<AgentRegistry | null> {

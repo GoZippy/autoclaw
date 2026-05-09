@@ -7,9 +7,10 @@ import {
   appendCommsLog, readCommsLog,
   writeHeartbeat, readHeartbeat,
   agentStatusFromHeartbeat, getAgentStatuses,
-  writeRegistry,
+  writeRegistry, readRegistry,
   generateMessageId,
-  type Message, type Heartbeat, type AgentRegistry,
+  redactErrorMessage,
+  type Message, type Heartbeat, type AgentRegistry, type RegisteredAgent,
 } from '../comms';
 
 function makeTmpDir(): string {
@@ -188,5 +189,177 @@ suite('Comms — registry & status inference', () => {
     assert.notStrictEqual(a, b);
     assert.match(a, /^msg-/);
     assert.match(b, /^msg-/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// v2 schemas — RegisteredAgent + Heartbeat extensions
+// ---------------------------------------------------------------------------
+
+suite('Comms — v2 schemas', () => {
+  test('v1 RegisteredAgent JSON parses; new fields are undefined', async () => {
+    const dir = makeTmpDir();
+    const reg: AgentRegistry = {
+      agents: [{
+        id: 'kiro', name: 'Kiro', extension_id: null, detected: true,
+        inbox_path: '.autoclaw/orchestrator/comms/inboxes/kiro/',
+        hooks_supported: false, last_heartbeat: null, status: 'detected',
+      }],
+      ide: 'test',
+      provisioned_at: new Date().toISOString(),
+    };
+    await writeRegistry(dir, reg);
+    const got = await readRegistry(dir);
+    assert.ok(got);
+    assert.strictEqual(got!.agents.length, 1);
+    assert.strictEqual(got!.agents[0].capabilities, undefined);
+    assert.strictEqual(got!.agents[0].trust_level, undefined);
+    assert.strictEqual(got!.agents[0].machine_id, undefined);
+    assert.strictEqual(got!.schema_version, undefined);
+  });
+
+  test('v2 RegisteredAgent with all new fields populated round-trips', async () => {
+    const dir = makeTmpDir();
+    const agent: RegisteredAgent = {
+      id: 'claude-code', name: 'Claude Code', extension_id: 'anthropic.claude-code',
+      detected: true, inbox_path: '.autoclaw/orchestrator/comms/inboxes/claude-code/',
+      hooks_supported: true, last_heartbeat: null, status: 'detected',
+      rules_path: '.claude/rules/cross-agent-protocol.md',
+      machine_id: 'abc123hex',
+      machine_ip: '10.0.0.42',
+      capabilities: ['typescript', 'react'],
+      llms_available: ['claude-opus-4-7', 'claude-sonnet-4-6'],
+      context_window: 1000000,
+      tools_supported: ['bash', 'edit'],
+      trust_level: 'high',
+      cost_budget: { daily_usd: 100, hourly_usd: 10 },
+      max_parallel_tasks: 3,
+      skills_loaded: ['kdream', 'autobuild'],
+      human_in_loop_required: false,
+      agent_card_path: '~/.autoclaw/agent-card.json',
+      spiffe_id: undefined,
+      last_detected_at: '2026-05-09T12:00:00Z',
+    };
+    const reg: AgentRegistry = {
+      agents: [agent],
+      ide: 'vscode',
+      provisioned_at: new Date().toISOString(),
+      schema_version: '2',
+    };
+    await writeRegistry(dir, reg);
+    const got = await readRegistry(dir);
+    assert.ok(got);
+    assert.strictEqual(got!.schema_version, '2');
+    const a = got!.agents[0];
+    assert.strictEqual(a.trust_level, 'high');
+    assert.deepStrictEqual(a.capabilities, ['typescript', 'react']);
+    assert.deepStrictEqual(a.llms_available, ['claude-opus-4-7', 'claude-sonnet-4-6']);
+    assert.strictEqual(a.context_window, 1000000);
+    assert.deepStrictEqual(a.cost_budget, { daily_usd: 100, hourly_usd: 10 });
+    assert.strictEqual(a.max_parallel_tasks, 3);
+    assert.strictEqual(a.machine_id, 'abc123hex');
+    assert.strictEqual(a.machine_ip, '10.0.0.42');
+    assert.strictEqual(a.last_detected_at, '2026-05-09T12:00:00Z');
+  });
+
+  test('v1 Heartbeat round-trips (no new fields present)', async () => {
+    const dir = makeTmpDir();
+    const hb: Heartbeat = {
+      agent_id: 'kiro', timestamp: '2026-05-09T00:00:00Z',
+      status: 'active', current_task: null, sprint: null,
+    };
+    await writeHeartbeat(dir, hb);
+    const got = await readHeartbeat(dir, 'kiro');
+    assert.deepStrictEqual(got, hb);
+    assert.strictEqual(got!.session_id, undefined);
+    assert.strictEqual(got!.queue_depth, undefined);
+  });
+
+  test('v2 Heartbeat with all new fields round-trips', async () => {
+    const dir = makeTmpDir();
+    const hb: Heartbeat = {
+      agent_id: 'claude-code', timestamp: '2026-05-09T00:00:00Z',
+      status: 'active', current_task: 'task-7', sprint: 1,
+      session_id: '550e8400-e29b-41d4-a716-446655440000',
+      token_budget_remaining: 42000,
+      queue_depth: 3,
+      current_llm: 'claude-opus-4-7',
+      last_error: { timestamp: '2026-05-09T00:00:00Z', code: 'rate_limit', message: 'too many requests' },
+      network_latency_ms: 25,
+      error_rate_1m: 0.01,
+      schema_version: '2',
+    };
+    await writeHeartbeat(dir, hb);
+    const got = await readHeartbeat(dir, 'claude-code');
+    assert.deepStrictEqual(got, hb);
+  });
+
+  test('agentStatusFromHeartbeat returns "overloaded" when queue_depth high', () => {
+    const now = Date.parse('2026-05-09T00:00:00Z');
+    const status = agentStatusFromHeartbeat(
+      {
+        agent_id: 'a', timestamp: '2026-05-09T00:00:00Z',
+        status: 'active', current_task: null, sprint: null,
+        queue_depth: 12,
+      },
+      now
+    );
+    assert.strictEqual(status, 'overloaded');
+  });
+
+  test('agentStatusFromHeartbeat returns "overloaded" when error_rate_1m high', () => {
+    const now = Date.parse('2026-05-09T00:00:00Z');
+    const status = agentStatusFromHeartbeat(
+      {
+        agent_id: 'a', timestamp: '2026-05-09T00:00:00Z',
+        status: 'active', current_task: null, sprint: null,
+        error_rate_1m: 0.6,
+      },
+      now
+    );
+    assert.strictEqual(status, 'overloaded');
+  });
+
+  test('agentStatusFromHeartbeat: stalled wins over overloaded', () => {
+    const now = Date.parse('2026-05-09T00:00:00Z');
+    // 6 minutes ago, sprint set, queue_depth high → stalled (Stage A wins).
+    const status = agentStatusFromHeartbeat(
+      {
+        agent_id: 'a', timestamp: '2026-05-08T23:54:00Z',
+        status: 'idle', current_task: null, sprint: 1,
+        queue_depth: 99, error_rate_1m: 0.99,
+      },
+      now
+    );
+    assert.strictEqual(status, 'stalled');
+  });
+
+  test('redactErrorMessage: truncates over-500-char input', () => {
+    const huge = 'x'.repeat(800);
+    const out = redactErrorMessage(huge);
+    assert.strictEqual(out.length, 500);
+  });
+
+  test('redactErrorMessage: strips ANSI escape sequences', () => {
+    const ansi = '\x1b[31mERROR\x1b[0m: thing failed';
+    const out = redactErrorMessage(ansi);
+    assert.strictEqual(out, 'ERROR: thing failed');
+  });
+
+  test('redactErrorMessage: replaces $HOME path', () => {
+    const home = process.env.USERPROFILE || process.env.HOME || '';
+    if (!home) { return; } // Skip on hosts without home.
+    const msg = `failed to open ${home}/secret.txt`;
+    const out = redactErrorMessage(msg);
+    assert.ok(out.includes('$HOME/secret.txt'), `expected $HOME substitution, got: ${out}`);
+    assert.ok(!out.includes(home), `home path leaked: ${out}`);
+  });
+
+  test('redactErrorMessage: redacts token-looking strings', () => {
+    const msg = 'auth failed for sk-AbCdEf1234567890ZZZ and ghp_qwertyABCDEFGH123';
+    const out = redactErrorMessage(msg);
+    assert.ok(out.includes('<redacted>'), out);
+    assert.ok(!/sk-[A-Za-z0-9]+/.test(out), `sk- token leaked: ${out}`);
+    assert.ok(!/ghp_[A-Za-z0-9]+/.test(out), `ghp_ token leaked: ${out}`);
   });
 });
