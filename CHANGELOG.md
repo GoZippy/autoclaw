@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.3.0] - 2026-05-09
+
+This release ("Phase 1 schema and identity") extends the cross-agent registry and heartbeat schemas, adds an inbox state machine, ships a reconciliation sweep, and folds in two pre-flagged cleanups. Net: +1124/-16 LOC across 10 source files, +28 unit tests (224 total passing, was 196), zero regressions, zero new npm dependencies. Every schema change is additive and backwards compatible — existing `agents.json`, `registry.json`, sprint YAMLs, heartbeats, and message JSON files all continue to parse without modification.
+
+### Added
+
+- **`RegisteredAgent` v2 fields** — additive to `src/comms.ts`'s `RegisteredAgent` interface: `capabilities?: string[]`, `llms_available?: string[]`, `context_window?: number`, `machine_id?: string`, `machine_ip?: string`, `tools_supported?: string[]`, `trust_level?: 'untrusted' | 'low' | 'medium' | 'high'`, `cost_budget?: { daily_usd?; hourly_usd? }`, `max_parallel_tasks?: number`, `human_in_loop_required?: boolean`, `skills_loaded?: string[]`. Per `docs/specs/registered-agent-v2.md`.
+- **`Heartbeat` v2 fields** — additive: `session_id?`, `token_budget_remaining?`, `queue_depth?`, `current_llm?`, `last_error?: { code?; message; timestamp }`, `network_latency_ms?`, `error_rate_1m?`. Per `docs/specs/heartbeat-v2.md`.
+- **`overloaded` agent status** — new value in the `AgentStatus` union. Returned by `agentStatusFromHeartbeat()` when a heartbeat is fresh AND (`queue_depth >= 10` OR `error_rate_1m >= 0.5`). Constants `OVERLOAD_QUEUE_DEPTH` and `OVERLOAD_ERROR_RATE` exported from `src/comms.ts`. `stalled` continues to win over `overloaded` when both apply.
+- **`redactErrorMessage()` helper** — exported from `src/comms.ts`. Truncates to 500 chars, strips ANSI escape sequences, replaces the user's home directory with `$HOME`, and redacts token-shaped strings (`acl_*`, `sk-*`, `ghp_*`) with `<redacted>`. Mandatory before persisting any `last_error.message` to disk.
+- **Inbox state machine** — `<commsDir>/inboxes/<agent>/_state/<message-id>.json` files track `read_at`, `replied_at`, `archived_at`. New helpers in `src/comms.ts`: `readMessageState`, `markMessageRead`, `markMessageReplied`, `markMessageArchived`, and `getInboxSummary` (returns `{ total, unread, awaiting_response, archived }`). Backwards compatible — when `_state/` is empty, every message is "unread" and "awaiting_response" (if `requires_response`).
+- **Session-level heartbeats** — the extension generates a `sessionId` (UUID) once on activation and stamps it into every heartbeat written by the heartbeat ticker. The panel can now distinguish multiple sessions of the same agent (e.g., two VS Code windows running Claude Code on the same workspace) instead of seeing them as one.
+- **Sprint-N markdown generation** — new exported helpers in `src/orchestrate.ts`: `renderSprintMarkdown(plan: SprintPlan): string` and `writeSprintArtifacts(...)`. Output includes sprint number, status, dependencies-met flag, estimated days, per-assignment agent ID + resolved platform + task list + scope globs + branch name, plus a "GENERATED — edit sprint-N.yaml instead" header. Helpers ship with full test coverage; planner integration is deferred to v2.3.1.
+- **Reconciliation sweep** — new `src/reconcile.ts` module exports `runReconcile(workspaceRoot): Promise<ReconcileReport>`. Reads `.kiro/specs/*/tasks.md`, all sprint YAMLs, and the last 1000 lines of `comms-log.jsonl`, then cross-references and lists drifts. Module is `vscode`-free so it's testable in plain Mocha. Wired into the extension as a 5-min ticker (configurable via new setting `autoclaw.orchestrate.reconcileIntervalSeconds`, default `300`, `0` to disable). Each tick writes `.autoclaw/orchestrator/reconcile-report.json` and posts a `system` message to `inboxes/shared/` if any mismatch is detected. Read-only — never auto-fixes.
+- **Bridge port fallback** — `src/bridge.ts` now retries on the next 4 ports (9877, 9878, 9879, 9880) when the configured port is `EADDRINUSE`. The actual bound port is recorded in bridge state and surfaced via the `/health` endpoint.
+
+### Fixed
+
+- **`mergeFindings()` no longer mutates its input** — deep-clones the input findings via `structuredClone()` before merging. Previously acceptable in v2.2.0 because `evaluateConsensus()` did not reuse the votes after merging, but the mutation was a latent foot-gun. Test asserts caller's votes array is untouched after merge.
+
+### Settings
+
+| Setting | Default | What |
+|---|---|---|
+| `autoclaw.orchestrate.reconcileIntervalSeconds` | `300` | Reconciliation sweep tick frequency. `0` disables. |
+
+### Deferred to v2.3.1
+
+- **Wiring `renderSprintMarkdown` into the planner's `/orchestrate plan` flow.** Helpers ship with tests; AI-driven plan command not yet calling them. Held alongside the v2.2.1 SKILL.md follow-up.
+- **Panel rendering for the new RegisteredAgent + Heartbeat fields** — schema is in place; webview panel reads the new fields when v2.4.0 ships the broader fabric panel work.
+
+### Carried forward to a later release
+
+- Token revocation list, claim tokens, subcontract message types (`subcontract_request/accept/deliver/ack`).
+
 ## [2.2.0] - 2026-05-09
 
 This release ("Phase 0 activation") wires up cross-agent infrastructure that was implemented and tested in 2.0.3 / 2.1.0 but never reached the extension activation path. Net: +878/-11 LOC across 9 source files, +43 unit tests (196 total passing, was 153), zero regressions.
