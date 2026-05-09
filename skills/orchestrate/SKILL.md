@@ -87,6 +87,7 @@ Read the manifest YAML from the specified path (default: first `.yaml` in `manif
 **Phase 7: Output**
 - Write sprint plan YAML to `.autoclaw/orchestrator/sprints/sprint-{N}.yaml` for each sprint.
 - Write summary to `.autoclaw/orchestrator/sprints/plan-summary.yaml`.
+- After generating sprint-N.yaml, the planner also writes a human-readable sprint-N.md alongside it (generated view; edit the .yaml). The .md is regenerated on every plan run.
 
 ### Sprint YAML Format
 ```yaml
@@ -147,6 +148,8 @@ Confirm: "Generated {N} sprints for {M} tasks across {A} agents. Critical path: 
 4. Update sprint status to `assigned`.
 5. Confirm: "Sprint {N} assigned to {agents}. Assignment files written. Each agent should read their assignment and begin work."
 
+**Stalled-agent handling.** If any WA-N slot is mapped to an agent whose last heartbeat is older than `autoclaw.orchestrate.heartbeatStallSeconds` (default `300`), the assign step skips that slot's task and emits a `sprint-{N}-stalled.json` sidecar next to the sprint YAML listing the excluded slots. Surface this to the user verbatim and suggest re-running `/orchestrate assign {N}` once the stalled agent recovers.
+
 ---
 
 ## status — Show Progress
@@ -178,6 +181,8 @@ Critical path: Sprint 5 of 9
 5. If `CRITICAL_ISSUES`: update sprint status to `review` and list required fixes.
 6. If `APPROVED` or `MINOR_ISSUES`: update sprint status to `approved`.
 7. Confirm: "Sprint {N} review complete. Verdict: {verdict}. {details}"
+
+**Remote-agent path (informational).** The OpenClaw HTTP bridge also exposes `POST /api/v1/consensus/{task_id}/evaluate` as a parallel path for remote agents to trigger consensus evaluation programmatically. The local skill flow above continues to work as before; the endpoint is purely additive.
 
 ---
 
