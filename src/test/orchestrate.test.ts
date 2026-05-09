@@ -16,6 +16,7 @@ import {
   DEFAULT_PLANNER_CONFIG,
   renderSprintMarkdown,
   writeSprintArtifacts,
+  writePlanArtifacts,
 } from '../orchestrate';
 import type {
   ManifestTask,
@@ -909,5 +910,55 @@ suite('Orchestrate — Sprint Markdown rendering', () => {
     assert.ok(md.startsWith('<!-- GENERATED'));
     const yaml = fs.readFileSync(result.yamlPath, 'utf8');
     assert.ok(yaml.includes('sprint: 1'));
+  });
+
+  test('writePlanArtifacts emits sprint-N.yaml + sprint-N.md for every sprint plus plan-summary.yaml', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-plan-'));
+    // Two-level DAG → at least two sprints
+    const tasks = [
+      makeTask('a', [], ['src/a/**']),
+      makeTask('b', [], ['src/b/**']),
+      makeTask('c', ['a', 'b'], ['src/c/**']),
+    ];
+    const manifest = makeManifest(tasks);
+    const plan = generatePlan(manifest, DEFAULT_PLANNER_CONFIG);
+    assert.ok(plan.sprints.length >= 2, 'expected at least two sprints');
+
+    const result = await writePlanArtifacts(tmp, plan, manifest.project.name);
+    assert.strictEqual(result.sprintArtifacts.length, plan.sprints.length);
+
+    for (const sprint of plan.sprints) {
+      const yamlPath = path.join(tmp, `sprint-${sprint.sprint}.yaml`);
+      const mdPath = path.join(tmp, `sprint-${sprint.sprint}.md`);
+      assert.ok(fs.existsSync(yamlPath), `sprint-${sprint.sprint}.yaml exists`);
+      assert.ok(fs.existsSync(mdPath), `sprint-${sprint.sprint}.md exists`);
+      const md = fs.readFileSync(mdPath, 'utf8');
+      assert.ok(md.startsWith('<!-- GENERATED'));
+      assert.ok(md.includes(`Sprint ${sprint.sprint}`));
+    }
+
+    assert.ok(fs.existsSync(result.summaryPath), 'plan-summary.yaml exists');
+    const summary = fs.readFileSync(result.summaryPath, 'utf8');
+    assert.ok(summary.includes('total_sprints:'));
+    assert.ok(summary.includes(manifest.project.name));
+  });
+
+  test('writePlanArtifacts regenerates sprint-N.md on every run (idempotent rewrite)', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-plan-rerun-'));
+    const tasks = [makeTask('a', [], ['src/a/**'])];
+    const manifest = makeManifest(tasks);
+    const plan = generatePlan(manifest, DEFAULT_PLANNER_CONFIG);
+
+    await writePlanArtifacts(tmp, plan, manifest.project.name);
+    const mdPath = path.join(tmp, 'sprint-1.md');
+    const firstStat = fs.statSync(mdPath);
+    // Second run must overwrite (no append, no error)
+    await writePlanArtifacts(tmp, plan, manifest.project.name);
+    const secondStat = fs.statSync(mdPath);
+    assert.ok(secondStat.mtimeMs >= firstStat.mtimeMs, 'mtime non-decreasing');
+    const md = fs.readFileSync(mdPath, 'utf8');
+    // Single header — not duplicated by appending
+    const headerCount = md.split('<!-- GENERATED').length - 1;
+    assert.strictEqual(headerCount, 1, 'exactly one GENERATED header');
   });
 });

@@ -813,6 +813,33 @@ export async function writeSprintArtifacts(
   return { yamlPath, mdPath };
 }
 
+/**
+ * Write all artifacts for a planner run: every `sprint-N.yaml` + sibling
+ * `sprint-N.md`, plus `plan-summary.yaml`. This is the single entry point the
+ * `/orchestrate plan` flow should call after `generatePlan()` so that the
+ * generated Markdown view stays in lock-step with the authoritative YAML on
+ * every plan regeneration. Backwards compatible — `writeSprintArtifacts` and
+ * the lower-level `writeYAMLFile` continue to work for callers that prefer
+ * to drive the writes themselves.
+ */
+export async function writePlanArtifacts(
+  sprintsDir: string,
+  plan: PlanResult,
+  projectName: string
+): Promise<{
+  sprintArtifacts: Array<{ yamlPath: string; mdPath: string }>;
+  summaryPath: string;
+}> {
+  await ensureDir(sprintsDir);
+  const sprintArtifacts: Array<{ yamlPath: string; mdPath: string }> = [];
+  for (const sprint of plan.sprints) {
+    sprintArtifacts.push(await writeSprintArtifacts(sprintsDir, sprint, projectName));
+  }
+  const summaryPath = path.join(sprintsDir, 'plan-summary.yaml');
+  await writeYAMLFile(summaryPath, plan.summary);
+  return { sprintArtifacts, summaryPath };
+}
+
 export async function writeStateFile(
   filePath: string,
   state: OrchestratorState
