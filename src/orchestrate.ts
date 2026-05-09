@@ -353,7 +353,8 @@ export function planSprints(
   dag: DAG,
   config: PlannerConfig,
   constraints?: ManifestConstraints,
-  agents: AgentRegistryEntry[] = []
+  agents: AgentRegistryEntry[] = [],
+  excludedSlots: Set<string> = new Set()
 ): Sprint[] {
   const sprints: Sprint[] = [];
   let sprintNumber = 1;
@@ -389,13 +390,29 @@ export function planSprints(
     // May produce multiple sprints if tasks exceed capacity
     let remaining = [...sortedIds];
 
+    // If every slot at this level is excluded (e.g. all mapped agents are
+    // stalled), bin-packing would loop forever — bail out of this level.
+    const everySlotExcluded = (() => {
+      for (let i = 0; i < agentCount; i++) {
+        if (!excludedSlots.has(`WA-${i + 1}`)) { return false; }
+      }
+      return agentCount > 0;
+    })();
+    if (everySlotExcluded) { continue; }
+
     while (remaining.length > 0) {
+      const remainingBefore = remaining.length;
       const assignments: SprintAssignment[] = [];
       const assignedThisSprint = new Set<string>();
       const scopesThisSprint: string[][] = [];
 
       for (let agentIdx = 0; agentIdx < agentCount && remaining.length > 0; agentIdx++) {
         const agentId = `WA-${agentIdx + 1}`;
+        if (excludedSlots.has(agentId)) {
+          // Slot is mapped to a stalled / offline agent — leave its
+          // tasks for a later sprint when the agent recovers.
+          continue;
+        }
         const agentTasks: ManifestTask[] = [];
         const agentScopes: string[] = [];
         let agentSubtaskCount = 0;
@@ -502,6 +519,13 @@ export function planSprints(
         });
         sprintNumber++;
       }
+
+      // Defensive: if no progress was made in this iteration (e.g. every
+      // available slot is excluded or every remaining task scope-conflicts
+      // with itself), break to avoid an infinite loop. Tasks left in
+      // `remaining` are silently dropped at this level — caller is
+      // expected to log a warning when excludedSlots is non-empty.
+      if (remaining.length >= remainingBefore) { break; }
     }
   }
 
@@ -754,7 +778,8 @@ export interface PlanResult {
 export function generatePlan(
   manifest: Manifest,
   config: PlannerConfig,
-  agents: AgentRegistryEntry[] = []
+  agents: AgentRegistryEntry[] = [],
+  excludedSlots: Set<string> = new Set()
 ): PlanResult {
   // Phase 1-2: Build DAG
   const dag = buildDAG(manifest.tasks);
@@ -763,7 +788,7 @@ export function generatePlan(
   topologicalSort(dag);
 
   // Phase 5-6: Sprint planning with bin-packing
-  const sprints = planSprints(dag, config, manifest.constraints, agents);
+  const sprints = planSprints(dag, config, manifest.constraints, agents, excludedSlots);
 
   // Build summary
   const summary = buildPlanSummary(

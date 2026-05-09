@@ -2039,6 +2039,51 @@ async function orchestrateAssignNextCommand(): Promise<void> {
 
     await writeAgentRegistry(registryPath, entries);
     channel.appendLine(`[orchestrate] Agent registry written (${entries.length} agents): ${entries.map(e => `${e.id}=${e.platform}`).join(', ')}`);
+
+    // Heartbeat-aware: skip WA-N slots whose mapped agent has stalled or
+    // never beat. Writes the exclusion set to a stalled-slots.json sidecar
+    // so the skill-side /orchestrate next command can read it without
+    // re-deriving heartbeat ages itself.
+    const cfg = vscode.workspace.getConfiguration('autoclaw.orchestrate');
+    const stallSeconds = cfg.get<number>('heartbeatStallSeconds', 300);
+    const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+    const liveStatuses = await getAgentStatuses(commsDir);
+    const stalled: string[] = [];
+    for (const e of entries) {
+      const live = liveStatuses.find(s => s.id === e.platform);
+      if (!live) { stalled.push(e.id); continue; }
+      if (live.live_status === 'offline' || live.live_status === 'stalled') {
+        stalled.push(e.id);
+        continue;
+      }
+      const hbAge = live.heartbeat
+        ? Math.max(0, (Date.now() - new Date(live.heartbeat.timestamp).getTime()) / 1000)
+        : Number.POSITIVE_INFINITY;
+      if (hbAge > stallSeconds) { stalled.push(e.id); }
+    }
+    if (stalled.length > 0) {
+      channel.appendLine(`[orchestrate] Heartbeat-aware: skipping stalled slots: ${stalled.join(', ')} (>${stallSeconds}s since last beat)`);
+    } else {
+      channel.appendLine(`[orchestrate] Heartbeat-aware: all ${entries.length} slot(s) live within ${stallSeconds}s threshold.`);
+    }
+    // Persist the exclusion set so the skill-side `generatePlan` call can
+    // read it without re-deriving — written as a plain JSON sidecar.
+    const sprintLabel = sprint ?? 'next';
+    const sidecarPath = path.join(
+      workspaceRoot, '.autoclaw', 'orchestrator',
+      `sprint-${sprintLabel}-stalled.json`
+    );
+    await fsPromises.mkdir(path.dirname(sidecarPath), { recursive: true });
+    await fsPromises.writeFile(
+      sidecarPath,
+      JSON.stringify({
+        sprint: sprintLabel,
+        stalled,
+        computed_at: new Date().toISOString(),
+        stall_seconds: stallSeconds,
+      }, null, 2),
+      'utf8'
+    );
   }
 
   channel.appendLine('[orchestrate] Use /orchestrate next in chat to assign the next available sprint.');

@@ -331,6 +331,12 @@
           "default": "main",
           "description": "Base branch that sprint branches are merged into (e.g. main, develop)"
         },
+        "autoclaw.orchestrate.heartbeatStallSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 30,
+          "description": "Skip WA-N slots whose mapped agent has not heart-beaten within this many seconds when assigning sprints. Default 300 (5 min)."
+        },
         "autoclaw.bridge.autoStart": {
           "type": "boolean",
           "default": true,

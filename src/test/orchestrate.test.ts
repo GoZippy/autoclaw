@@ -424,6 +424,60 @@ suite('Orchestrate — planSprints with AgentRegistry', () => {
     assert.strictEqual(wa1.inbox, '.autoclaw/orchestrator/comms/inboxes/kiro/');
   });
 
+  test('excludedSlots {WA-2} routes all tasks to WA-1', () => {
+    const tasks = [
+      makeTask('a', [], ['internal/a/**']),
+      makeTask('b', [], ['internal/b/**']),
+    ];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const sprints = planSprints(
+      dag,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2, max_tasks_per_agent: 1 },
+      undefined,
+      [],
+      new Set(['WA-2'])
+    );
+    const flat = sprints.flatMap(s => s.assignments);
+    assert.ok(flat.length > 0);
+    assert.ok(flat.every(a => a.agent !== 'WA-2'));
+  });
+
+  test('excludedSlots {WA-1, WA-2} with 2 work agents produces no assignments', () => {
+    const tasks = [
+      makeTask('a', [], ['internal/a/**']),
+      makeTask('b', [], ['internal/b/**']),
+    ];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const sprints = planSprints(
+      dag,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2 },
+      undefined,
+      [],
+      new Set(['WA-1', 'WA-2'])
+    );
+    // No agent slot is allowed to take work, so there are no sprints emitted.
+    assert.strictEqual(sprints.length, 0);
+  });
+
+  test('empty excludedSlots is identical to default behaviour', () => {
+    const tasks = [
+      makeTask('a', [], ['internal/a/**']),
+      makeTask('b', ['a'], ['internal/b/**']),
+    ];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const baseline = planSprints(dag, DEFAULT_PLANNER_CONFIG);
+    const dag2 = buildDAG(tasks);
+    topologicalSort(dag2);
+    const withEmpty = planSprints(dag2, DEFAULT_PLANNER_CONFIG, undefined, [], new Set());
+    assert.deepStrictEqual(
+      withEmpty.map(s => s.assignments.map(a => a.agent)),
+      baseline.map(s => s.assignments.map(a => a.agent))
+    );
+  });
+
   test('generatePlan threads agents into planSprints', () => {
     const manifest = makeManifest([
       makeTask('a', [], ['internal/a/**']),
