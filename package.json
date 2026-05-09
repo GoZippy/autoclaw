@@ -331,10 +331,15 @@
           "default": "main",
           "description": "Base branch that sprint branches are merged into (e.g. main, develop)"
         },
+        "autoclaw.bridge.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Auto-start the OpenClaw bridge on 127.0.0.1 when at least one orchestrator manifest exists. Set false to require an explicit AutoClaw: Start Bridge command."
+        },
         "autoclaw.bridge.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable the OpenClaw HTTP bridge server for remote agents"
+          "description": "Force-enable the OpenClaw HTTP bridge server for remote agents (overrides autoStart manifest probe)"
         },
         "autoclaw.bridge.port": {
           "type": "number",
@@ -360,7 +365,7 @@
     "pretest": "tsc -p ./",
     "test": "vscode-test",
     "test:integration": "vscode-test",
-    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js out/test/bridge.test.js out/test/comms.test.js",
+    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js out/test/bridge.test.js out/test/comms.test.js out/test/manifest-probe.test.js",
     "sample:snapshot": "node scripts/sample-snapshot.js",
     "sample:autobuild": "node scripts/sample-autobuild-run.js",
     "sample:doctor": "node scripts/sample-doctor.js",

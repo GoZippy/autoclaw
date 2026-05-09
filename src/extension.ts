@@ -71,6 +71,7 @@ import {
   startBridge, stopBridge, createRemoteAgentToken,
   type BridgeState, type BridgeConfig,
 } from './bridge';
+import { hasOrchestratorManifest } from './manifest-probe';
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -268,10 +269,26 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // Auto-start bridge if enabled
+  // Auto-start bridge: default-on when at least one orchestrator manifest
+  // exists in the workspace. The legacy `autoclaw.bridge.enabled` setting
+  // (default false) acts as an explicit override — if a user has flipped
+  // it to true we still start regardless of manifest presence. Setting
+  // `autoStart` to false disables manifest-based auto-start; an explicit
+  // `enabled = true` still wins.
   const bridgeConfig = vscode.workspace.getConfiguration('autoclaw.bridge');
-  if (bridgeConfig.get<boolean>('enabled', false)) {
+  const bridgeAutoStart = bridgeConfig.get<boolean>('autoStart', true);
+  const bridgeEnabledOverride = bridgeConfig.get<boolean>('enabled', false);
+  if (bridgeEnabledOverride) {
     bridgeStartCommand().catch(e => console.error('bridge auto-start failed:', e));
+  } else if (bridgeAutoStart) {
+    const probeRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (probeRoot) {
+      hasOrchestratorManifest(probeRoot).then(found => {
+        if (found) {
+          bridgeStartCommand().catch(e => console.error('bridge auto-start failed:', e));
+        }
+      }).catch(e => console.error('bridge auto-start probe failed:', e));
+    }
   }
 
   // AutoBuild scheduler: single setInterval in the extension host.
