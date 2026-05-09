@@ -193,4 +193,68 @@ suite('Bridge — endpoints', () => {
     assert.strictEqual(get.status, 200);
     assert.match(get.body, /"vote_count":\s*1/);
   });
+
+  test('POST /api/v1/consensus/{tid}/evaluate with no votes returns consensus_pending', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    const r = await request(state, 'POST', '/api/v1/consensus/T1/evaluate',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` }, '{}');
+    assert.strictEqual(r.status, 200);
+    assert.match(r.body, /"status":\s*"consensus_pending"/);
+    assert.match(r.body, /"task_id":\s*"T1"/);
+  });
+
+  test('POST /api/v1/consensus/{tid}/evaluate tallies two approve votes to consensus_reached', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    // Stage two vote files directly into consensus/active/ with the
+    // {tid}-{agent}.json filename pattern the bridge uses.
+    const vd = path.join(state.config.commsDir, 'consensus', 'active');
+    fs.writeFileSync(path.join(vd, 'T1-a1.json'), JSON.stringify({
+      agent_id: 'a1', provider: 'kiro', verdict: 'approved', confidence: 0.9,
+      findings: [], timestamp: '2026-05-09T00:00:00Z',
+    }));
+    fs.writeFileSync(path.join(vd, 'T1-a2.json'), JSON.stringify({
+      agent_id: 'a2', provider: 'claude-code', verdict: 'approved', confidence: 0.9,
+      findings: [], timestamp: '2026-05-09T00:00:00Z',
+    }));
+    const r = await request(state, 'POST', '/api/v1/consensus/T1/evaluate',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` }, '{}');
+    assert.strictEqual(r.status, 200);
+    assert.match(r.body, /"status":\s*"consensus_reached"/);
+    assert.match(r.body, /"final_verdict":\s*"approved"/);
+  });
+
+  test('POST /api/v1/consensus/{tid}/evaluate respects block_is_veto', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    const vd = path.join(state.config.commsDir, 'consensus', 'active');
+    fs.writeFileSync(path.join(vd, 'T2-a1.json'), JSON.stringify({
+      agent_id: 'a1', provider: 'kiro', verdict: 'approved', confidence: 0.9,
+      findings: [], timestamp: '2026-05-09T00:00:00Z',
+    }));
+    fs.writeFileSync(path.join(vd, 'T2-a2.json'), JSON.stringify({
+      agent_id: 'a2', provider: 'claude-code', verdict: 'blocked', confidence: 0.9,
+      findings: [], timestamp: '2026-05-09T00:00:00Z',
+    }));
+    const r = await request(state, 'POST', '/api/v1/consensus/T2/evaluate',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` }, '{}');
+    assert.strictEqual(r.status, 200);
+    assert.match(r.body, /"final_verdict":\s*"blocked"/);
+  });
+
+  test('POST /api/v1/consensus/{tid}/evaluate appends a consensus_result entry to comms-log', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    await request(state, 'POST', '/api/v1/consensus/T3/evaluate',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` }, '{}');
+    const log = fs.readFileSync(
+      path.join(state.config.commsDir, 'comms-log.jsonl'), 'utf8'
+    );
+    const entries = log.trim().split('\n').filter(l => l.length > 0).map(l => JSON.parse(l));
+    assert.ok(
+      entries.some(e => e.type === 'consensus_result' && e.task_id === 'T3'),
+      `expected consensus_result for T3 in log: ${log}`
+    );
+  });
 });

@@ -64,7 +64,7 @@ import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistry
 import { registerChatParticipant } from './chatparticipant';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat, readHeartbeat,
-  cleanupOldMessages, type CommsLogEntry,
+  cleanupOldMessages, sendMessage, type CommsLogEntry,
 } from './comms';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
@@ -2088,9 +2088,11 @@ async function orchestrateReviewCommand(): Promise<void> {
     }
   }
 
+  const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
   let allApproved = true;
   for (const [taskId, votes] of votesByTask) {
     const result = evaluateConsensus(votes, 1, DEFAULT_CONSENSUS_CONFIG);
+    result.task_id = taskId;
     const icon = result.status === 'consensus_reached' ? '✅' : result.status === 'deadlocked' ? '🔴' : '⏳';
     channel.appendLine(`${icon} Task ${taskId}: ${result.status} — verdict: ${result.final_verdict} (${votes.length} vote${votes.length === 1 ? '' : 's'})`);
 
@@ -2098,6 +2100,17 @@ async function orchestrateReviewCommand(): Promise<void> {
       for (const f of result.unresolved_findings.slice(0, 5)) {
         channel.appendLine(`   [${f.severity}] ${f.category}: ${f.description}${f.file ? ` (${f.file}:${f.line ?? ''})` : ''}`);
       }
+    }
+
+    // Broadcast the consensus result so all agents can react in real time.
+    try {
+      await sendMessage(commsDir, {
+        id: '', from: 'orchestrator', to: 'shared', type: 'consensus_result',
+        timestamp: new Date().toISOString(), task_id: taskId,
+        payload: { ...result }, requires_response: false,
+      });
+    } catch (e) {
+      channel.appendLine(`[orchestrate] consensus broadcast failed for ${taskId}: ${(e as Error).message}`);
     }
 
     if (result.status !== 'consensus_reached') { allApproved = false; }

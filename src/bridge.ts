@@ -11,6 +11,10 @@ import {
   writeHeartbeat, readRegistry, getAgentStatuses,
   type Message, type Heartbeat,
 } from './comms';
+import {
+  evaluateConsensus, DEFAULT_CONSENSUS_CONFIG,
+  type ValidationVote,
+} from './orchestrate';
 
 const fsPromises = fs.promises;
 
@@ -121,6 +125,39 @@ export function createBridgeServer(config: BridgeConfig): http.Server {
           await fsPromises.writeFile(path.join(voteDir, `${taskId}-${token.agent_id}.json`), JSON.stringify(vote, null, 2), 'utf8');
           await appendCommsLog(config.commsDir, { timestamp: new Date().toISOString(), type: 'consensus_vote', from: token.agent_id, task_id: taskId, message: `${token.agent_id} voted on ${taskId}` });
           return json(res, 201, { ok: true, task_id: taskId });
+        }
+        // Idempotent consensus evaluation. Reads votes from
+        // consensus/active/{tid}-*.json, runs evaluateConsensus, returns
+        // the ConsensusResult. Does NOT move any vote files.
+        const em = p.match(/^\/api\/v1\/consensus\/([^/]+)\/evaluate$/);
+        if (em && method === 'POST') {
+          const tid = em[1];
+          const vd = path.join(config.commsDir, 'consensus', 'active');
+          const votes: ValidationVote[] = [];
+          try {
+            const files = (await fsPromises.readdir(vd))
+              .filter(f => f.startsWith(`${tid}-`) && f.endsWith('.json'));
+            for (const f of files) {
+              try {
+                const raw = (await fsPromises.readFile(path.join(vd, f), 'utf8'))
+                  .replace(/^﻿/, '');
+                votes.push(JSON.parse(raw) as ValidationVote);
+              } catch { /* skip malformed */ }
+            }
+          } catch { /* no votes yet */ }
+          const body = await readBody(req).catch(() => '');
+          let round = 1;
+          try { const parsed = JSON.parse(body || '{}'); if (typeof parsed.round === 'number') { round = parsed.round; } } catch { /* default round */ }
+          const result = evaluateConsensus(votes, round, DEFAULT_CONSENSUS_CONFIG);
+          result.task_id = tid;
+          await appendCommsLog(config.commsDir, {
+            timestamp: new Date().toISOString(),
+            type: 'consensus_result',
+            from: token.agent_id,
+            task_id: tid,
+            message: `${token.agent_id} evaluated ${tid}: ${result.status} (${result.final_verdict})`,
+          });
+          return json(res, 200, result);
         }
         const cm = p.match(/^\/api\/v1\/consensus\/(.+)$/);
         if (cm && method === 'GET') {
