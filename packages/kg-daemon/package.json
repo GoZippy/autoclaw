@@ -1,0 +1,32 @@
+{
+  "name": "@autoclaw/kg-daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "AutoClaw Knowledge Graph daemon (Tier 1 prototype) — SQLite + sqlite-vec + FTS5 + edges, exposed over localhost HTTP.",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsc -w",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.0"
+  },
+  "optionalDependencies": {
+    "sqlite-vec": "^0.1.6"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^20.0.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^4.17.21",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
