@@ -112,7 +112,7 @@ export async function readInbox(commsDir: string, agentId: string): Promise<Mess
     for (const file of files.filter(f => f.endsWith('.json'))) {
       try {
         const content = await fsPromises.readFile(path.join(inboxDir, file), 'utf8');
-        messages.push(JSON.parse(content) as Message);
+        messages.push(JSON.parse(content.replace(/^﻿/, '')) as Message);
       } catch { /* skip malformed */ }
     }
     return messages.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -161,7 +161,7 @@ export async function readHeartbeat(commsDir: string, agentId: string): Promise<
     const content = await fsPromises.readFile(
       path.join(commsDir, 'heartbeats', `${path.basename(agentId)}.json`), 'utf8'
     );
-    return JSON.parse(content) as Heartbeat;
+    return JSON.parse(content.replace(/^﻿/, '')) as Heartbeat;
   } catch { return null; }
 }
 
@@ -171,7 +171,7 @@ export async function readAllHeartbeats(commsDir: string): Promise<Heartbeat[]> 
     const files = await fsPromises.readdir(dir);
     const hbs: Heartbeat[] = [];
     for (const f of files.filter(f => f.endsWith('.json'))) {
-      try { hbs.push(JSON.parse(await fsPromises.readFile(path.join(dir, f), 'utf8'))); } catch { /* skip */ }
+      try { hbs.push(JSON.parse((await fsPromises.readFile(path.join(dir, f), 'utf8')).replace(/^﻿/, ''))); } catch { /* skip */ }
     }
     return hbs;
   } catch { return []; }
@@ -189,7 +189,7 @@ export function agentStatusFromHeartbeat(hb: Heartbeat | null, now: number = Dat
 
 export async function readRegistry(commsDir: string): Promise<AgentRegistry | null> {
   try {
-    return JSON.parse(await fsPromises.readFile(path.join(commsDir, 'registry.json'), 'utf8'));
+    return JSON.parse((await fsPromises.readFile(path.join(commsDir, 'registry.json'), 'utf8')).replace(/^﻿/, ''));
   } catch { return null; }
 }
 
