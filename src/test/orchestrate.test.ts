@@ -788,6 +788,21 @@ suite('Orchestrate — Finding Merge', () => {
     assert.strictEqual(unique.length, 1);
     assert.strictEqual(unique[0].severity, 'critical');
   });
+
+  test('does NOT mutate the caller\'s vote findings on severity upgrade', () => {
+    const minor = makeFinding('security', 'minor', 'weak validation', 'auth.go', 30);
+    const critical = makeFinding('security', 'critical', 'weak validation', 'auth.go', 30);
+    const votes = [
+      makeVote('WA-1', 'kiro', 'needs_changes', 0.9, [minor]),
+      makeVote('WA-2', 'kilocode', 'needs_changes', 0.9, [critical]),
+    ];
+    const { unique } = mergeFindings(votes);
+    assert.strictEqual(unique[0].severity, 'critical');
+    // Caller's original findings must remain untouched.
+    assert.strictEqual(minor.severity, 'minor', 'first voter\'s finding was mutated');
+    assert.strictEqual(critical.severity, 'critical');
+    assert.strictEqual(votes[0].findings[0].severity, 'minor');
+  });
 });
 
 // ---------------------------------------------------------------------------

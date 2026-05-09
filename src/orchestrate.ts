@@ -1161,11 +1161,20 @@ export function evaluateConsensus(
 
 /**
  * Merge findings from multiple agents, deduplicating by file+line+category.
+ *
+ * The caller's `votes` array is treated as immutable: every finding stored
+ * in the result is a deep clone, so upgrading the severity of a duplicate
+ * never mutates the caller's vote objects.
  */
 export function mergeFindings(votes: ValidationVote[]): {
   unique: ValidationFinding[];
   agreements: Array<{ finding: ValidationFinding; agreedBy: string[] }>;
 } {
+  const cloneFinding = (f: ValidationFinding): ValidationFinding => {
+    if (typeof structuredClone === 'function') { return structuredClone(f); }
+    return JSON.parse(JSON.stringify(f)) as ValidationFinding;
+  };
+
   const findingMap = new Map<string, { finding: ValidationFinding; agents: string[] }>();
 
   for (const vote of votes) {
@@ -1174,13 +1183,14 @@ export function mergeFindings(votes: ValidationVote[]): {
       const existing = findingMap.get(key);
       if (existing) {
         existing.agents.push(vote.agent_id);
-        // Upgrade severity if a later voter rates it higher
+        // Upgrade severity if a later voter rates it higher. Mutates the
+        // cloned copy held in findingMap, never the caller's finding.
         const severityOrder = ['info', 'minor', 'major', 'critical'];
         if (severityOrder.indexOf(finding.severity) > severityOrder.indexOf(existing.finding.severity)) {
           existing.finding.severity = finding.severity;
         }
       } else {
-        findingMap.set(key, { finding, agents: [vote.agent_id] });
+        findingMap.set(key, { finding: cloneFinding(finding), agents: [vote.agent_id] });
       }
     }
   }
