@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.2.0] - 2026-05-09
+
+This release ("Phase 0 activation") wires up cross-agent infrastructure that was implemented and tested in 2.0.3 / 2.1.0 but never reached the extension activation path. Net: +878/-11 LOC across 9 source files, +43 unit tests (196 total passing, was 153), zero regressions.
+
+### Added
+- **Bridge auto-start** — when at least one task manifest exists in `.autoclaw/orchestrator/manifests/`, the OpenClaw HTTP bridge auto-starts on `127.0.0.1:9876` (loopback only). New setting `autoclaw.bridge.autoStart` (default `true`); the existing `autoclaw.bridge.enabled` continues to work as an explicit override. The bridge is no longer invisible to users who never manually flipped a config key.
+- **Consensus evaluate endpoint** — `POST /api/v1/consensus/{task_id}/evaluate` reads vote files from `consensus/active/`, runs `evaluateConsensus()`, broadcasts `consensus_result` to the shared inbox, and returns the verdict. Idempotent — does not move vote files (sweep is a Phase 1 concern). Wires the `evaluateConsensus()` engine that was tested but never invoked into both the bridge and the `/orchestrate review` command.
+- **Heartbeat-aware sprint assignment** — `/orchestrate assign` now reads agent heartbeats before assigning. Slots whose mapped agent is `stalled` or `offline` for more than `autoclaw.orchestrate.heartbeatStallSeconds` (default `300`) are excluded; an empty assignment plus a `<sprint>-stalled.json` sidecar lands instead, so the skill prompt can decide how to recover. New setting `autoclaw.orchestrate.heartbeatStallSeconds`. New `excludedSlots` parameter on `planSprints` and `generatePlan`.
+- **Resolved platform/inbox stamped into SprintAssignment** — `planSprints()` now invokes `resolveAgentId()` for each WA-N slot when an `AgentRegistry` is supplied and writes the resolved `platform` and `inbox` into the assignment YAML. Plans stay self-describing even after the registry drifts. Backwards compatible — both fields are optional.
+- **mergeFindings invoked in consensus** — `evaluateConsensus()` now calls `mergeFindings()` when consensus is reached and exposes the deduplicated set as `ConsensusResult.merged_findings`. Severity is upgraded on agreement. Eliminates duplicate findings showing up multiple times in cross-agent reviews.
+- **Defensive guard on `planSprints()`** — outer-while loop now breaks if no progress is made in a pass (previously could spin if every slot was excluded or scope conflicts blocked all candidates). Exposed and fixed during Phase 0 test development.
+- **Unit test suites for bridge and comms** — new `src/test/bridge.test.ts` (token validate / message round-trip / heartbeat POST+GET / consensus vote POST+GET / random port within 9876–10876) and `src/test/comms.test.ts` (sendMessage→readInbox / shared inbox / comms-log JSONL / heartbeat write/read / registry / status inference). Locks in v2.1.x behavior so future refactors are safe. +43 tests; 196 passing total.
+- **Manifest probe helper** — new `src/manifest-probe.ts` extracts the manifest-existence check from `extension.ts` so it stays unit-testable in Mocha (importing `vscode` would have broken plain-Mocha test runs). Documented as the only deviation from the Phase 0 implementation plan.
+
+### Documentation
+- New planning artifacts in `docs/`: `DISTRIBUTED_AGENT_FABRIC.md` (master synthesis with phased roadmap), `IDEAS_LOG.md` (append-only idea trail), `research/code-audit-cross-agent.md`, `research/distributed-orchestration-prior-art.md`, `research/knowledge-graph-stack.md`, `research/phase-0-implementation-plan.md`, `research/phase-0-execution-report.md`, `otherProjects.md`, `otherProjects-catalog.md`, `COORDINATION_IMPROVEMENTS.md`. Forward-looking specs at `docs/specs/`: `agent-card-schema.md`, `registered-agent-v2.md`, `heartbeat-v2.md`, `nats-topic-conventions.md`, `biscuit-token-attenuation.md`, `program-plane-registry.md`, `coordination-improvements-mapping.md`. Spec docs are flagged `[needs verification]` until live A2A/MCP/Biscuit specs are confirmed.
+- New isolated prototype `packages/kg-daemon/` — Tier 1 knowledge-graph daemon (better-sqlite3 + sqlite-vec + FTS5 + edges table; embeddings via ZippyMesh fallback; vitest smoke test). Standalone, not yet wired into the extension; uninstalled until promoted in a future release.
+
+### Adapters
+- All 29 adapter files regenerated from `skills/*/SKILL.md` to clear pre-existing line-ending and content drift. `npm run adapters:check` now clean.
+
+### Deferred to v2.2.1
+- 1-line `skills/orchestrate/SKILL.md` mention of the new `/api/v1/consensus/{tid}/evaluate` endpoint and stalled-slot sidecar behavior. The endpoint is for remote-agent use and doesn't change the local AI flow, so deferring keeps Phase 0 minimal.
+- Bridge port fallback `9877..9880` if `9876` is taken.
+- `mergeFindings()` cloning its input rather than mutating in place — accepted for v2.2.0 because `evaluateConsensus()` does not reuse the votes after merging.
+
+## [2.1.1 – 2.1.3] - 2026-05-03 — interim cleanup
+
+These three patch releases bumped `package.json` without explicit CHANGELOG sections. Combined retroactive entry (2.1.1 was skipped — `package.json` jumped 2.1.0 → 2.1.2 directly).
+
+### Changed
+- Removed the bundled IDE agent rule directories (`.kilocodemodes`, `.clinerules/`, `.kiro/`, etc.) from version control on the public repo so consumer installs aren't polluted by maintainer-side IDE state.
+
+### Fixed
+- Stripped UTF-8 BOM from all JSON reads in `src/comms.ts` (and downstream) so heartbeat / registry / message / consensus-vote files written by editors that prepend BOMs (some Windows editors) are parsed correctly.
+- Scrubbed IDE workspace state and developer artifacts from the public repo.
+
+### Internal
+- Added an integration test runner script alongside the existing unit-test harness, so `npm test` and `npm run test:unit` are runnable independently and integration suites can be added without booting Electron.
+
+Tags retroactively created on 2026-05-09: `v2.0.3`, `v2.1.0`, `v2.1.2`, `v2.1.3` (no `v2.1.1` — that version number was skipped). Going forward every release commit gets its own tag.
+
 ## [2.1.0] - 2026-05-03
 
 ### Added
