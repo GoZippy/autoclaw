@@ -1,0 +1,32 @@
+# AutoClaw line-ending discipline
+#
+# Adapter files are generated from `skills/*/SKILL.md` by `npm run adapters:build`.
+# The generator emits LF line endings. Without this file, git's autocrlf would
+# normalize them to CRLF on Windows checkout, which makes `npm run adapters:check`
+# detect spurious drift after every merge and forces a regen-and-commit cycle.
+# Pinning the adapter tree (and the source skills it generates from) to LF
+# closes that loop for good.
+
+skills/**/*.md         text eol=lf
+adapters/**/*.md       text eol=lf
+adapters/**/*.mdc      text eol=lf
+adapters/**/*.prompt   text eol=lf
+adapters/**/*.yaml     text eol=lf
+adapters/**/*.json     text eol=lf
+
+# Source TypeScript and JS — LF, the cross-platform default for Node toolchains.
+*.ts                   text eol=lf
+*.js                   text eol=lf
+*.json                 text eol=lf
+
+# Markdown across the repo — LF.
+*.md                   text eol=lf
+
+# Shell scripts — LF (mandatory for execution under POSIX shells).
+*.sh                   text eol=lf
+
+# Binary, never normalize.
+*.png                  binary
+*.jpg                  binary
+*.ico                  binary
+*.vsix                 binary
