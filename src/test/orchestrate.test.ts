@@ -729,3 +729,44 @@ suite('Orchestrate — Finding Merge', () => {
     assert.strictEqual(unique[0].severity, 'critical');
   });
 });
+
+// ---------------------------------------------------------------------------
+// evaluateConsensus integrates mergeFindings (Item 5)
+// ---------------------------------------------------------------------------
+
+suite('Orchestrate — evaluateConsensus + mergeFindings', () => {
+  test('dedupes identical findings reported by two voters', () => {
+    // Use a non-security category so we land in the standard threshold path
+    // (consensus_reached) where unresolved_findings is filtered to criticals.
+    // We assert via the new merged_findings field which always reflects the
+    // deduplicated union.
+    const finding = makeFinding('bug', 'major', 'nil pointer', 'handler.go', 55);
+    const votes = [
+      makeVote('WA-1', 'kiro', 'approved', 0.9, [finding]),
+      makeVote('WA-2', 'kilocode', 'approved', 0.9, [finding]),
+    ];
+    const result = evaluateConsensus(votes, 1);
+    assert.strictEqual(result.status, 'consensus_reached');
+    assert.ok(result.merged_findings, 'merged_findings should be populated');
+    assert.strictEqual(result.merged_findings!.length, 1);
+  });
+
+  test('upgrades severity when a later voter rates higher', () => {
+    // Two distinct ValidationFinding objects with the same dedup key
+    // (file:line:category:description) but different severities — Item 5
+    // wires mergeFindings so the surviving entry is critical.
+    const minor = makeFinding('security', 'minor', 'weak validation', 'auth.go', 30);
+    const critical = makeFinding('security', 'critical', 'weak validation', 'auth.go', 30);
+    const votes = [
+      makeVote('WA-1', 'kiro', 'approved', 0.9, [minor]),
+      makeVote('WA-2', 'kilocode', 'approved', 0.9, [critical]),
+    ];
+    const result = evaluateConsensus(votes, 1);
+    // Security category is unanimous-required and a critical-severity finding
+    // exists, so unanimous-approval check passes (both voted approved) and we
+    // still hit consensus_reached. merged_findings holds the upgraded entry.
+    assert.ok(result.merged_findings, 'merged_findings should be populated');
+    assert.strictEqual(result.merged_findings!.length, 1);
+    assert.strictEqual(result.merged_findings![0].severity, 'critical');
+  });
+});

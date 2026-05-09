@@ -895,6 +895,13 @@ export interface ConsensusResult {
   max_rounds: number;
   unresolved_findings: ValidationFinding[];
   resolved_findings: ValidationFinding[];
+  /**
+   * Findings deduplicated across voters via mergeFindings(): identical
+   * file:line:category:description entries collapse into one, with severity
+   * upgraded to the highest reported by any voter. Optional for backwards
+   * compatibility with consumers written before Phase 0.
+   */
+  merged_findings?: ValidationFinding[];
   consensus_threshold: number;
   timestamp: string;
 }
@@ -941,7 +948,10 @@ export function evaluateConsensus(
   const qualifiedVotes = votes.filter(v => v.confidence >= config.min_confidence);
   const nonAbstain = qualifiedVotes.filter(v => v.verdict !== 'abstain');
 
-  const allFindings = votes.flatMap(v => v.findings);
+  // Deduplicate findings across voters (same file:line:category:description
+  // collapses; severity is upgraded to the highest reported by any voter).
+  const merged = mergeFindings(votes);
+  const allFindings = merged.unique;
   const criticalFindings = allFindings.filter(f => f.severity === 'critical');
 
   // Not enough voters yet
@@ -956,6 +966,7 @@ export function evaluateConsensus(
       max_rounds: config.max_rounds,
       unresolved_findings: allFindings,
       resolved_findings: [],
+      merged_findings: allFindings,
       consensus_threshold: config.approval_threshold,
       timestamp: new Date().toISOString(),
     };
@@ -1005,6 +1016,7 @@ export function evaluateConsensus(
           max_rounds: config.max_rounds,
           unresolved_findings: categoryFindings,
           resolved_findings: allFindings.filter(f => f.category !== category),
+          merged_findings: allFindings,
           consensus_threshold: config.approval_threshold,
           timestamp: new Date().toISOString(),
         };
@@ -1028,6 +1040,7 @@ export function evaluateConsensus(
       max_rounds: config.max_rounds,
       unresolved_findings: criticalFindings,
       resolved_findings: allFindings.filter(f => f.severity !== 'critical'),
+      merged_findings: allFindings,
       consensus_threshold: config.approval_threshold,
       timestamp: new Date().toISOString(),
     };
@@ -1044,6 +1057,7 @@ export function evaluateConsensus(
     max_rounds: config.max_rounds,
     unresolved_findings: allFindings.filter(f => f.severity === 'critical' || f.severity === 'major'),
     resolved_findings: allFindings.filter(f => f.severity === 'minor' || f.severity === 'info'),
+    merged_findings: allFindings,
     consensus_threshold: config.approval_threshold,
     timestamp: new Date().toISOString(),
   };
