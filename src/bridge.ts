@@ -81,7 +81,7 @@ export function createBridgeServer(config: BridgeConfig): http.Server {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-    if (p === '/health' && method === 'GET') { return json(res, 200, { status: 'ok', version: '2.0.0' }); }
+    if (p === '/health' && method === 'GET') { return json(res, 200, { status: 'ok', version: '2.0.0', port: config.port }); }
 
     if (p.startsWith('/api/')) {
       const token = await validateToken(config.tokensPath, req.headers.authorization);
@@ -176,15 +176,51 @@ export function createBridgeServer(config: BridgeConfig): http.Server {
   });
 }
 
-export async function startBridge(config: BridgeConfig): Promise<BridgeState> {
-  const server = createBridgeServer(config);
+/** Number of fallback ports the bridge will try after the configured port if it is busy.
+ *  e.g. 9876 in use → 9877, 9878, 9879, 9880 are tried in order. */
+export const BRIDGE_PORT_FALLBACK_COUNT = 4;
+
+/** Try to bind a single server instance on the supplied (host, port).
+ *  Resolves on `listening`; rejects with the first `error` event. */
+function tryListen(server: http.Server, host: string, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    server.listen(config.port, config.host, () => {
-      console.log(`AutoClaw bridge on ${config.host}:${config.port}`);
-      resolve({ server, config, running: true });
-    });
-    server.on('error', reject);
+    const onError = (e: NodeJS.ErrnoException): void => {
+      server.removeListener('listening', onListening);
+      reject(e);
+    };
+    const onListening = (): void => {
+      server.removeListener('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(port, host);
   });
+}
+
+export async function startBridge(config: BridgeConfig): Promise<BridgeState> {
+  const startPort = config.port;
+  let lastErr: NodeJS.ErrnoException | undefined;
+  for (let i = 0; i <= BRIDGE_PORT_FALLBACK_COUNT; i++) {
+    const port = startPort + i;
+    const server = createBridgeServer({ ...config, port });
+    try {
+      await tryListen(server, config.host, port);
+      const effectiveConfig: BridgeConfig = { ...config, port };
+      console.log(`AutoClaw bridge on ${config.host}:${port}`);
+      return { server, config: effectiveConfig, running: true };
+    } catch (e) {
+      lastErr = e as NodeJS.ErrnoException;
+      // Close and try next port only on EADDRINUSE; bubble up any other error.
+      try { server.close(); } catch { /* ignore */ }
+      if (lastErr.code !== 'EADDRINUSE') {
+        throw lastErr;
+      }
+    }
+  }
+  throw lastErr ?? new Error(
+    `Bridge could not bind to any port in range ${startPort}-${startPort + BRIDGE_PORT_FALLBACK_COUNT}`
+  );
 }
 
 export function stopBridge(state: BridgeState): Promise<void> {

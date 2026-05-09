@@ -258,3 +258,47 @@ suite('Bridge — endpoints', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Port fallback (Phase 1 Item F)
+// ---------------------------------------------------------------------------
+
+suite('Bridge — port fallback on EADDRINUSE', () => {
+  let blocker: http.Server | undefined;
+  let bridge: BridgeState | undefined;
+
+  teardown(async () => {
+    if (bridge) { await stopBridge(bridge); bridge = undefined; }
+    if (blocker) {
+      await new Promise<void>(resolve => blocker!.close(() => resolve()));
+      blocker = undefined;
+    }
+  });
+
+  test('falls back to next port when configured port is in use', async () => {
+    // Pick a port unlikely to collide with other tests; occupy it.
+    const startPort = 21000 + Math.floor(Math.random() * 1000);
+    blocker = http.createServer(() => { /* no-op */ });
+    await new Promise<void>((resolve, reject) => {
+      blocker!.once('error', reject);
+      blocker!.listen(startPort, '127.0.0.1', () => resolve());
+    });
+
+    const commsDir = tmpDir();
+    const tokensPath = path.join(commsDir, 'tokens.json');
+    bridge = await startBridge({ port: startPort, host: '127.0.0.1', commsDir, tokensPath });
+
+    // The bridge state should reflect the actual port (one of startPort+1..+4).
+    assert.notStrictEqual(bridge.config.port, startPort, 'expected fallback to a different port');
+    assert.ok(
+      bridge.config.port > startPort && bridge.config.port <= startPort + 4,
+      `expected port in (${startPort}, ${startPort + 4}], got ${bridge.config.port}`
+    );
+
+    // /health should report the resolved port.
+    const r = await request(bridge, 'GET', '/health');
+    assert.strictEqual(r.status, 200);
+    const parsed = JSON.parse(r.body) as { port?: number };
+    assert.strictEqual(parsed.port, bridge.config.port);
+  });
+});
