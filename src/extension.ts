@@ -72,6 +72,7 @@ import {
   type BridgeState, type BridgeConfig,
 } from './bridge';
 import { hasOrchestratorManifest } from './manifest-probe';
+import { runReconcile } from './reconcile';
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -356,6 +357,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Watch shared inbox for task_complete messages — notify and auto-refresh
   startInboxWatcher(context);
+
+  // Periodic reconciliation sweep — detects drift between tasks.md / sprint YAML / comms-log
+  startReconcileTicker(context);
 
   // Register @autoclaw chat participant (VS Code 1.90+; degrades on older builds / other IDEs)
   registerChatParticipant(
@@ -1770,6 +1774,55 @@ function startHeartbeatTicker(context: vscode.ExtensionContext): void {
         heartbeatIntervalId = undefined;
       }
     }
+  });
+}
+
+let reconcileIntervalId: NodeJS.Timeout | undefined;
+
+function startReconcileTicker(context: vscode.ExtensionContext): void {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { return; }
+
+  const cfg = vscode.workspace.getConfiguration('autoclaw.orchestrate');
+  const intervalSec = cfg.get<number>('reconcileIntervalSeconds', 300);
+  if (intervalSec <= 0) { return; }  // disabled
+
+  const tick = async (): Promise<void> => {
+    try {
+      const report = await runReconcile(workspaceRoot);
+      const reportPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'reconcile-report.json');
+      await fsPromises.mkdir(path.dirname(reportPath), { recursive: true });
+      await fsPromises.writeFile(reportPath, JSON.stringify(report, null, 2), 'utf8');
+
+      if (report.mismatches.length > 0) {
+        const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+        await sendMessage(commsDir, {
+          id: '', from: 'orchestrator', to: 'shared', type: 'system',
+          timestamp: new Date().toISOString(),
+          payload: {
+            kind: 'reconcile_report',
+            mismatch_count: report.mismatches.length,
+            mismatches: report.mismatches.slice(0, 25), // cap to keep message size sane
+          },
+          requires_response: false,
+        }).catch(() => {});
+      }
+    } catch (err) {
+      console.error('reconcile sweep failed:', err);
+    }
+  };
+
+  // Run once on startup, then on interval.
+  tick();
+  reconcileIntervalId = setInterval(tick, intervalSec * 1000);
+
+  context.subscriptions.push({
+    dispose: () => {
+      if (reconcileIntervalId) {
+        clearInterval(reconcileIntervalId);
+        reconcileIntervalId = undefined;
+      }
+    },
   });
 }
 
