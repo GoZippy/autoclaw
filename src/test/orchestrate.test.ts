@@ -367,6 +367,84 @@ suite('Orchestrate — Full Pipeline', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Agent registry resolution in planSprints (Item 2)
+// ---------------------------------------------------------------------------
+
+suite('Orchestrate — planSprints with AgentRegistry', () => {
+  test('empty agents leaves platform/inbox undefined on every assignment', () => {
+    const tasks = [
+      makeTask('a', [], ['internal/a/**']),
+      makeTask('b', [], ['internal/b/**']),
+    ];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const sprints = planSprints(dag, { ...DEFAULT_PLANNER_CONFIG, work_agents: 2 });
+    for (const s of sprints) {
+      for (const a of s.assignments) {
+        assert.strictEqual(a.platform, undefined);
+        assert.strictEqual(a.inbox, undefined);
+      }
+    }
+  });
+
+  test('two registry entries stamp platform on WA-1 and WA-2', () => {
+    const tasks = [
+      makeTask('a', [], ['internal/a/**']),
+      makeTask('b', [], ['internal/b/**']),
+    ];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const agents = [
+      { id: 'WA-1', platform: 'kiro', inbox: '.autoclaw/orchestrator/comms/inboxes/kiro/', sprint: null, assigned_at: '2026-05-09T00:00:00Z' },
+      { id: 'WA-2', platform: 'claude-code', inbox: '.autoclaw/orchestrator/comms/inboxes/claude-code/', sprint: null, assigned_at: '2026-05-09T00:00:00Z' },
+    ];
+    const sprints = planSprints(
+      dag,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2, max_tasks_per_agent: 1 },
+      undefined,
+      agents
+    );
+    const flat = sprints.flatMap(s => s.assignments);
+    const wa1 = flat.find(a => a.agent === 'WA-1')!;
+    const wa2 = flat.find(a => a.agent === 'WA-2')!;
+    assert.strictEqual(wa1.platform, 'kiro');
+    assert.strictEqual(wa2.platform, 'claude-code');
+  });
+
+  test('inbox path is stamped from the registry', () => {
+    const tasks = [makeTask('only', [], ['internal/only/**'])];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const agents = [
+      { id: 'WA-1', platform: 'kiro', inbox: '.autoclaw/orchestrator/comms/inboxes/kiro/', sprint: null, assigned_at: '2026-05-09T00:00:00Z' },
+    ];
+    const sprints = planSprints(dag, { ...DEFAULT_PLANNER_CONFIG, work_agents: 1 }, undefined, agents);
+    const wa1 = sprints[0].assignments[0];
+    assert.strictEqual(wa1.platform, 'kiro');
+    assert.strictEqual(wa1.inbox, '.autoclaw/orchestrator/comms/inboxes/kiro/');
+  });
+
+  test('generatePlan threads agents into planSprints', () => {
+    const manifest = makeManifest([
+      makeTask('a', [], ['internal/a/**']),
+      makeTask('b', [], ['internal/b/**']),
+    ]);
+    const agents = [
+      { id: 'WA-1', platform: 'kiro', inbox: '.autoclaw/orchestrator/comms/inboxes/kiro/', sprint: null, assigned_at: '2026-05-09T00:00:00Z' },
+      { id: 'WA-2', platform: 'claude-code', inbox: '.autoclaw/orchestrator/comms/inboxes/claude-code/', sprint: null, assigned_at: '2026-05-09T00:00:00Z' },
+    ];
+    const result = generatePlan(
+      manifest,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2, max_tasks_per_agent: 1 },
+      agents
+    );
+    const flat = result.sprints.flatMap(s => s.assignments);
+    assert.ok(flat.some(a => a.platform === 'kiro'));
+    assert.ok(flat.some(a => a.platform === 'claude-code'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Template Rendering Tests
 // ---------------------------------------------------------------------------
 

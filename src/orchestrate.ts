@@ -54,6 +54,10 @@ export interface Manifest {
 
 export interface SprintAssignment {
   agent: string;
+  /** Resolved platform ID for the WA-N slot, when an agent registry was supplied. */
+  platform?: string;
+  /** Resolved inbox path for the platform, when an agent registry was supplied. */
+  inbox?: string;
   tasks: ManifestTask[];
   scope: string[];
   branch: string;
@@ -348,7 +352,8 @@ const EFFORT_DAYS: Record<EffortSize, number> = {
 export function planSprints(
   dag: DAG,
   config: PlannerConfig,
-  constraints?: ManifestConstraints
+  constraints?: ManifestConstraints,
+  agents: AgentRegistryEntry[] = []
 ): Sprint[] {
   const sprints: Sprint[] = [];
   let sprintNumber = 1;
@@ -462,13 +467,19 @@ export function planSprints(
             .join('-')
             .substring(0, 40);
 
-          assignments.push({
+          const resolved = resolveAgentId(agentId, agents);
+          const platform = resolved === agentId ? undefined : resolved;
+          const inbox = agents[agentIdx]?.inbox;
+          const assignment: SprintAssignment = {
             agent: agentId,
             tasks: agentTasks,
             scope: agentScopes,
             branch: `${config.branch_prefix}sprint-${sprintNumber}-${agentId.toLowerCase()}-${branchSlug}`,
             migration_range: migRange,
-          });
+          };
+          if (platform) { assignment.platform = platform; }
+          if (inbox) { assignment.inbox = inbox; }
+          assignments.push(assignment);
 
           scopesThisSprint.push(agentScopes);
         }
@@ -742,7 +753,8 @@ export interface PlanResult {
  */
 export function generatePlan(
   manifest: Manifest,
-  config: PlannerConfig
+  config: PlannerConfig,
+  agents: AgentRegistryEntry[] = []
 ): PlanResult {
   // Phase 1-2: Build DAG
   const dag = buildDAG(manifest.tasks);
@@ -751,7 +763,7 @@ export function generatePlan(
   topologicalSort(dag);
 
   // Phase 5-6: Sprint planning with bin-packing
-  const sprints = planSprints(dag, config, manifest.constraints);
+  const sprints = planSprints(dag, config, manifest.constraints, agents);
 
   // Build summary
   const summary = buildPlanSummary(
