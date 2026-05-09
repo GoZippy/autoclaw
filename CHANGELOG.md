@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.3.1] - 2026-05-09
+
+Patch release clearing the small follow-up queue from v2.2.0 / v2.3.0 and hardening the publish wrapper scripts. Net: +263/-18 LOC across 13 files, +2 unit tests (226 total passing, was 224), zero regressions, zero new dependencies.
+
+### Added
+
+- **Sprint-N markdown is now written by the planner** — `src/orchestrate.ts` gains an exported `writePlanArtifacts(sprintsDir, plan, projectName)` helper that drives `writeSprintArtifacts()` for every sprint and emits `plan-summary.yaml` alongside. After v2.3.0 shipped the helpers, this commit wires them into the planner output path so `/orchestrate plan` actually produces the human-readable `sprint-N.md` files alongside each `sprint-N.yaml`. Backwards compatible — existing helpers retain their signatures.
+- **`scripts/publish-vsce.js` and `scripts/publish-ovsx.js` `--dry-run` flag** — when set, scripts log the planned `vsce` / `ovsx` invocation (with PAT/token redacted) and exit 0 without invoking the real tool. Useful for verifying the wrapper end-to-end without burning a publish.
+
+### Documentation
+
+- **`skills/orchestrate/SKILL.md`** — three short additions covering consumer-visible Phase 0 + Phase 1 behavior:
+  - `review` sub-command now mentions the new `POST /api/v1/consensus/{task_id}/evaluate` bridge endpoint as the parallel programmatic path for remote agents.
+  - `assign` sub-command now describes the `sprint-{N}-stalled.json` sidecar emitted when an agent slot is stalled longer than `autoclaw.orchestrate.heartbeatStallSeconds`, and instructs the AI to surface it to the user with a re-run hint.
+  - `plan` sub-command now mentions that `sprint-N.md` is auto-generated alongside `sprint-N.yaml` (generated view; edit the YAML).
+- All 8 adapters regenerated to propagate the SKILL.md additions.
+
+### Fixed
+
+- **`npm run publish:all` silent-stop diagnosed and hardened.** Root cause: the previous 43-line `publish-vsce.js` did not pass `--packagePath`, emitted zero output before/after the spawn, did not warn on missing `VSCE_PAT`, and forwarded `result.status ?? 1` with no error message. Under the harness's non-interactive stdio, vsce's no-PAT/EOF-prompt path exited non-zero with all output buffered or muted, so npm's `&&` saw the failure and stopped while the operator saw nothing. Both `scripts/publish-vsce.js` and `scripts/publish-ovsx.js` now ship pre/post status banners, explicit `--packagePath` resolution from `package.json`'s current version, PAT/token-source logging (which source was used, never the value), `spawnSync.error` forwarding, a diagnostic line on non-zero exit, and the new `--dry-run` flag.
+
 ## [2.3.0] - 2026-05-09
 
 This release ("Phase 1 schema and identity") extends the cross-agent registry and heartbeat schemas, adds an inbox state machine, ships a reconciliation sweep, and folds in two pre-flagged cleanups. Net: +1124/-16 LOC across 10 source files, +28 unit tests (224 total passing, was 196), zero regressions, zero new npm dependencies. Every schema change is additive and backwards compatible — existing `agents.json`, `registry.json`, sprint YAMLs, heartbeats, and message JSON files all continue to parse without modification.
