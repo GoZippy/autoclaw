@@ -10,6 +10,8 @@ import {
   writeRegistry, readRegistry,
   generateMessageId,
   redactErrorMessage,
+  readMessageState, markMessageRead, markMessageReplied, markMessageArchived,
+  getInboxSummary,
   type Message, type Heartbeat, type AgentRegistry, type RegisteredAgent,
 } from '../comms';
 
@@ -361,5 +363,86 @@ suite('Comms — v2 schemas', () => {
     assert.ok(out.includes('<redacted>'), out);
     assert.ok(!/sk-[A-Za-z0-9]+/.test(out), `sk- token leaked: ${out}`);
     assert.ok(!/ghp_[A-Za-z0-9]+/.test(out), `ghp_ token leaked: ${out}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbox state machine
+// ---------------------------------------------------------------------------
+
+suite('Comms — inbox state machine', () => {
+  async function sendAndReturn(dir: string, to: string, requiresResponse = false): Promise<Message> {
+    const msg: Message = {
+      id: '', from: 'orchestrator', to, type: 'review_request',
+      timestamp: '', payload: {}, requires_response: requiresResponse,
+    };
+    await sendMessage(dir, msg);
+    return msg;
+  }
+
+  test('readMessageState returns null when no state file exists', async () => {
+    const dir = makeTmpDir();
+    const got = await readMessageState(dir, 'kiro', 'msg-nope');
+    assert.strictEqual(got, null);
+  });
+
+  test('markMessageRead creates state file with read_at; idempotent', async () => {
+    const dir = makeTmpDir();
+    const msg = await sendAndReturn(dir, 'kiro', true);
+    await markMessageRead(dir, 'kiro', msg.id);
+    const s1 = await readMessageState(dir, 'kiro', msg.id);
+    assert.ok(s1);
+    assert.ok(s1!.read_at);
+    const firstReadAt = s1!.read_at;
+    // Re-mark; should be a no-op (read_at unchanged).
+    await markMessageRead(dir, 'kiro', msg.id);
+    const s2 = await readMessageState(dir, 'kiro', msg.id);
+    assert.strictEqual(s2!.read_at, firstReadAt);
+  });
+
+  test('markMessageReplied sets replied_at and read_at if missing', async () => {
+    const dir = makeTmpDir();
+    const msg = await sendAndReturn(dir, 'kiro', true);
+    await markMessageReplied(dir, 'kiro', msg.id);
+    const s = await readMessageState(dir, 'kiro', msg.id);
+    assert.ok(s!.replied_at);
+    assert.ok(s!.read_at);
+  });
+
+  test('markMessageArchived sets archived_at', async () => {
+    const dir = makeTmpDir();
+    const msg = await sendAndReturn(dir, 'kiro', false);
+    await markMessageArchived(dir, 'kiro', msg.id);
+    const s = await readMessageState(dir, 'kiro', msg.id);
+    assert.ok(s!.archived_at);
+  });
+
+  test('getInboxSummary: backwards compatible — no _state/ → all unread, all awaiting if requires_response', async () => {
+    const dir = makeTmpDir();
+    await sendAndReturn(dir, 'kiro', true);
+    await sendAndReturn(dir, 'kiro', false);
+    await sendAndReturn(dir, 'kiro', true);
+    const sum = await getInboxSummary(dir, 'kiro');
+    assert.strictEqual(sum.total, 3);
+    assert.strictEqual(sum.unread, 3);
+    assert.strictEqual(sum.awaiting_response, 2);
+    assert.strictEqual(sum.archived, 0);
+  });
+
+  test('getInboxSummary: read+replied+archived counted correctly', async () => {
+    const dir = makeTmpDir();
+    const m1 = await sendAndReturn(dir, 'kiro', true);
+    const m2 = await sendAndReturn(dir, 'kiro', true);
+    const m3 = await sendAndReturn(dir, 'kiro', false);
+    await markMessageRead(dir, 'kiro', m1.id);
+    await markMessageReplied(dir, 'kiro', m2.id);
+    await markMessageArchived(dir, 'kiro', m3.id);
+    const sum = await getInboxSummary(dir, 'kiro');
+    assert.strictEqual(sum.total, 3);
+    // m2 is read (via replied) and m1 is read; m3 has no read_at → unread = 1
+    assert.strictEqual(sum.unread, 1);
+    // m1 requires_response and not replied → 1 awaiting; m2 requires + replied → not awaiting
+    assert.strictEqual(sum.awaiting_response, 1);
+    assert.strictEqual(sum.archived, 1);
   });
 });

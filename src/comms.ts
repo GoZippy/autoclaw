@@ -317,6 +317,105 @@ export async function getAgentStatuses(commsDir: string): Promise<Array<Register
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// Inbox state machine (COORDINATION_IMPROVEMENTS §2.1)
+// ---------------------------------------------------------------------------
+
+/** Per-message state, persisted at <commsDir>/inboxes/<agent>/_state/<message-id>.json */
+export interface InboxMessageState {
+  message_id: string;
+  read_at: string | null;
+  replied_at: string | null;
+  archived_at: string | null;
+}
+
+function stateFilePath(commsDir: string, agentId: string, messageId: string): string {
+  return path.join(
+    commsDir, 'inboxes', path.basename(agentId), '_state',
+    `${path.basename(messageId)}.json`
+  );
+}
+
+async function readStateFile(filePath: string): Promise<InboxMessageState | null> {
+  try {
+    const content = await fsPromises.readFile(filePath, 'utf8');
+    return JSON.parse(content.replace(/^﻿/, '')) as InboxMessageState;
+  } catch { return null; }
+}
+
+async function writeStateFile(filePath: string, state: InboxMessageState): Promise<void> {
+  await fsPromises.mkdir(path.dirname(filePath), { recursive: true });
+  await fsPromises.writeFile(filePath, JSON.stringify(state, null, 2), 'utf8');
+}
+
+export async function readMessageState(
+  commsDir: string, agentId: string, messageId: string
+): Promise<InboxMessageState | null> {
+  return readStateFile(stateFilePath(commsDir, agentId, messageId));
+}
+
+export async function markMessageRead(
+  commsDir: string, agentId: string, messageId: string
+): Promise<void> {
+  const fp = stateFilePath(commsDir, agentId, messageId);
+  const existing = await readStateFile(fp);
+  if (existing && existing.read_at) { return; }
+  const now = new Date().toISOString();
+  await writeStateFile(fp, {
+    message_id: messageId,
+    read_at: now,
+    replied_at: existing?.replied_at ?? null,
+    archived_at: existing?.archived_at ?? null,
+  });
+}
+
+export async function markMessageReplied(
+  commsDir: string, agentId: string, messageId: string
+): Promise<void> {
+  const fp = stateFilePath(commsDir, agentId, messageId);
+  const existing = await readStateFile(fp);
+  const now = new Date().toISOString();
+  await writeStateFile(fp, {
+    message_id: messageId,
+    read_at: existing?.read_at ?? now,
+    replied_at: now,
+    archived_at: existing?.archived_at ?? null,
+  });
+}
+
+export async function markMessageArchived(
+  commsDir: string, agentId: string, messageId: string
+): Promise<void> {
+  const fp = stateFilePath(commsDir, agentId, messageId);
+  const existing = await readStateFile(fp);
+  const now = new Date().toISOString();
+  await writeStateFile(fp, {
+    message_id: messageId,
+    read_at: existing?.read_at ?? null,
+    replied_at: existing?.replied_at ?? null,
+    archived_at: now,
+  });
+}
+
+/** Returns counts joining inbox messages with their state files. Backwards compatible:
+ *  if no state file exists for a given message it counts as unread, and as
+ *  awaiting_response when the message itself has requires_response === true. */
+export async function getInboxSummary(
+  commsDir: string, agentId: string
+): Promise<{ total: number; unread: number; awaiting_response: number; archived: number }> {
+  const messages = await readInbox(commsDir, agentId);
+  let unread = 0;
+  let awaiting_response = 0;
+  let archived = 0;
+  for (const msg of messages) {
+    const state = await readMessageState(commsDir, agentId, msg.id);
+    if (!state || !state.read_at) { unread++; }
+    if (state?.archived_at) { archived++; }
+    if (msg.requires_response && (!state || !state.replied_at)) { awaiting_response++; }
+  }
+  return { total: messages.length, unread, awaiting_response, archived };
+}
+
 export async function cleanupOldMessages(commsDir: string, retentionDays: number = 7): Promise<number> {
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
   let cleaned = 0;
