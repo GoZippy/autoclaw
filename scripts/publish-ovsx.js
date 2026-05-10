@@ -88,7 +88,8 @@ if (!token) {
 
 const result = spawnSync(npxCmd, ovsxArgs, {
   cwd: repo,
-  stdio: 'inherit'
+  stdio: 'inherit',
+  shell: process.platform === 'win32',
 });
 
 if (result.error) {

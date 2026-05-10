@@ -91,7 +91,8 @@ if (patSource.startsWith('NONE')) {
 const result = spawnSync(npxCmd, vsceArgs, {
   cwd: repo,
   stdio: 'inherit',
-  env
+  env,
+  shell: process.platform === 'win32',
 });
 
 if (result.error) {
