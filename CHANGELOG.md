@@ -1,5 +1,46 @@
 # Changelog
 
+## [2.4.0] - 2026-05-10
+
+This release ("Phase 2 part A — push channels and the kg-daemon companion") wires the OpenClaw HTTP bridge with bidirectional push (Server-Sent Events + WebSockets) and turns `packages/kg-daemon/` from an isolated prototype into an opt-in managed companion process. Net: +1650/-29 LOC across 16 files (4 new modules: `src/bridge-ws.ts`, `src/kg.ts`, `src/test/kg-lifecycle.test.ts`, `src/test/bridge.test.ts` extended), +33 unit tests (259 total passing, was 226), one new runtime dependency (`ws` ^8.20.0). All push paths are backwards compatible — existing polling clients continue to work unchanged.
+
+### Added
+
+- **Bridge SSE push channel** — `GET /api/v1/messages/stream` now opens a long-lived `text/event-stream` connection. Streams `event: message` (data = the message JSON) when a new message arrives, `event: heartbeat` when any agent posts one (filterable via `?agent=` query param), and `event: consensus` when a `consensus_result` is broadcast. Sends a `: keepalive` comment line every 25 s so reverse proxies don't drop the connection. Authenticated via existing `Authorization: Bearer <token>` header or `?token=` query param fallback for header-less clients (browser `EventSource`, etc).
+- **Bridge WebSocket push channel** — same URL `GET /api/v1/messages/stream` with `Upgrade: websocket` is routed to a WS handler in the new `src/bridge-ws.ts` module. WS clients receive one JSON object per frame: `{ "type": "message" | "heartbeat" | "consensus", "data": { ... } }`. Authentication via `Sec-WebSocket-Protocol: bearer.<token>` header (subprotocol scheme) with `?token=` query param fallback. The `ws` package is loaded via dynamic `import()` so SSE keeps working if `ws` ever fails to load.
+- **`BridgeEventBus`** — new in-memory pub/sub primitive in `src/bridge.ts`. Existing handler paths (`POST /messages`, `POST /heartbeat`, the new `/consensus/{tid}/evaluate`) call `publish()` after writing to disk; SSE and WS subscribers fan-out from there. Self-cleans subscribers on disconnect. Unit-tested directly.
+- **kg-daemon as a managed companion** — new `src/kg.ts` module ports the bridge's lifecycle pattern (`spawn` / `stop` / `health`) to child processes. On extension activation, if `autoclaw.kg.enabled === true` AND `packages/kg-daemon/node_modules/` is present AND `packages/kg-daemon/dist/server.js` is present, the daemon is spawned via `child_process.spawn(process.execPath, ...)` (uses Electron-host Node's ABI for `better-sqlite3` consistency on Windows). Wires stdout/stderr to a new `AutoClaw KG` OutputChannel. On `deactivate()`, sends SIGTERM and escalates to SIGKILL after 5 seconds.
+- **Doctor `## KG Daemon` section** — reports enabled flag, configured port, `node_modules/` presence, `dist/server.js` presence, child PID if running, last `/api/v1/health` response. Surfaced via `DoctorVscodeShim.kg` so it stays unit-testable. Doctor command performs an inline `fetchKgHealth` when a child PID is alive.
+- **`/api/v1/health` push-channel counts** — bridge health endpoint now reports `{ port, sse_clients, ws_clients }` so operators can verify push channels are live without instrumenting Prometheus.
+
+### Settings
+
+| Setting | Default | What |
+|---|---|---|
+| `autoclaw.kg.enabled` | `false` | Opt-in. Spawn `packages/kg-daemon/dist/server.js` as a managed companion when the extension activates. |
+| `autoclaw.kg.port` | `9877` | Port for the kg-daemon to listen on (loopback only). |
+| `autoclaw.kg.dbPath` | `""` | Override the daemon's default DB path. Empty = daemon picks `~/.autoclaw/kg/<workspace-name>.db`. |
+
+### Commands
+
+- `autoclaw.kg.openOutput` — focus the `AutoClaw KG` Output Channel.
+- `autoclaw.kg.healthCheck` — fetch `GET http://127.0.0.1:<port>/api/v1/health` and surface result in a notification.
+
+### Documentation
+
+- **Spec verification pass** — `docs/specs/agent-card-schema.md`, `biscuit-token-attenuation.md`, `nats-topic-conventions.md`, and `registered-agent-v2.md` updated against canonical sources (A2A v0.2.5, NATS docs, Biscuit RFC, MCP). 5 of 6 `[needs verification]` flags resolved. Discrepancies found and corrected: A2A well-known path is `/.well-known/agent.json` (not `/agent-card.json`); `schema_version` alias removed (not an A2A field name); A2A extension namespace is `capabilities.extensions[]` URI-keyed (not arbitrary `x-` prefixes); NATS specifies no per-token char limit (the 32-char cap is an internal best-effort policy). Each spec now ends with a `## Sources` appendix citing the URLs verified on 2026-05-10. The remaining `[still needs verification]` flag is the AIP IBCT benchmark numbers (arxiv.org WebFetch denied from the agent sandbox).
+
+### Dependencies
+
+- New runtime dependency: `ws` ^8.20.0 (MIT, ~80 KB, zero transitive deps). Required for the WebSocket push channel; loaded lazily so SSE works even if `ws` fails to load.
+- New dev dependency: `@types/ws` ^8.18.1.
+
+### Deferred to v2.4.x
+
+- **NATS opt-in bus driver** (`autoclaw.fabric.busDriver`) — Phase 2 part B. Spec exists in `docs/specs/nats-topic-conventions.md`; opt-in driver implementation lands in v2.4.x.
+- **Panel UI for new RegisteredAgent + Heartbeat fields** (capability chips, llms_available, queue_depth, current_llm, last_error) — Phase 2 part C. Schema is in place since v2.3.0; webview rendering refresh batches with the broader fabric panel rebuild.
+- **Bridge auto-restart on `EADDRINUSE` for kg-daemon** — bridge has port-fallback (9876→9880); kg-daemon could mirror the pattern. Mid-session port changes still need a window reload.
+
 ## [2.3.1] - 2026-05-09
 
 Patch release clearing the small follow-up queue from v2.2.0 / v2.3.0 and hardening the publish wrapper scripts. Net: +263/-18 LOC across 13 files, +2 unit tests (226 total passing, was 224), zero regressions, zero new dependencies.
