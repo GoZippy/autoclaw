@@ -23,6 +23,7 @@ import {
   buildCompilationSection,
   buildAdapterSchemaSection,
   buildGitHealthSection,
+  buildKgDaemonSection,
   renderReport,
   renderReportJson
 } from '../doctor';
@@ -487,6 +488,76 @@ suite('Doctor: buildSkillsSourceSection()', function () {
       assert.strictEqual(section.allPresent, true);
     } finally {
       fs.rmSync(ext, { recursive: true, force: true });
+    }
+  });
+});
+
+suite('Doctor: buildKgDaemonSection()', function () {
+  let ext: string;
+
+  setup(function () {
+    ext = makeTempDir('autoclaw-doc-kg-');
+  });
+
+  teardown(function () {
+    fs.rmSync(ext, { recursive: true, force: true });
+  });
+
+  test('reports disabled / deps-missing / entry-missing on a fresh extension root', function () {
+    const section = buildKgDaemonSection(ext, undefined);
+    assert.strictEqual(section.enabled, false);
+    assert.strictEqual(section.port, 9877, 'falls back to default port');
+    assert.strictEqual(section.pid, null);
+    assert.strictEqual(section.depsInstalled, false);
+    assert.strictEqual(section.entryExists, false);
+    assert.ok(section.entryPath.endsWith('server.js'));
+    assert.strictEqual(section.lastHealth, null);
+  });
+
+  test('reflects shim values: enabled, port, pid, lastHealth body keys', function () {
+    // Pretend deps + entry are present.
+    fs.mkdirSync(path.join(ext, 'packages', 'kg-daemon', 'node_modules'), { recursive: true });
+    const dist = path.join(ext, 'packages', 'kg-daemon', 'dist');
+    fs.mkdirSync(dist, { recursive: true });
+    fs.writeFileSync(path.join(dist, 'server.js'), '// stub');
+
+    const section = buildKgDaemonSection(ext, {
+      enabled: true,
+      port: 19999,
+      pid: 42424,
+      lastHealth: {
+        status: 200,
+        body: { ok: true, sqlite: true, vec: false, fts: true, zippymesh: false },
+      },
+    });
+    assert.strictEqual(section.enabled, true);
+    assert.strictEqual(section.port, 19999);
+    assert.strictEqual(section.pid, 42424);
+    assert.strictEqual(section.depsInstalled, true);
+    assert.strictEqual(section.entryExists, true);
+    assert.ok(section.lastHealth);
+    assert.strictEqual(section.lastHealth!.status, 200);
+    assert.match(section.lastHealth!.summary, /ok=true/);
+    assert.match(section.lastHealth!.summary, /sqlite=true/);
+    assert.match(section.lastHealth!.summary, /vec=false/);
+  });
+
+  test('renderReport includes the ## KG Daemon section', async function () {
+    const ws = makeTempDir('autoclaw-doc-kg-render-ws-');
+    try {
+      const report = await runDoctor(ext, {
+        workspaceRoot: ws,
+        isExtensionInstalled: () => false,
+        zippymeshUrl: 'http://127.0.0.1:1',
+        kg: { enabled: true, port: 9877, pid: null, lastHealth: null },
+      });
+      const text = renderReport(report);
+      assert.match(text, /## KG Daemon/);
+      assert.match(text, /enabled:\s+yes/);
+      assert.match(text, /port:\s+9877/);
+      assert.match(text, /child pid:\s+\(not running\)/);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
     }
   });
 });
