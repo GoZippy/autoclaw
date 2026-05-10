@@ -68,7 +68,7 @@ import {
 } from './comms';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
-  startBridge, stopBridge, createRemoteAgentToken,
+  startBridge, stopBridge, createRemoteAgentToken, revokeToken, readTokens,
   type BridgeState, type BridgeConfig,
 } from './bridge';
 import {
@@ -289,6 +289,11 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.bridge.addAgent', async () => {
       await bridgeAddAgentCommand();
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.bridge.revokeToken', async () => {
+      await bridgeRevokeTokenCommand();
     })
   );
 
@@ -2541,6 +2546,60 @@ async function bridgeAddAgentCommand(): Promise<void> {
   ch.show(true);
   ch.appendLine(`[bridge] Registered: ${agentId} | Token: ${token.token} | Expires: ${token.expires_at}`);
   vscode.window.showInformationMessage(`Remote agent "${agentId}" registered. Token in output channel.`);
+}
+
+/**
+ * Revoke a previously-issued remote agent token. Presents a quick-pick of
+ * still-active (non-revoked) tokens; on selection, stamps `revoked_at` via
+ * the bridge helper and posts a `system` message to inboxes/shared/ so
+ * other agents can react (e.g. drop cached credentials).
+ */
+async function bridgeRevokeTokenCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('Open a workspace first.'); return; }
+  const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+  const tokensPath = path.join(commsDir, 'tokens.json');
+  const tokens = await readTokens(tokensPath);
+  const active = tokens.filter(t => !t.revoked_at);
+  if (active.length === 0) {
+    vscode.window.showInformationMessage('No active remote agent tokens to revoke.');
+    return;
+  }
+  const items = active.map(t => ({
+    label: t.agent_id,
+    description: `expires ${t.expires_at}`,
+    detail: `created ${t.created_at} • token ${t.token.slice(0, 12)}…`,
+    token: t.token,
+    agentId: t.agent_id,
+  }));
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: 'Select a remote agent token to revoke',
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  if (!pick) { return; }
+  const ok = await revokeToken(tokensPath, pick.token);
+  if (!ok) {
+    vscode.window.showErrorMessage(`Token for ${pick.agentId} could not be revoked (already removed?).`);
+    return;
+  }
+  const timestamp = new Date().toISOString();
+  // Best-effort broadcast — fire-and-forget so revocation always succeeds
+  // even if the inboxes/shared dir is somehow unwriteable.
+  await sendMessage(commsDir, {
+    id: '', from: 'orchestrator', to: 'shared', type: 'system',
+    timestamp,
+    payload: {
+      kind: 'token_revoked',
+      agent_id: pick.agentId,
+      revoked_at: timestamp,
+      message: `agent ${pick.agentId}'s token revoked at ${timestamp}`,
+    },
+    requires_response: false,
+  }).catch(() => { /* swallow — revocation already persisted */ });
+  const ch = getOrchestrateOutputChannel();
+  ch.appendLine(`[bridge] Revoked token for ${pick.agentId} at ${timestamp}`);
+  vscode.window.showInformationMessage(`Token for "${pick.agentId}" revoked.`);
 }
 
 // ---------------------------------------------------------------------------

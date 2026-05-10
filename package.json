@@ -156,6 +156,10 @@
         "title": "AutoClaw: Register Remote Agent (Generate Token)"
       },
       {
+        "command": "autoclaw.bridge.revokeToken",
+        "title": "AutoClaw: Revoke Remote Agent Token"
+      },
+      {
         "command": "autoclaw.kg.openOutput",
         "title": "AutoClaw: KG — Open Output Channel"
       },
