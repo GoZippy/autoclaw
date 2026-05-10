@@ -28,12 +28,55 @@ export const OVERLOAD_ERROR_RATE = 0.5;
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Cross-agent message taxonomy. New Phase-3 entries (capability_query,
+ * capability_offer, thought_record, subcontract_*) flow through the existing
+ * sendMessage / readInbox plumbing without any extra handler — actual
+ * routing logic for them lands in the capability-aware router (separate
+ * worktree).
+ *
+ * Payload shape contracts (carried in `Message.payload` as a free-form
+ * `Record<string, unknown>`):
+ *
+ *   - `capability_query`:
+ *       {
+ *         required_capabilities: string[];
+ *         required_languages?: string[];
+ *         min_context_window?: number;
+ *         min_trust_level?: TrustLevel;
+ *         deadline_iso?: string;
+ *       }
+ *
+ *   - `capability_offer`:
+ *       {
+ *         for_query_id: string;
+ *         agent_id: string;
+ *         capabilities: string[];
+ *         current_load: number;
+ *         estimated_cost_usd?: number;
+ *         available: boolean;
+ *       }
+ *
+ *   - `thought_record`: free-form Thought envelope (KG schema, see
+ *     packages/kg-daemon).
+ *
+ *   - `subcontract_request` / `subcontract_accept` / `subcontract_deliver`
+ *     / `subcontract_ack`: parent → child fanout for Phase-3 work
+ *     subcontracting; payload shape TBD with the router.
+ */
 export type MessageType =
   | 'review_request' | 'review_response'
   | 'consensus_vote' | 'consensus_result'
   | 'task_claim' | 'task_complete' | 'task_assignment'
   | 'finding_report' | 'question' | 'answer'
-  | 'scope_conflict' | 'escalation' | 'handoff' | 'system';
+  | 'scope_conflict' | 'escalation' | 'handoff' | 'system'
+  // Phase-3 capability discovery
+  | 'capability_query' | 'capability_offer'
+  // Phase-3 KG bridge
+  | 'thought_record'
+  // Phase-3 work subcontracting
+  | 'subcontract_request' | 'subcontract_accept'
+  | 'subcontract_deliver' | 'subcontract_ack';
 
 export interface Message {
   id: string;

@@ -55,6 +55,52 @@ suite('Comms — messages', () => {
     assert.ok(msg.timestamp.length > 0);
   });
 
+  test('capability_query round-trips with all payload fields preserved', async () => {
+    const dir = makeTmpDir();
+    fs.mkdirSync(path.join(dir, 'inboxes', 'claude-code'), { recursive: true });
+    const queryPayload = {
+      required_capabilities: ['typescript', 'react'],
+      required_languages: ['en'],
+      min_context_window: 200_000,
+      min_trust_level: 'medium' as const,
+      deadline_iso: '2026-05-10T00:00:00Z',
+    };
+    const msg: Message = {
+      id: '', from: 'orchestrator', to: 'claude-code', type: 'capability_query',
+      timestamp: '', payload: queryPayload, requires_response: true,
+    };
+    await sendMessage(dir, msg);
+    const inbox = await readInbox(dir, 'claude-code');
+    assert.strictEqual(inbox.length, 1);
+    assert.strictEqual(inbox[0].type, 'capability_query');
+    assert.deepStrictEqual(inbox[0].payload, queryPayload);
+    // Comms log records the new type without complaint.
+    const log = await readCommsLog(dir);
+    assert.ok(log.some(e => e.type === 'capability_query'));
+  });
+
+  test('capability_offer round-trips with all payload fields preserved', async () => {
+    const dir = makeTmpDir();
+    fs.mkdirSync(path.join(dir, 'inboxes', 'orchestrator'), { recursive: true });
+    const offerPayload = {
+      for_query_id: 'msg-2026-05-10-aaaa',
+      agent_id: 'claude-code',
+      capabilities: ['typescript', 'react', 'tests'],
+      current_load: 0.4,
+      estimated_cost_usd: 0.12,
+      available: true,
+    };
+    const msg: Message = {
+      id: '', from: 'claude-code', to: 'orchestrator', type: 'capability_offer',
+      timestamp: '', payload: offerPayload, requires_response: false,
+    };
+    await sendMessage(dir, msg);
+    const inbox = await readInbox(dir, 'orchestrator');
+    assert.strictEqual(inbox.length, 1);
+    assert.strictEqual(inbox[0].type, 'capability_offer');
+    assert.deepStrictEqual(inbox[0].payload, offerPayload);
+  });
+
   test('readSharedInbox reads the shared/ directory', async () => {
     const dir = makeTmpDir();
     await sendMessage(dir, {
