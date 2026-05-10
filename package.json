@@ -442,6 +442,21 @@
           "type": "string",
           "default": "",
           "description": "Override path to the SQLite file used by the KG daemon. Empty (default) lets the daemon pick ~/.autoclaw/kg/<workspace>.db."
+        },
+        "autoclaw.fabric.busDriver": {
+          "type": "string",
+          "enum": [
+            "fs",
+            "ws",
+            "nats"
+          ],
+          "default": "fs",
+          "description": "Cross-agent message bus. 'fs' = filesystem mailbox only (default, zero config). 'ws' = piggyback on the bridge BridgeEventBus. 'nats' = NATS server (requires nats-server running; falls back to fs if unreachable)."
+        },
+        "autoclaw.fabric.natsUrl": {
+          "type": "string",
+          "default": "nats://127.0.0.1:4222",
+          "description": "URL of the NATS server used when autoclaw.fabric.busDriver = 'nats'. Ignored for fs/ws drivers."
         }
       }
     }

@@ -72,6 +72,10 @@ import {
   type BridgeState, type BridgeConfig,
 } from './bridge';
 import {
+  createFabricBus,
+  type BusDriver, type FabricBus,
+} from './fabric';
+import {
   startKgDaemon, stopKgDaemon, fetchKgHealth,
   type KgState,
 } from './kg';
@@ -84,12 +88,39 @@ let autobuildOutputChannel: vscode.OutputChannel | undefined;
 let autobuildIntervalId: NodeJS.Timeout | undefined;
 let kgOutputChannel: vscode.OutputChannel | undefined;
 let activeKg: KgState | null = null;
+/**
+ * Module-level FabricBus handle. Created during activate() based on
+ * autoclaw.fabric.busDriver and closed in deactivate(). Best-effort: an
+ * activation that fails to spin up the bus logs and continues — the
+ * filesystem mailbox always remains the canonical durable record.
+ */
+let activeFabric: FabricBus | null = null;
 
 function getKgOutputChannel(): vscode.OutputChannel {
   if (!kgOutputChannel) {
     kgOutputChannel = vscode.window.createOutputChannel('AutoClaw KG');
   }
   return kgOutputChannel;
+}
+
+/**
+ * Best-effort FabricBus initializer. Reads autoclaw.fabric.busDriver and
+ * autoclaw.fabric.natsUrl, instantiates the bus, and stashes it in
+ * `activeFabric` for later close in deactivate(). Any error is logged and
+ * swallowed — activation must not fail because the optional fast-path
+ * transport is unavailable.
+ */
+async function initFabricBus(): Promise<void> {
+  try {
+    const cfg = vscode.workspace.getConfiguration('autoclaw.fabric');
+    const driver = cfg.get<BusDriver>('busDriver', 'fs');
+    const natsUrl = cfg.get<string>('natsUrl', 'nats://127.0.0.1:4222');
+    activeFabric = await createFabricBus({ driver, natsUrl });
+    console.log(`AutoClaw FabricBus: driver=${activeFabric.driver}`);
+  } catch (e) {
+    console.warn(`AutoClaw FabricBus: initialization failed (${(e as Error).message}); continuing without fast-path bus`);
+    activeFabric = null;
+  }
 }
 
 /**
@@ -142,6 +173,11 @@ export function activate(context: vscode.ExtensionContext) {
   console.log('AutoClaw activated — skills ready');
 
   const adaptersDir = path.join(context.extensionPath, 'adapters');
+
+  // Spin up the cross-agent message bus per autoclaw.fabric.busDriver.
+  // Best-effort: the FS mailbox is the canonical durable record so a bus
+  // failure never blocks activation.
+  void initFabricBus();
 
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.enableAll', () => {
@@ -2764,6 +2800,10 @@ export function deactivate() {
   if (activeBridge?.running) {
     stopBridge(activeBridge).catch(() => {});
     activeBridge = null;
+  }
+  if (activeFabric) {
+    activeFabric.close().catch(() => {});
+    activeFabric = null;
   }
   if (activeKg && activeKg.child && activeKg.child.exitCode === null) {
     stopKgDaemon(activeKg).catch(() => {});
