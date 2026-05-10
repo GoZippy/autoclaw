@@ -141,6 +141,14 @@
         "title": "AutoClaw: Register Remote Agent (Generate Token)"
       },
       {
+        "command": "autoclaw.kg.openOutput",
+        "title": "AutoClaw: KG — Open Output Channel"
+      },
+      {
+        "command": "autoclaw.kg.healthCheck",
+        "title": "AutoClaw: KG — Health Check"
+      },
+      {
         "command": "orchestrator.showDashboard",
         "title": "AutoClaw: Show Orchestrator Dashboard"
       },

@@ -72,7 +72,7 @@ import {
   type BridgeState, type BridgeConfig,
 } from './bridge';
 import {
-  startKgDaemon, stopKgDaemon,
+  startKgDaemon, stopKgDaemon, fetchKgHealth,
   type KgState,
 } from './kg';
 import { hasOrchestratorManifest } from './manifest-probe';
@@ -289,6 +289,18 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.bridge.addAgent', async () => {
       await bridgeAddAgentCommand();
+    })
+  );
+
+  // KG-daemon commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.openOutput', () => {
+      getKgOutputChannel().show(true);
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.healthCheck', async () => {
+      await kgHealthCheckCommand();
     })
   );
 
@@ -1506,11 +1518,27 @@ async function runDoctorCommand(
   const zippymeshUrl = config.get<string>('zippymeshUrl', 'http://localhost:20128');
   const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
 
+  const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
+  const kgEnabled = kgCfg.get<boolean>('enabled', false);
+  const kgPort = kgCfg.get<number>('port', 9877);
+  const kgPid = activeKg?.child && activeKg.child.exitCode === null ? (activeKg.child.pid ?? null) : null;
+  const lastKgHealth = kgPid !== null
+    ? await fetchKgHealth(kgPort).catch(e => ({ ok: false, status: null, body: null, error: (e as Error).message }))
+    : null;
+
   const report: DoctorReport = await runDoctor(extensionPath, {
     workspaceRoot,
     isExtensionInstalled: (id: string) => !!vscode.extensions.getExtension(id),
     isAntigravityHost,
-    zippymeshUrl
+    zippymeshUrl,
+    kg: {
+      enabled: kgEnabled,
+      port: kgPort,
+      pid: kgPid,
+      lastHealth: lastKgHealth
+        ? { status: lastKgHealth.status, body: lastKgHealth.body, error: lastKgHealth.error }
+        : null,
+    }
   });
 
   if (!doctorOutputChannel) {
@@ -2467,6 +2495,28 @@ async function bridgeStopCommand(): Promise<void> {
   await stopBridge(activeBridge);
   activeBridge = null;
   vscode.window.showInformationMessage('OpenClaw bridge stopped.');
+}
+
+async function kgHealthCheckCommand(): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
+  const port = cfg.get<number>('port', 9877);
+  const channel = getKgOutputChannel();
+  channel.appendLine(`[kg] healthCheck → http://127.0.0.1:${port}/api/v1/health`);
+  const result = await fetchKgHealth(port);
+  if (result.ok) {
+    const summary = typeof result.body === 'object'
+      ? JSON.stringify(result.body)
+      : String(result.body);
+    channel.appendLine(`[kg] ${result.status} ${summary}`);
+    vscode.window.showInformationMessage(`AutoClaw KG: ${result.status} OK — ${summary.slice(0, 120)}`);
+  } else {
+    const detail = result.error ?? `status=${result.status ?? 'n/a'}`;
+    channel.appendLine(`[kg!] healthCheck failed: ${detail}`);
+    vscode.window.showWarningMessage(
+      `AutoClaw KG: health check failed (${detail}). Is the daemon running on port ${port}?`,
+      'Open KG Output'
+    ).then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+  }
 }
 
 async function bridgeAddAgentCommand(): Promise<void> {

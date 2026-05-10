@@ -37,6 +37,14 @@ export interface DoctorVscodeShim {
   isExtensionInstalled?: (id: string) => boolean;
   isAntigravityHost?: boolean;
   zippymeshUrl?: string;
+  /** KG-daemon settings + live state. Optional — tests can omit. */
+  kg?: {
+    enabled?: boolean;
+    port?: number;
+    pid?: number | null;
+    /** Last `/api/v1/health` response, if the extension probed it. */
+    lastHealth?: { status: number | null; body: unknown; error?: string } | null;
+  };
 }
 
 export interface WorkspaceSection {
@@ -121,6 +129,20 @@ export interface AutobuildSection {
   workflows: AutobuildWorkflowStatus[];
 }
 
+export interface KgDaemonSection {
+  enabled: boolean;
+  port: number;
+  pid: number | null;
+  depsInstalled: boolean;
+  entryPath: string;
+  entryExists: boolean;
+  lastHealth: {
+    status: number | null;
+    summary: string;
+    error?: string;
+  } | null;
+}
+
 export interface CompilationSection {
   outDirPresent: boolean;
   extensionJsPresent: boolean;
@@ -169,6 +191,7 @@ export interface DoctorReport {
   zmlr: AdapterHealth;
   skillsSource: SkillsSourceSection;
   autobuild: AutobuildSection;
+  kgDaemon: KgDaemonSection;
 }
 
 const SKILL_NAMES = ['kdream', 'autobuild', 'mateam'] as const;
@@ -802,6 +825,48 @@ export function buildSkillsSourceSection(extensionPath: string): SkillsSourceSec
 }
 
 /**
+ * Build the KG-daemon doctor section. Reports whether the daemon is
+ * configured to run, whether its dependencies are installed, and the
+ * last `/health` response the extension observed (when supplied).
+ */
+export function buildKgDaemonSection(
+  extensionPath: string,
+  shimKg: DoctorVscodeShim['kg']
+): KgDaemonSection {
+  const enabled = !!shimKg?.enabled;
+  const port = typeof shimKg?.port === 'number' ? shimKg.port : 9877;
+  const pid = typeof shimKg?.pid === 'number' ? shimKg.pid : null;
+
+  const nm = path.join(extensionPath, 'packages', 'kg-daemon', 'node_modules');
+  let depsInstalled = false;
+  try { depsInstalled = fs.statSync(nm).isDirectory(); } catch { depsInstalled = false; }
+
+  const entryPath = path.join(extensionPath, 'packages', 'kg-daemon', 'dist', 'server.js')
+    .replace(/\\/g, '/');
+  const entryExists = fs.existsSync(entryPath);
+
+  let lastHealth: KgDaemonSection['lastHealth'] = null;
+  if (shimKg?.lastHealth) {
+    const h = shimKg.lastHealth;
+    let summary = '(no body)';
+    if (h.body && typeof h.body === 'object') {
+      const b = h.body as Record<string, unknown>;
+      const flags: string[] = [];
+      if ('ok' in b) { flags.push(`ok=${String(b.ok)}`); }
+      if ('sqlite' in b) { flags.push(`sqlite=${String(b.sqlite)}`); }
+      if ('vec' in b) { flags.push(`vec=${String(b.vec)}`); }
+      if ('fts' in b) { flags.push(`fts=${String(b.fts)}`); }
+      summary = flags.length > 0 ? flags.join(' ') : JSON.stringify(b).slice(0, 120);
+    } else if (typeof h.body === 'string') {
+      summary = h.body.slice(0, 120);
+    }
+    lastHealth = { status: h.status, summary, error: h.error };
+  }
+
+  return { enabled, port, pid, depsInstalled, entryPath, entryExists, lastHealth };
+}
+
+/**
  * Run all doctor checks and return a structured report.
  *
  * `shim` lets the extension inject its `vscode` view of the world (workspace,
@@ -826,6 +891,7 @@ export async function runDoctor(
   const gitHealth = buildGitHealthSection(workspaceRoot);
   const skillsSource = buildSkillsSourceSection(extensionPath);
   const autobuild = buildAutobuildSection(workspaceRoot);
+  const kgDaemon = buildKgDaemonSection(extensionPath, shim.kg);
   const zmlr = await checkZippyMeshHealth(zippymeshUrl);
 
   return {
@@ -842,7 +908,8 @@ export async function runDoctor(
     gitHealth,
     zmlr,
     skillsSource,
-    autobuild
+    autobuild,
+    kgDaemon
   };
 }
 
@@ -1010,6 +1077,21 @@ export function renderReport(report: DoctorReport): string {
   lines.push('## Skills Source (VSIX sanity)');
   for (const s of report.skillsSource.skills) {
     lines.push(`  ${s.name}/SKILL.md: ${s.present ? 'present' : 'MISSING'}`);
+  }
+  lines.push('');
+
+  // KG Daemon
+  lines.push('## KG Daemon');
+  lines.push(`  enabled:        ${report.kgDaemon.enabled ? 'yes' : 'no (autoclaw.kg.enabled = false)'}`);
+  lines.push(`  port:           ${report.kgDaemon.port}`);
+  lines.push(`  deps installed: ${report.kgDaemon.depsInstalled ? 'yes' : 'no — cd packages/kg-daemon && npm install'}`);
+  lines.push(`  entry:          ${report.kgDaemon.entryExists ? report.kgDaemon.entryPath : `${report.kgDaemon.entryPath} (MISSING — npm run build)`}`);
+  lines.push(`  child pid:      ${report.kgDaemon.pid !== null ? report.kgDaemon.pid : '(not running)'}`);
+  if (report.kgDaemon.lastHealth) {
+    const h = report.kgDaemon.lastHealth;
+    lines.push(`  last /health:   status=${h.status ?? 'n/a'} ${h.summary}${h.error ? `  error=${h.error}` : ''}`);
+  } else {
+    lines.push('  last /health:   (not probed this session)');
   }
   lines.push('');
 
