@@ -14,6 +14,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
+import * as net from 'net';
 import { spawn, type ChildProcess } from 'child_process';
 
 /**
@@ -42,11 +43,68 @@ export interface KgState {
   startedAt: string | null;
   /** Last exit code observed (null while the child is alive or never started). */
   exitCode: number | null;
+  /** The port the daemon was actually spawned on (after port-fallback probing). */
+  port: number;
 }
 
 export type KgStartResult =
   | { ok: true; state: KgState }
-  | { ok: false; reason: 'disabled' | 'deps_missing' | 'entry_missing'; message: string };
+  | { ok: false; reason: 'disabled' | 'deps_missing' | 'entry_missing' | 'no_port_available'; message: string };
+
+/** Number of fallback ports kg-daemon will try after the configured port if it is busy.
+ *  e.g. 9877 in use → 9878, 9879, 9880, 9881 are tried in order. */
+export const KG_PORT_FALLBACK_COUNT = 4;
+
+/**
+ * Probe a single (host, port) pair to see if a server can bind there.
+ * Resolves `true` when the probe socket binds and closes cleanly,
+ * `false` on EADDRINUSE / EACCES / any other listen error.
+ *
+ * We bind, immediately close, and resolve. The brief listen-then-close
+ * round-trip is the standard cross-platform "is this port free?" trick;
+ * spawning on a port whose probe just succeeded leaves a microscopic
+ * TOCTOU window, but in practice it's far simpler and more reliable
+ * than trying to parse EADDRINUSE out of the daemon's stderr.
+ */
+export function isPortAvailable(port: number, host = '127.0.0.1'): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    let settled = false;
+    const finish = (ok: boolean): void => {
+      if (settled) { return; }
+      settled = true;
+      try { probe.close(); } catch { /* ignore */ }
+      resolve(ok);
+    };
+    probe.once('error', () => finish(false));
+    probe.once('listening', () => {
+      probe.close(() => finish(true));
+    });
+    try {
+      probe.listen(port, host);
+    } catch {
+      finish(false);
+    }
+  });
+}
+
+/**
+ * Find the first port in `[startPort, startPort + count]` (inclusive) that
+ * is available to bind on. Returns `null` if every probed port is busy.
+ */
+export async function findAvailablePort(
+  startPort: number,
+  count: number = KG_PORT_FALLBACK_COUNT,
+  host = '127.0.0.1'
+): Promise<number | null> {
+  for (let i = 0; i <= count; i++) {
+    const candidate = startPort + i;
+    if (await isPortAvailable(candidate, host)) {
+      return candidate;
+    }
+  }
+  return null;
+}
 
 /**
  * Resolves the path to the kg-daemon entrypoint script. Prefers the
@@ -77,8 +135,14 @@ export function kgDepsInstalled(extensionPath: string): boolean {
  * never produced here (the caller short-circuits before invoking); we
  * still model it in the union so the extension can pattern-match
  * uniformly across enabled/disabled paths if it wants.
+ *
+ * Port-fallback: if `config.port` is in use we probe up to
+ * `KG_PORT_FALLBACK_COUNT` subsequent ports and spawn on the first one
+ * that's free. The actual port is recorded on the returned state so
+ * the doctor section + healthCheck can report it. If every probed
+ * port is busy we return `no_port_available`.
  */
-export function startKgDaemon(config: KgSpawnConfig): KgStartResult {
+export async function startKgDaemon(config: KgSpawnConfig): Promise<KgStartResult> {
   if (!kgDepsInstalled(config.extensionPath)) {
     return {
       ok: false,
@@ -95,7 +159,20 @@ export function startKgDaemon(config: KgSpawnConfig): KgStartResult {
     };
   }
 
-  const env: NodeJS.ProcessEnv = { ...process.env, KG_PORT: String(config.port) };
+  const port = await findAvailablePort(config.port, KG_PORT_FALLBACK_COUNT);
+  if (port === null) {
+    const last = config.port + KG_PORT_FALLBACK_COUNT;
+    const msg = `kg-daemon: no port available in ${config.port}..${last}`;
+    config.logger.appendLine(`[kg!] ${msg}`);
+    return { ok: false, reason: 'no_port_available', message: msg };
+  }
+  if (port !== config.port) {
+    config.logger.appendLine(
+      `[kg] configured port ${config.port} in use; falling back to ${port}`
+    );
+  }
+
+  const env: NodeJS.ProcessEnv = { ...process.env, KG_PORT: String(port) };
   if (config.dbPath && config.dbPath.trim()) {
     env.KG_DB_PATH = config.dbPath;
   }
@@ -112,6 +189,7 @@ export function startKgDaemon(config: KgSpawnConfig): KgStartResult {
     config,
     startedAt: new Date().toISOString(),
     exitCode: null,
+    port,
   };
 
   child.stdout?.setEncoding('utf8');
@@ -137,7 +215,7 @@ export function startKgDaemon(config: KgSpawnConfig): KgStartResult {
   });
 
   config.logger.appendLine(
-    `[kg] started pid=${child.pid ?? '?'} port=${config.port} entry=${entry.path.replace(/\\/g, '/')}`
+    `[kg] started pid=${child.pid ?? '?'} port=${port} entry=${entry.path.replace(/\\/g, '/')}`
   );
   return { ok: true, state };
 }

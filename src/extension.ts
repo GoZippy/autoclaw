@@ -97,14 +97,14 @@ function getKgOutputChannel(): vscode.OutputChannel {
  * never throws. If deps aren't installed or the entrypoint is missing
  * we log a one-liner and skip the spawn.
  */
-function maybeStartKgDaemon(extensionPath: string): void {
+async function maybeStartKgDaemon(extensionPath: string): Promise<void> {
   const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
   if (!cfg.get<boolean>('enabled', false)) { return; }
   if (activeKg?.child && activeKg.child.exitCode === null) { return; }
   const port = cfg.get<number>('port', 9877);
   const dbPath = cfg.get<string>('dbPath', '');
   const channel = getKgOutputChannel();
-  const result = startKgDaemon({ extensionPath, port, dbPath, logger: channel });
+  const result = await startKgDaemon({ extensionPath, port, dbPath, logger: channel });
   if (result.ok) {
     activeKg = result.state;
   } else {
@@ -340,11 +340,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   // KG daemon: opt-in spawn (autoclaw.kg.enabled = true). Best-effort —
   // logs and skips if deps aren't installed; never blocks activation.
-  try {
-    maybeStartKgDaemon(context.extensionPath);
-  } catch (e) {
+  maybeStartKgDaemon(context.extensionPath).catch(e => {
     console.error('kg-daemon auto-start failed:', e);
-  }
+  });
 
   // AutoBuild scheduler: single setInterval in the extension host.
   startAutobuildScheduler(context);
@@ -1520,8 +1518,11 @@ async function runDoctorCommand(
 
   const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
   const kgEnabled = kgCfg.get<boolean>('enabled', false);
-  const kgPort = kgCfg.get<number>('port', 9877);
+  // Prefer the actual port the daemon is running on (after port-fallback).
+  // Falls back to the configured value if no daemon is alive.
+  const kgConfiguredPort = kgCfg.get<number>('port', 9877);
   const kgPid = activeKg?.child && activeKg.child.exitCode === null ? (activeKg.child.pid ?? null) : null;
+  const kgPort = activeKg && kgPid !== null ? activeKg.port : kgConfiguredPort;
   const lastKgHealth = kgPid !== null
     ? await fetchKgHealth(kgPort).catch(e => ({ ok: false, status: null, body: null, error: (e as Error).message }))
     : null;
@@ -2499,8 +2500,16 @@ async function bridgeStopCommand(): Promise<void> {
 
 async function kgHealthCheckCommand(): Promise<void> {
   const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
-  const port = cfg.get<number>('port', 9877);
+  const configuredPort = cfg.get<number>('port', 9877);
+  // Probe the port the daemon actually bound to (may differ after fallback).
+  const livePid = activeKg?.child && activeKg.child.exitCode === null ? activeKg.child.pid : null;
+  const port = activeKg && livePid !== undefined && livePid !== null
+    ? activeKg.port
+    : configuredPort;
   const channel = getKgOutputChannel();
+  if (port !== configuredPort) {
+    channel.appendLine(`[kg] (configured port ${configuredPort} unavailable; daemon bound to ${port})`);
+  }
   channel.appendLine(`[kg] healthCheck → http://127.0.0.1:${port}/api/v1/health`);
   const result = await fetchKgHealth(port);
   if (result.ok) {
