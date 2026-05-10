@@ -71,6 +71,10 @@ import {
   startBridge, stopBridge, createRemoteAgentToken,
   type BridgeState, type BridgeConfig,
 } from './bridge';
+import {
+  startKgDaemon, stopKgDaemon,
+  type KgState,
+} from './kg';
 import { hasOrchestratorManifest } from './manifest-probe';
 import { runReconcile } from './reconcile';
 
@@ -78,6 +82,36 @@ const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
 let autobuildOutputChannel: vscode.OutputChannel | undefined;
 let autobuildIntervalId: NodeJS.Timeout | undefined;
+let kgOutputChannel: vscode.OutputChannel | undefined;
+let activeKg: KgState | null = null;
+
+function getKgOutputChannel(): vscode.OutputChannel {
+  if (!kgOutputChannel) {
+    kgOutputChannel = vscode.window.createOutputChannel('AutoClaw KG');
+  }
+  return kgOutputChannel;
+}
+
+/**
+ * Spawn the kg-daemon if `autoclaw.kg.enabled` is true. Best-effort —
+ * never throws. If deps aren't installed or the entrypoint is missing
+ * we log a one-liner and skip the spawn.
+ */
+function maybeStartKgDaemon(extensionPath: string): void {
+  const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
+  if (!cfg.get<boolean>('enabled', false)) { return; }
+  if (activeKg?.child && activeKg.child.exitCode === null) { return; }
+  const port = cfg.get<number>('port', 9877);
+  const dbPath = cfg.get<string>('dbPath', '');
+  const channel = getKgOutputChannel();
+  const result = startKgDaemon({ extensionPath, port, dbPath, logger: channel });
+  if (result.ok) {
+    activeKg = result.state;
+  } else {
+    channel.appendLine(`[kg] ${result.message}`);
+    console.log(`AutoClaw KG: ${result.message}`);
+  }
+}
 
 // Re-export helpers for external use (e.g., tests)
 export {
@@ -290,6 +324,14 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }).catch(e => console.error('bridge auto-start probe failed:', e));
     }
+  }
+
+  // KG daemon: opt-in spawn (autoclaw.kg.enabled = true). Best-effort —
+  // logs and skips if deps aren't installed; never blocks activation.
+  try {
+    maybeStartKgDaemon(context.extensionPath);
+  } catch (e) {
+    console.error('kg-daemon auto-start failed:', e);
   }
 
   // AutoBuild scheduler: single setInterval in the extension host.
@@ -2604,5 +2646,13 @@ export function deactivate() {
   if (activeBridge?.running) {
     stopBridge(activeBridge).catch(() => {});
     activeBridge = null;
+  }
+  if (activeKg && activeKg.child && activeKg.child.exitCode === null) {
+    stopKgDaemon(activeKg).catch(() => {});
+    activeKg = null;
+  }
+  if (kgOutputChannel) {
+    kgOutputChannel.dispose();
+    kgOutputChannel = undefined;
   }
 }
