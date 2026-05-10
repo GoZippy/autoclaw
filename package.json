@@ -160,6 +160,10 @@
         "title": "AutoClaw: Revoke Remote Agent Token"
       },
       {
+        "command": "autoclaw.agentCard.show",
+        "title": "AutoClaw: Show Agent Card (A2A) for Host Agent"
+      },
+      {
         "command": "autoclaw.kg.openOutput",
         "title": "AutoClaw: KG — Open Output Channel"
       },
@@ -472,7 +476,7 @@
     "pretest": "tsc -p ./",
     "test": "vscode-test",
     "test:integration": "vscode-test",
-    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js out/test/bridge.test.js out/test/comms.test.js out/test/manifest-probe.test.js out/test/reconcile.test.js out/test/kg-lifecycle.test.js out/test/fabric.test.js",
+    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js out/test/bridge.test.js out/test/comms.test.js out/test/manifest-probe.test.js out/test/reconcile.test.js out/test/kg-lifecycle.test.js out/test/fabric.test.js out/test/agent-card.test.js",
     "sample:snapshot": "node scripts/sample-snapshot.js",
     "sample:autobuild": "node scripts/sample-autobuild-run.js",
     "sample:doctor": "node scripts/sample-doctor.js",

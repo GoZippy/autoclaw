@@ -75,6 +75,7 @@ import {
   createFabricBus,
   type BusDriver, type FabricBus,
 } from './fabric';
+import { buildAgentCard } from './agent-card';
 import {
   startKgDaemon, stopKgDaemon, fetchKgHealth,
   type KgState,
@@ -330,6 +331,11 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.bridge.revokeToken', async () => {
       await bridgeRevokeTokenCommand();
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.agentCard.show', async () => {
+      await agentCardShowCommand();
     })
   );
 
@@ -2636,6 +2642,65 @@ async function bridgeRevokeTokenCommand(): Promise<void> {
   const ch = getOrchestrateOutputChannel();
   ch.appendLine(`[bridge] Revoked token for ${pick.agentId} at ${timestamp}`);
   vscode.window.showInformationMessage(`Token for "${pick.agentId}" revoked.`);
+}
+
+/**
+ * Render the current host agent's A2A Agent Card as JSON in an Untitled
+ * editor. Useful for debugging agent-card-schema.md / x-autoclaw mirroring.
+ *
+ * Picks the first registered agent from the workspace registry (or a
+ * synthetic fallback when none is registered yet) and feeds its
+ * RegisteredAgent fields into {@link buildAgentCard}.
+ */
+async function agentCardShowCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const cfg = vscode.workspace.getConfiguration('autoclaw.bridge');
+  const port = cfg.get<number>('port', 9876);
+  const host = cfg.get<string>('host', '127.0.0.1');
+  const baseUrl = `http://${host}:${port}/a2a`;
+
+  let agentName = 'AutoClaw Host Agent';
+  let agentId = 'autoclaw-host';
+  const autoclawFields: Parameters<typeof buildAgentCard>[0]['autoclaw'] = {
+    machine_id: 'unknown',
+  };
+
+  if (workspaceRoot) {
+    try {
+      const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+      const reg = await readRegistry(commsDir);
+      const first = reg?.agents[0];
+      if (first) {
+        agentId = first.id;
+        agentName = first.name;
+        autoclawFields.machine_id = first.machine_id ?? `local-${first.id}`;
+        if (first.machine_ip) { autoclawFields.machine_ip = first.machine_ip; }
+        if (first.llms_available) { autoclawFields.llms_available = first.llms_available; }
+        if (typeof first.context_window === 'number') { autoclawFields.context_window = first.context_window; }
+        if (first.tools_supported) { autoclawFields.tools_supported = first.tools_supported; }
+        if (first.trust_level) { autoclawFields.trust_level = first.trust_level; }
+        if (first.cost_budget) { autoclawFields.cost_budget = first.cost_budget; }
+        if (typeof first.max_parallel_tasks === 'number') { autoclawFields.max_parallel_tasks = first.max_parallel_tasks; }
+        if (first.skills_loaded) { autoclawFields.skills_loaded = first.skills_loaded; }
+        if (typeof first.human_in_loop_required === 'boolean') { autoclawFields.human_in_loop_required = first.human_in_loop_required; }
+        if (first.capabilities) { autoclawFields.capabilities = first.capabilities; }
+      }
+    } catch { /* fall through to synthetic card */ }
+  }
+
+  const card = buildAgentCard({
+    name: agentName,
+    description: `Agent Card for ${agentId} (rendered locally for debugging).`,
+    url: baseUrl,
+    version: '2.4.0',
+    autoclaw: autoclawFields,
+  });
+
+  const doc = await vscode.workspace.openTextDocument({
+    language: 'json',
+    content: JSON.stringify(card, null, 2),
+  });
+  await vscode.window.showTextDocument(doc, { preview: false });
 }
 
 // ---------------------------------------------------------------------------
