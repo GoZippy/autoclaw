@@ -362,6 +362,21 @@
           "type": "string",
           "default": "127.0.0.1",
           "description": "Host for the OpenClaw bridge server (use 0.0.0.0 for external access)"
+        },
+        "autoclaw.kg.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Spawn the AutoClaw Knowledge Graph daemon (packages/kg-daemon) as a child process when the extension activates. Opt-in: requires `cd packages/kg-daemon && npm install` first."
+        },
+        "autoclaw.kg.port": {
+          "type": "number",
+          "default": 9877,
+          "description": "Port for the AutoClaw Knowledge Graph daemon HTTP server (loopback only)."
+        },
+        "autoclaw.kg.dbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Override path to the SQLite file used by the KG daemon. Empty (default) lets the daemon pick ~/.autoclaw/kg/<workspace>.db."
         }
       }
     }
