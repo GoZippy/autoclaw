@@ -1125,3 +1125,166 @@ suite('Orchestrate — scoreAgent', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// planSprints — capability-aware routing with a populated registry
+// ---------------------------------------------------------------------------
+
+suite('Orchestrate — planSprints with capability-aware registry', () => {
+  function taskWithCaps(
+    id: string,
+    required: string[],
+    scope: string[] = [`internal/${id}/**`]
+  ): ManifestTask {
+    return {
+      id, name: `Task ${id}`, depends_on: [], scope,
+      effort: 'M', subtasks: ['s1'],
+      required_capabilities: required,
+    };
+  }
+
+  test('Go-capable agent gets the Go task; TS-only agent does not', () => {
+    const tasks = [taskWithCaps('go-task', ['go'])];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const agents = [
+      { id: 'WA-1', platform: 'kilocode', inbox: '.autoclaw/orchestrator/comms/inboxes/kilocode/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z',
+        capabilities: ['typescript'], trust_level: 'high' as const, max_parallel_tasks: 1,
+        languages_supported: ['typescript'] },
+      { id: 'WA-2', platform: 'claude-code', inbox: '.autoclaw/orchestrator/comms/inboxes/claude-code/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z',
+        capabilities: ['go'], trust_level: 'high' as const, max_parallel_tasks: 1,
+        languages_supported: ['go'] },
+    ];
+    const sprints = planSprints(
+      dag,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2, max_tasks_per_agent: 1 },
+      undefined,
+      agents
+    );
+    const flat = sprints.flatMap(s => s.assignments);
+    const assignedAgent = flat.find(a => a.tasks.some(t => t.id === 'go-task'))!.agent;
+    assert.strictEqual(assignedAgent, 'WA-2',
+      `expected go-task to land on WA-2 (go-capable), got ${assignedAgent}`);
+  });
+
+  test('high-trust agent gets the security task over low-trust on equal capability fit', () => {
+    const tasks = [taskWithCaps('audit', ['security-review'])];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const agents = [
+      { id: 'WA-1', platform: 'kilocode', inbox: '.autoclaw/orchestrator/comms/inboxes/kilocode/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z',
+        capabilities: ['security-review'], trust_level: 'low' as const, max_parallel_tasks: 1,
+        languages_supported: ['security-review'] },
+      { id: 'WA-2', platform: 'claude-code', inbox: '.autoclaw/orchestrator/comms/inboxes/claude-code/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z',
+        capabilities: ['security-review'], trust_level: 'high' as const, max_parallel_tasks: 1,
+        languages_supported: ['security-review'] },
+    ];
+    const sprints = planSprints(
+      dag,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2, max_tasks_per_agent: 1 },
+      undefined,
+      agents
+    );
+    const winner = sprints.flatMap(s => s.assignments)
+      .find(a => a.tasks.some(t => t.id === 'audit'))!.agent;
+    assert.strictEqual(winner, 'WA-2', 'high-trust slot should win the security task');
+  });
+
+  test('falls back to round-robin and emits a notes warning when no agent has positive score', () => {
+    // Task requires "rust" — no agent has it, so jaccard is 0 for everyone.
+    const tasks = [taskWithCaps('rusty', ['rust'])];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const agents = [
+      { id: 'WA-1', platform: 'kiro', inbox: '.autoclaw/orchestrator/comms/inboxes/kiro/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z',
+        capabilities: ['go'], trust_level: 'high' as const, max_parallel_tasks: 1,
+        languages_supported: ['go'] },
+      { id: 'WA-2', platform: 'claude-code', inbox: '.autoclaw/orchestrator/comms/inboxes/claude-code/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z',
+        capabilities: ['typescript'], trust_level: 'high' as const, max_parallel_tasks: 1,
+        languages_supported: ['typescript'] },
+    ];
+    const sprints = planSprints(
+      dag,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2, max_tasks_per_agent: 1 },
+      undefined,
+      agents
+    );
+    // Task is still assigned (round-robin fallback).
+    const flat = sprints.flatMap(s => s.assignments);
+    assert.ok(flat.some(a => a.tasks.some(t => t.id === 'rusty')),
+      'rust task should be assigned via round-robin fallback');
+    // Warning recorded in the sprint's notes.
+    const sprintWithNotes = sprints.find(s => s.notes && s.notes.length > 0);
+    assert.ok(sprintWithNotes, 'expected a sprint with notes when fallback fired');
+    assert.ok(
+      sprintWithNotes!.notes!.some(n => n.includes('rusty') && n.includes('round-robin')),
+      `expected notes to mention rusty + round-robin, got: ${JSON.stringify(sprintWithNotes!.notes)}`
+    );
+  });
+
+  test('no registry → output identical to legacy round-robin (regression)', () => {
+    const tasks = [
+      makeTask('a', [], ['internal/a/**']),
+      makeTask('b', [], ['internal/b/**']),
+      makeTask('c', ['a'], ['internal/c/**']),
+    ];
+    const dag1 = buildDAG(tasks);
+    topologicalSort(dag1);
+    const baseline = planSprints(dag1, DEFAULT_PLANNER_CONFIG);
+
+    const dag2 = buildDAG(tasks);
+    topologicalSort(dag2);
+    // Legacy AgentRegistryEntry rows (no scoring fields) → still round-robin.
+    const legacyAgents = [
+      { id: 'WA-1', platform: 'kiro', inbox: 'inboxes/kiro/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z' },
+    ];
+    const withLegacyRegistry = planSprints(dag2, DEFAULT_PLANNER_CONFIG, undefined, legacyAgents);
+
+    assert.deepStrictEqual(
+      withLegacyRegistry.map(s => s.assignments.map(a => ({ agent: a.agent, tasks: a.tasks.map(t => t.id) }))),
+      baseline.map(s => s.assignments.map(a => ({ agent: a.agent, tasks: a.tasks.map(t => t.id) })))
+    );
+    // No notes emitted in the legacy path.
+    for (const s of withLegacyRegistry) {
+      assert.ok(s.notes === undefined || s.notes.length === 0,
+        `legacy path should not emit notes; got ${JSON.stringify(s.notes)}`);
+    }
+  });
+
+  test('registry with empty capabilities/trust still triggers scoring path safely', () => {
+    // One agent populates max_parallel_tasks (truthy scoring field) but no
+    // capabilities — every task should still be assignable because jaccard
+    // of ([], []) = 1 when the task has no required_capabilities.
+    const tasks = [
+      makeTask('a', [], ['internal/a/**']),
+      makeTask('b', [], ['internal/b/**']),
+    ];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const agents = [
+      { id: 'WA-1', platform: 'kiro', inbox: 'inboxes/kiro/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z',
+        max_parallel_tasks: 3 },
+      { id: 'WA-2', platform: 'claude-code', inbox: 'inboxes/claude-code/',
+        sprint: null, assigned_at: '2026-05-10T00:00:00Z',
+        max_parallel_tasks: 3 },
+    ];
+    const sprints = planSprints(
+      dag,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2, max_tasks_per_agent: 1 },
+      undefined,
+      agents
+    );
+    const totalAssigned = sprints
+      .flatMap(s => s.assignments)
+      .reduce((sum, a) => sum + a.tasks.length, 0);
+    assert.strictEqual(totalAssigned, 2, 'both tasks should be assigned');
+  });
+});
+

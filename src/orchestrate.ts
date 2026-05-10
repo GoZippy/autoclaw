@@ -87,6 +87,12 @@ export interface Sprint {
   assignments: SprintAssignment[];
   dependencies_met: boolean;
   estimated_days: number;
+  /**
+   * Free-form planner notes. Populated by `planSprints` when the
+   * capability-aware scorer falls back (e.g. no agent matched a task's
+   * required_capabilities). Optional for backwards compatibility.
+   */
+  notes?: string[];
 }
 
 export interface PlanSummary {
@@ -493,6 +499,17 @@ export function planSprints(
   const maxParallelism = constraints?.max_parallelism ?? config.work_agents;
   const agentCount = Math.min(config.work_agents, maxParallelism);
 
+  // Use the capability-aware scorer when at least one registry entry
+  // populates a scoring field. Otherwise fall back to the legacy
+  // slot-index round-robin so existing callers/tests are unchanged.
+  const useScorer = agents.some(a =>
+    (a.capabilities && a.capabilities.length > 0) ||
+    a.trust_level !== undefined ||
+    a.cost_budget !== undefined ||
+    a.max_parallel_tasks !== undefined ||
+    (a.languages_supported && a.languages_supported.length > 0)
+  );
+
   for (let level = 0; level <= dag.maxLevel; level++) {
     const taskIds = dag.levels.get(level) ?? [];
     if (taskIds.length === 0) { continue; }
@@ -530,104 +547,180 @@ export function planSprints(
 
     while (remaining.length > 0) {
       const remainingBefore = remaining.length;
-      const assignments: SprintAssignment[] = [];
+      const sprintNotes: string[] = [];
+
+      // Per-slot accumulators for THIS sprint. Indexed by agentIdx (0-based).
+      interface SlotState {
+        agentIdx: number;
+        agentId: string;
+        excluded: boolean;
+        tasks: ManifestTask[];
+        scopes: string[];
+        subtaskCount: number;
+        taskCount: number;
+      }
+      const slots: SlotState[] = [];
+      for (let i = 0; i < agentCount; i++) {
+        const agentId = `WA-${i + 1}`;
+        slots.push({
+          agentIdx: i,
+          agentId,
+          excluded: excludedSlots.has(agentId),
+          tasks: [],
+          scopes: [],
+          subtaskCount: 0,
+          taskCount: 0,
+        });
+      }
+
       const assignedThisSprint = new Set<string>();
-      const scopesThisSprint: string[][] = [];
 
-      for (let agentIdx = 0; agentIdx < agentCount && remaining.length > 0; agentIdx++) {
-        const agentId = `WA-${agentIdx + 1}`;
-        if (excludedSlots.has(agentId)) {
-          // Slot is mapped to a stalled / offline agent — leave its
-          // tasks for a later sprint when the agent recovers.
-          continue;
+      // Helper: can `slot` accept `task` given current accumulators?
+      const slotCanAccept = (slot: SlotState, task: ManifestTask): boolean => {
+        if (slot.excluded) { return false; }
+        if (slot.taskCount >= config.max_tasks_per_agent) { return false; }
+        if (slot.subtaskCount + task.subtasks.length > config.max_subtasks_per_sprint) {
+          return false;
         }
-        const agentTasks: ManifestTask[] = [];
-        const agentScopes: string[] = [];
-        let agentSubtaskCount = 0;
-        let agentTaskCount = 0;
+        // Scope conflicts with any already-assigned slot in this sprint
+        for (const other of slots) {
+          if (other === slot) { continue; }
+          if (other.scopes.length === 0) { continue; }
+          if (task.scope.some(s => other.scopes.some(es => globsOverlap(s, es)))) {
+            return false;
+          }
+        }
+        // Mutual exclusion
+        const violatesMutex = mutualExclusion.some(group => {
+          const assigned = [...assignedThisSprint];
+          return group.includes(task.id) && assigned.some(a => group.includes(a));
+        });
+        if (violatesMutex) { return false; }
+        return true;
+      };
 
-        // Try to assign tasks to this agent
+      // Helper: commit `task` to `slot`.
+      const commit = (slot: SlotState, task: ManifestTask) => {
+        slot.tasks.push(task);
+        slot.scopes.push(...task.scope);
+        slot.subtaskCount += task.subtasks.length;
+        slot.taskCount++;
+        assignedThisSprint.add(task.id);
+      };
+
+      if (useScorer) {
+        // ---- Capability-aware path: task-first iteration ----
+        // For each remaining task in priority order, pick the highest-
+        // scoring slot that can accept it. Tie-break by lower agentIdx.
         const stillRemaining: string[] = [];
         for (const taskId of remaining) {
           if (assignedThisSprint.has(taskId)) { continue; }
+          const task = dag.nodes.get(taskId)!.task;
 
-          const node = dag.nodes.get(taskId)!;
-          const task = node.task;
-
-          // Check capacity
-          if (agentTaskCount >= config.max_tasks_per_agent) {
-            stillRemaining.push(taskId);
-            continue;
-          }
-          if (agentSubtaskCount + task.subtasks.length > config.max_subtasks_per_sprint) {
-            stillRemaining.push(taskId);
-            continue;
-          }
-
-          // Check scope conflicts with already-assigned tasks in this sprint
-          const hasConflict = scopesThisSprint.some(existingScopes =>
-            task.scope.some(s => existingScopes.some(es => globsOverlap(s, es)))
-          );
-          if (hasConflict) {
-            stillRemaining.push(taskId);
-            continue;
-          }
-
-          // Check mutual exclusion
-          const violatesMutex = mutualExclusion.some(group => {
-            const assigned = [...assignedThisSprint];
-            return group.includes(taskId) && assigned.some(a => group.includes(a));
-          });
-          if (violatesMutex) {
-            stillRemaining.push(taskId);
-            continue;
+          let bestSlot: SlotState | null = null;
+          let bestScore = -Infinity;
+          let anyPositive = false;
+          for (const slot of slots) {
+            if (!slotCanAccept(slot, task)) { continue; }
+            const entry = agents[slot.agentIdx];
+            // entry may be undefined when the registry has fewer rows
+            // than work_agents; in that case the slot is anonymous and
+            // gets a default-scored ScorableAgent.
+            const scorable: ScorableAgent = entry
+              ? {
+                  capabilities: entry.capabilities,
+                  trust_level: entry.trust_level,
+                  cost_budget: entry.cost_budget,
+                  max_parallel_tasks: entry.max_parallel_tasks,
+                  languages_supported: entry.languages_supported,
+                  in_flight: slot.taskCount,
+                }
+              : { in_flight: slot.taskCount };
+            const s = scoreAgent(scorable, task);
+            if (s > 0) { anyPositive = true; }
+            // Tie-break: lower agentIdx wins (slots iterated in order,
+            // so strict `>` already gives that behaviour).
+            if (s > bestScore) {
+              bestScore = s;
+              bestSlot = slot;
+            }
           }
 
-          // Assign task to this agent
-          agentTasks.push(task);
-          agentScopes.push(...task.scope);
-          agentSubtaskCount += task.subtasks.length;
-          agentTaskCount++;
-          assignedThisSprint.add(taskId);
+          if (bestSlot && anyPositive) {
+            commit(bestSlot, task);
+          } else if (bestSlot && !anyPositive) {
+            // No agent had a positive score — fall back to round-robin
+            // for THIS task (lowest-numbered acceptable slot) and
+            // record a warning.
+            const fallbackSlot = slots.find(s => slotCanAccept(s, task));
+            if (fallbackSlot) {
+              commit(fallbackSlot, task);
+              sprintNotes.push(
+                `task ${task.id}: no agent had positive capability score; ` +
+                `fell back to round-robin (assigned ${fallbackSlot.agentId})`
+              );
+            } else {
+              stillRemaining.push(taskId);
+            }
+          } else {
+            stillRemaining.push(taskId);
+          }
         }
-
         remaining = stillRemaining;
-
-        if (agentTasks.length > 0) {
-          // Check if any task needs migration ranges
-          const needsMigrations = agentTasks.some(t =>
-            t.scope.some(s => s.includes('migrations/'))
-          );
-          let migRange: { start: number; end: number } | null = null;
-          if (needsMigrations) {
-            migRange = {
-              start: migrationCounter,
-              end: migrationCounter + config.migration_range_size - 1,
-            };
-            migrationCounter += config.migration_range_size;
+      } else {
+        // ---- Legacy slot-index round-robin path (unchanged behaviour) ----
+        for (const slot of slots) {
+          if (slot.excluded) { continue; }
+          if (remaining.length === 0) { break; }
+          const stillRemaining: string[] = [];
+          for (const taskId of remaining) {
+            if (assignedThisSprint.has(taskId)) { continue; }
+            const task = dag.nodes.get(taskId)!.task;
+            if (slotCanAccept(slot, task)) {
+              commit(slot, task);
+            } else {
+              stillRemaining.push(taskId);
+            }
           }
-
-          const branchSlug = agentTasks
-            .map(t => t.id.replace(/[^a-z0-9-]/gi, '-'))
-            .join('-')
-            .substring(0, 40);
-
-          const resolved = resolveAgentId(agentId, agents);
-          const platform = resolved === agentId ? undefined : resolved;
-          const inbox = agents[agentIdx]?.inbox;
-          const assignment: SprintAssignment = {
-            agent: agentId,
-            tasks: agentTasks,
-            scope: agentScopes,
-            branch: `${config.branch_prefix}sprint-${sprintNumber}-${agentId.toLowerCase()}-${branchSlug}`,
-            migration_range: migRange,
-          };
-          if (platform) { assignment.platform = platform; }
-          if (inbox) { assignment.inbox = inbox; }
-          assignments.push(assignment);
-
-          scopesThisSprint.push(agentScopes);
+          remaining = stillRemaining;
         }
+      }
+
+      // Materialise assignments from slots that took work.
+      const assignments: SprintAssignment[] = [];
+      for (const slot of slots) {
+        if (slot.tasks.length === 0) { continue; }
+
+        const needsMigrations = slot.tasks.some(t =>
+          t.scope.some(s => s.includes('migrations/'))
+        );
+        let migRange: { start: number; end: number } | null = null;
+        if (needsMigrations) {
+          migRange = {
+            start: migrationCounter,
+            end: migrationCounter + config.migration_range_size - 1,
+          };
+          migrationCounter += config.migration_range_size;
+        }
+
+        const branchSlug = slot.tasks
+          .map(t => t.id.replace(/[^a-z0-9-]/gi, '-'))
+          .join('-')
+          .substring(0, 40);
+
+        const resolved = resolveAgentId(slot.agentId, agents);
+        const platform = resolved === slot.agentId ? undefined : resolved;
+        const inbox = agents[slot.agentIdx]?.inbox;
+        const assignment: SprintAssignment = {
+          agent: slot.agentId,
+          tasks: slot.tasks,
+          scope: slot.scopes,
+          branch: `${config.branch_prefix}sprint-${sprintNumber}-${slot.agentId.toLowerCase()}-${branchSlug}`,
+          migration_range: migRange,
+        };
+        if (platform) { assignment.platform = platform; }
+        if (inbox) { assignment.inbox = inbox; }
+        assignments.push(assignment);
       }
 
       if (assignments.length > 0) {
@@ -637,22 +730,24 @@ export function planSprints(
           )
         );
 
-        sprints.push({
+        const sprint: Sprint = {
           sprint: sprintNumber,
           level,
           status: 'pending',
           assignments,
           dependencies_met: level === 0,
           estimated_days: maxEffort,
-        });
+        };
+        if (sprintNotes.length > 0) {
+          sprint.notes = sprintNotes;
+        }
+        sprints.push(sprint);
         sprintNumber++;
       }
 
       // Defensive: if no progress was made in this iteration (e.g. every
       // available slot is excluded or every remaining task scope-conflicts
-      // with itself), break to avoid an infinite loop. Tasks left in
-      // `remaining` are silently dropped at this level — caller is
-      // expected to log a warning when excludedSlots is non-empty.
+      // with itself), break to avoid an infinite loop.
       if (remaining.length >= remainingBefore) { break; }
     }
   }
@@ -1057,6 +1152,16 @@ export interface AgentRegistryEntry {
   inbox: string;     // relative path: ".autoclaw/orchestrator/comms/inboxes/<platform>/"
   sprint: number | null;
   assigned_at: string;
+
+  // --- v2 scoring fields (optional) — feed `scoreAgent`. If any entry in the
+  // registry sets one of these, planSprints switches from slot-index
+  // round-robin to capability-aware assignment. Absence on every entry
+  // preserves the legacy round-robin path used by older tests/callers.
+  capabilities?: string[];
+  trust_level?: 'untrusted' | 'low' | 'medium' | 'high';
+  cost_budget?: { hourly_usd?: number; daily_usd?: number; per_task_usd?: number };
+  max_parallel_tasks?: number;
+  languages_supported?: string[];
 }
 
 export async function writeAgentRegistry(
