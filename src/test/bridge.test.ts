@@ -5,8 +5,8 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   startBridge, stopBridge, createRemoteAgentToken, validateToken,
-  generateToken, BridgeEventBus, SSE_KEEPALIVE_MS,
-  type BridgeConfig, type BridgeState,
+  generateToken, BridgeEventBus, SSE_KEEPALIVE_MS, revokeToken,
+  type BridgeConfig, type BridgeState, type RemoteAgentToken,
 } from '../bridge';
 import type { Message, Heartbeat } from '../comms';
 
@@ -99,6 +99,106 @@ suite('Bridge — token validation', () => {
     const raw = JSON.parse(fs.readFileSync(tokensPath, 'utf8')) as Array<{ agent_id: string }>;
     assert.strictEqual(raw.length, 2);
     assert.deepStrictEqual(raw.map(t => t.agent_id).sort(), ['a1', 'a2']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Token revocation
+// ---------------------------------------------------------------------------
+
+suite('Bridge — token revocation', () => {
+  test('revokeToken stamps revoked_at and persists to disk', async () => {
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    const t = await createRemoteAgentToken(tokensPath, 'a1');
+    assert.strictEqual(t.revoked_at ?? null, null, 'fresh tokens are not revoked');
+
+    const before = Date.now();
+    const ok = await revokeToken(tokensPath, t.token);
+    const after = Date.now();
+    assert.strictEqual(ok, true);
+
+    const persisted = JSON.parse(fs.readFileSync(tokensPath, 'utf8')) as RemoteAgentToken[];
+    const match = persisted.find(x => x.token === t.token)!;
+    assert.ok(match.revoked_at, 'revoked_at was set');
+    const stampMs = new Date(match.revoked_at!).getTime();
+    assert.ok(stampMs >= before && stampMs <= after,
+      `revoked_at ${match.revoked_at} should be in [${before}, ${after}]`);
+  });
+
+  test('revokeToken returns false for an unknown token', async () => {
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    await createRemoteAgentToken(tokensPath, 'a1');
+    const ok = await revokeToken(tokensPath, 'acl_does_not_exist');
+    assert.strictEqual(ok, false);
+  });
+
+  test('revokeToken returns false for an empty/missing token value', async () => {
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    await createRemoteAgentToken(tokensPath, 'a1');
+    assert.strictEqual(await revokeToken(tokensPath, ''), false);
+  });
+
+  test('validateToken returns null for a revoked token even before expiry', async () => {
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    const t = await createRemoteAgentToken(tokensPath, 'a1', 30); // 30 days
+    // Sanity-check: pre-revocation it validates.
+    const pre = await validateToken(tokensPath, `Bearer ${t.token}`);
+    assert.ok(pre, 'should validate before revocation');
+
+    await revokeToken(tokensPath, t.token);
+    const post = await validateToken(tokensPath, `Bearer ${t.token}`);
+    assert.strictEqual(post, null, 'revoked token must not validate');
+  });
+
+  test('legacy tokens (no revoked_at field) continue to validate', async () => {
+    // Simulate an existing tokens.json written by an older AutoClaw.
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    const legacy: RemoteAgentToken = {
+      agent_id: 'a1',
+      token: 'acl_legacy0000000000000000000000000000000000000000000000000000000',
+      created_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 30 * 86400000).toISOString(),
+      scopes: ['message', 'heartbeat', 'consensus', 'status'],
+    };
+    fs.writeFileSync(tokensPath, JSON.stringify([legacy], null, 2), 'utf8');
+    const got = await validateToken(tokensPath, `Bearer ${legacy.token}`);
+    assert.ok(got, 'legacy token should still validate');
+    assert.strictEqual(got!.revoked_at ?? null, null);
+  });
+});
+
+// End-to-end revocation through the HTTP endpoint.
+suite('Bridge — revocation end-to-end via HTTP', () => {
+  let state: BridgeState | null = null;
+
+  teardown(async () => {
+    if (state) { await stopBridge(state); state = null; }
+  });
+
+  test('create → use (201) → revoke → use again (401)', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    const msg = {
+      id: 'm-rev-1', from: 'a1', to: 'a2', type: 'question',
+      timestamp: '2026-05-09T00:00:00Z', payload: {}, requires_response: false,
+    };
+    const post1 = await request(state, 'POST', '/api/v1/messages',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` },
+      JSON.stringify(msg));
+    assert.strictEqual(post1.status, 201, 'pre-revocation request should succeed');
+
+    const ok = await revokeToken(state.config.tokensPath, t.token);
+    assert.strictEqual(ok, true);
+
+    const post2 = await request(state, 'POST', '/api/v1/messages',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` },
+      JSON.stringify({ ...msg, id: 'm-rev-2' }));
+    assert.strictEqual(post2.status, 401, 'post-revocation request must be unauthorized');
   });
 });
 

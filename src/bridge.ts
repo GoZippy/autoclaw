@@ -19,7 +19,16 @@ import {
 const fsPromises = fs.promises;
 
 export interface BridgeConfig { port: number; host: string; commsDir: string; tokensPath: string; }
-export interface RemoteAgentToken { agent_id: string; token: string; created_at: string; expires_at: string; scopes: string[]; }
+export interface RemoteAgentToken {
+  agent_id: string;
+  token: string;
+  created_at: string;
+  expires_at: string;
+  scopes: string[];
+  /** ISO timestamp at which this token was revoked. `null` / undefined ⇒ active.
+   *  Set by `revokeToken`; checked by `validateToken` and `validateRawToken`. */
+  revoked_at?: string | null;
+}
 export interface BridgeState {
   server: http.Server | null;
   config: BridgeConfig;
@@ -101,6 +110,7 @@ export async function validateToken(tokensPath: string, auth: string | undefined
   const tokens = await readTokens(tokensPath);
   const m = tokens.find(t => t.token === auth.slice(7));
   if (!m || new Date(m.expires_at).getTime() < Date.now()) { return null; }
+  if (m.revoked_at) { return null; }
   return m;
 }
 
@@ -111,7 +121,25 @@ export async function validateRawToken(tokensPath: string, raw: string | undefin
   const tokens = await readTokens(tokensPath);
   const m = tokens.find(t => t.token === raw);
   if (!m || new Date(m.expires_at).getTime() < Date.now()) { return null; }
+  if (m.revoked_at) { return null; }
   return m;
+}
+
+/**
+ * Mark a token as revoked by stamping `revoked_at` with the current time.
+ * Returns `true` if a matching token was found (and persisted), `false`
+ * otherwise. Already-revoked tokens are re-stamped (last-revocation-wins);
+ * the operation stays idempotent in the sense that the token remains
+ * non-validating either way.
+ */
+export async function revokeToken(tokensPath: string, tokenValue: string): Promise<boolean> {
+  if (!tokenValue) { return false; }
+  const tokens = await readTokens(tokensPath);
+  const idx = tokens.findIndex(t => t.token === tokenValue);
+  if (idx < 0) { return false; }
+  tokens[idx] = { ...tokens[idx], revoked_at: new Date().toISOString() };
+  await writeTokens(tokensPath, tokens);
+  return true;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
