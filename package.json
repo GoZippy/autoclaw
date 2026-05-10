@@ -49,11 +49,26 @@
         "description": "AutoClaw — autonomous AI agent skills (kdream, autobuild, mateam, orchestrate)",
         "isSticky": true,
         "commands": [
-          { "name": "kdream",      "description": "KDream background agent (start, ps, work, add)" },
-          { "name": "autobuild",   "description": "AutoBuild workflow scheduler (schedule, run, list)" },
-          { "name": "mateam",      "description": "MAteam multi-agent team (launch)" },
-          { "name": "orchestrate", "description": "Multi-agent orchestration (plan, assign, status, review, merge, next)" },
-          { "name": "inbox",       "description": "Show cross-agent shared inbox messages" }
+          {
+            "name": "kdream",
+            "description": "KDream background agent (start, ps, work, add)"
+          },
+          {
+            "name": "autobuild",
+            "description": "AutoBuild workflow scheduler (schedule, run, list)"
+          },
+          {
+            "name": "mateam",
+            "description": "MAteam multi-agent team (launch)"
+          },
+          {
+            "name": "orchestrate",
+            "description": "Multi-agent orchestration (plan, assign, status, review, merge, next)"
+          },
+          {
+            "name": "inbox",
+            "description": "Show cross-agent shared inbox messages"
+          }
         ]
       }
     ],
@@ -255,14 +270,38 @@
         "autoclaw.kdream.adapters": {
           "type": "array",
           "default": [
-            { "name": "Claude Code", "id": "Anthropic.claude-code" },
-            { "name": "Cline", "id": "saoudrizwan.claude-dev" },
-            { "name": "KiloCode", "id": "kilocode.kilo-code" },
-            { "name": "Kiro", "id": "amazon.kiro" },
-            { "name": "Windsurf", "id": "codeium.windsurf" },
-            { "name": "Continue", "id": "Continue.continue" },
-            { "name": "Cursor", "id": null },
-            { "name": "Antigravity", "id": null }
+            {
+              "name": "Claude Code",
+              "id": "Anthropic.claude-code"
+            },
+            {
+              "name": "Cline",
+              "id": "saoudrizwan.claude-dev"
+            },
+            {
+              "name": "KiloCode",
+              "id": "kilocode.kilo-code"
+            },
+            {
+              "name": "Kiro",
+              "id": "amazon.kiro"
+            },
+            {
+              "name": "Windsurf",
+              "id": "codeium.windsurf"
+            },
+            {
+              "name": "Continue",
+              "id": "Continue.continue"
+            },
+            {
+              "name": "Cursor",
+              "id": null
+            },
+            {
+              "name": "Antigravity",
+              "id": null
+            }
           ],
           "description": "List of AI adapters to monitor for health status. ZippyMesh LLM Router health is checked separately via HTTP."
         },
@@ -273,18 +312,32 @@
         },
         "autoclaw.kdream.zippymeshSearchPaths": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Additional filesystem paths to search for a ZippyMesh LLM Router installation when configuring MCP. Workspace-relative and ~/zippymesh-router candidates are always checked first."
         },
         "autoclaw.kdream.scanPatterns": {
           "type": "array",
-          "default": ["**/*.ts", "**/*.js", "**/*.tsx", "**/*.jsx", "**/*.py", "**/*.md"],
+          "default": [
+            "**/*.ts",
+            "**/*.js",
+            "**/*.tsx",
+            "**/*.jsx",
+            "**/*.py",
+            "**/*.md"
+          ],
           "description": "File patterns to scan for TODOs/FIXMEs"
         },
         "autoclaw.kdream.notificationLevel": {
           "type": "string",
-          "enum": ["all", "warnings", "errors", "none"],
+          "enum": [
+            "all",
+            "warnings",
+            "errors",
+            "none"
+          ],
           "default": "all",
           "description": "Notification verbosity level"
         },
@@ -413,6 +466,7 @@
     "@types/mocha": "^10.0.6",
     "@types/node": "^25.5.0",
     "@types/vscode": "^1.95.0",
+    "@types/ws": "^8.18.1",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^3.3.2",
@@ -422,5 +476,8 @@
   "overrides": {
     "serialize-javascript": "^7.0.5",
     "diff": "^8.0.4"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
   }
 }

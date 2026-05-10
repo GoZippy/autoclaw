@@ -409,8 +409,11 @@ export async function startBridge(config: BridgeConfig): Promise<BridgeState> {
     try {
       await tryListen(server, config.host, port);
       const effectiveConfig: BridgeConfig = { ...config, port };
-      // WebSocket upgrade handler is attached in a follow-up commit once the
-      // `ws` dependency is installed. SSE alone works on top of pure http.
+      // Lazy-load the WS module so SSE can run on its own if `ws` is missing
+      // (and so VS Code unit tests that don't touch WS don't pay the cost).
+      try { await import('./bridge-ws'); } catch (e) {
+        console.warn('Bridge: WebSocket support unavailable:', (e as Error).message);
+      }
       attachWebSocketIfAvailable(server, effectiveConfig, bus, wsClients);
       console.log(`AutoClaw bridge on ${config.host}:${port}`);
       return { server, config: effectiveConfig, running: true, bus, sseClients, wsClients };

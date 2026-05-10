@@ -582,3 +582,142 @@ suite('Bridge — /health push-channel counts', () => {
     assert.strictEqual(parsed.sse_clients, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// WebSocket /api/v1/messages/stream (Phase 2 — push channels)
+// ---------------------------------------------------------------------------
+
+// Use the `ws` client we already depend on for server-side. Importing the
+// module here is also what triggers the bridge-ws.ts side-effect that
+// registers the WebSocket attach hook with bridge.ts.
+import { WebSocket, type RawData as WsRawData } from 'ws';
+import '../bridge-ws';
+
+interface WsHandle {
+  ws: WebSocket;
+  frames: Array<{ type: string; data: unknown }>;
+  open: Promise<void>;
+  close(): void;
+}
+
+function openWs(state: BridgeState, p: string, headers: Record<string, string> = {}): WsHandle {
+  const url = `ws://${state.config.host}:${state.config.port}${p}`;
+  const subproto = headers['Sec-WebSocket-Protocol']
+    ? headers['Sec-WebSocket-Protocol'].split(',').map(s => s.trim())
+    : undefined;
+  const ws = new WebSocket(url, subproto, { headers });
+  const frames: Array<{ type: string; data: unknown }> = [];
+  ws.on('message', (raw: WsRawData) => {
+    try { frames.push(JSON.parse(raw.toString('utf8'))); } catch { /* ignore */ }
+  });
+  const open = new Promise<void>((resolve, reject) => {
+    ws.once('open', () => resolve());
+    ws.once('error', reject);
+    ws.once('unexpected-response', (_req: unknown, res: http.IncomingMessage) => {
+      reject(new Error(`unexpected-response ${res.statusCode}`));
+    });
+  });
+  return {
+    ws, frames, open,
+    close: () => { try { ws.close(); } catch { /* ignore */ } },
+  };
+}
+
+suite('Bridge — WebSocket /api/v1/messages/stream', () => {
+  let state: BridgeState | null = null;
+  let wsh: WsHandle | null = null;
+
+  teardown(async () => {
+    if (wsh) { wsh.close(); wsh = null; }
+    if (state) { await stopBridge(state); state = null; }
+  });
+
+  test('rejects upgrade without a valid token (401)', async () => {
+    state = await bring();
+    wsh = openWs(state, '/api/v1/messages/stream');
+    let caught: Error | null = null;
+    try { await wsh.open; } catch (e) { caught = e as Error; }
+    assert.ok(caught, 'expected upgrade to fail');
+    assert.match(caught!.message, /401|Unexpected server response: 401|unexpected-response 401/);
+  });
+
+  test('accepts bearer.<token> via Sec-WebSocket-Protocol and forwards heartbeat events', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    wsh = openWs(state, '/api/v1/messages/stream', {
+      'Sec-WebSocket-Protocol': `bearer.${t.token}`,
+    });
+    await wsh.open;
+    await waitFor(() => state!.wsClients!.size >= 1, 1000);
+
+    const hb = {
+      agent_id: 'a1', timestamp: '2026-05-09T00:00:00Z',
+      status: 'active', current_task: null, sprint: null,
+    };
+    await request(state, 'POST', '/api/v1/heartbeat',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` },
+      JSON.stringify(hb));
+
+    await waitFor(() => wsh!.frames.some(f => f.type === 'heartbeat'), 2000);
+    const f = wsh.frames.find(x => x.type === 'heartbeat')!;
+    assert.deepStrictEqual((f.data as { agent_id: string }).agent_id, 'a1');
+  });
+
+  test('accepts ?token= query-param auth', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    wsh = openWs(state, `/api/v1/messages/stream?token=${t.token}`);
+    await wsh.open;
+    assert.strictEqual(wsh.ws.readyState, WebSocket.OPEN);
+  });
+
+  test('forwards inbox messages addressed to the authenticated agent', async () => {
+    state = await bring();
+    const tA2 = await createRemoteAgentToken(state.config.tokensPath, 'a2');
+    const tA1 = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    wsh = openWs(state, '/api/v1/messages/stream', {
+      'Sec-WebSocket-Protocol': `bearer.${tA2.token}`,
+    });
+    await wsh.open;
+    await waitFor(() => state!.wsClients!.size >= 1, 1000);
+
+    await request(state, 'POST', '/api/v1/messages',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${tA1.token}` },
+      JSON.stringify({
+        id: 'm-ws-1', from: 'a1', to: 'a2', type: 'question',
+        timestamp: '2026-05-09T00:00:00Z', payload: {}, requires_response: false,
+      }));
+
+    await waitFor(() => wsh!.frames.some(f => f.type === 'message'), 2000);
+    const f = wsh.frames.find(x => x.type === 'message')!;
+    assert.strictEqual((f.data as { id: string }).id, 'm-ws-1');
+  });
+
+  test('ws_clients in /health reflects open WebSocket', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    wsh = openWs(state, '/api/v1/messages/stream', {
+      'Sec-WebSocket-Protocol': `bearer.${t.token}`,
+    });
+    await wsh.open;
+    await waitFor(() => state!.wsClients!.size >= 1, 1000);
+    const r = await request(state, 'GET', '/health');
+    const parsed = JSON.parse(r.body) as { ws_clients: number };
+    assert.strictEqual(parsed.ws_clients, 1);
+  });
+
+  test('client close removes ws_clients entry and unsubscribes from bus', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    wsh = openWs(state, '/api/v1/messages/stream', {
+      'Sec-WebSocket-Protocol': `bearer.${t.token}`,
+    });
+    await wsh.open;
+    await waitFor(() => state!.wsClients!.size >= 1, 1000);
+    const before = state.bus!.subscriberCount('message');
+    assert.ok(before >= 1);
+    wsh.close(); wsh = null;
+    await waitFor(() => state!.wsClients!.size === 0, 2000);
+    assert.strictEqual(state.bus!.subscriberCount('message'), before - 1);
+  });
+});
