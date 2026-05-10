@@ -31,7 +31,23 @@ export interface ManifestTask {
   scope: string[];
   effort: EffortSize;
   subtasks: string[];
+  /**
+   * Optional capability tags required to perform the task (e.g. "go",
+   * "typescript", "security-review"). Used by the capability-aware
+   * scorer (see `scoreAgent`) — when empty, every agent matches with
+   * full capability score.
+   */
+  required_capabilities?: string[];
 }
+
+/**
+ * Alias for `ManifestTask` used by the capability-aware scorer.
+ * Distinct name documents the scoring contract: the planner only
+ * needs the subset of fields used by `scoreAgent`. Any future
+ * planner-only fields (e.g. derived effort estimates) attach here
+ * without polluting the manifest schema.
+ */
+export type PlannedTask = ManifestTask;
 
 export interface ManifestConstraints {
   mutual_exclusion?: string[][];
@@ -341,6 +357,118 @@ const EFFORT_DAYS: Record<EffortSize, number> = {
   L: 5,
   XL: 8,
 };
+
+/**
+ * Effort size → estimated hours, used by `scoreAgent` for cost normalisation.
+ * Distinct from `EFFORT_DAYS` (used for sprint estimated_days) to keep the
+ * scoring formula tunable without disturbing existing sprint-duration math.
+ */
+const EFFORT_HOURS: Record<EffortSize, number> = {
+  S: 2,
+  M: 4,
+  L: 8,
+  XL: 16,
+};
+
+// ---------------------------------------------------------------------------
+// Capability-aware Scorer (Phase 3 router)
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal RegisteredAgent shape consumed by `scoreAgent`. Mirrors the
+ * v2 fields on `comms.RegisteredAgent` that drive scoring; declared here
+ * so `orchestrate.ts` does not depend on `comms.ts` types and existing
+ * AgentRegistryEntry consumers can be passed through unchanged.
+ */
+export interface ScorableAgent {
+  capabilities?: string[];
+  trust_level?: 'untrusted' | 'low' | 'medium' | 'high';
+  cost_budget?: { hourly_usd?: number; daily_usd?: number; per_task_usd?: number };
+  max_parallel_tasks?: number;
+  /**
+   * In-flight task count for this agent in the currently-being-planned
+   * sprint. Defaults to 0. Pass via the optional `context` arg of
+   * `scoreAgent` rather than mutating the agent.
+   */
+  in_flight?: number;
+  /**
+   * Languages the agent can target (e.g. ["go", "typescript"]). Used to
+   * boost capability_match when the task's required capabilities overlap.
+   * Optional; absence weights capability_match by 0.5 (the "language
+   * uncertain" default in the spec).
+   */
+  languages_supported?: string[];
+}
+
+/** Compute the Jaccard index between two arrays treated as sets. */
+export function jaccardIndex(a: string[], b: string[]): number {
+  if (a.length === 0 && b.length === 0) { return 1; }
+  const setA = new Set(a);
+  const setB = new Set(b);
+  let intersection = 0;
+  for (const x of setA) { if (setB.has(x)) { intersection++; } }
+  const union = setA.size + setB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/** Map a TrustLevel onto a [0,1] weight; missing trust → 0.5 (neutral). */
+export function trustWeight(level?: ScorableAgent['trust_level']): number {
+  switch (level) {
+    case 'untrusted': return 0;
+    case 'low':       return 0.4;
+    case 'medium':    return 0.7;
+    case 'high':      return 1.0;
+    default:          return 0.5;
+  }
+}
+
+/**
+ * Score an agent for a task per the Phase 3 fabric formula:
+ *
+ *   capability_match = jaccard(agent.capabilities, task.required_capabilities)
+ *                      × (languages_supported overlaps task ? 1.0 : 0.5)
+ *   trust_score      = trustWeight(agent.trust_level)
+ *   idle_factor      = max(0, max_parallel - in_flight) / max_parallel
+ *   estimated_cost   = max(0.01, effort_hours × hourly_usd)
+ *   score            = capability_match × trust_score × idle_factor / estimated_cost
+ *
+ * Returns a non-negative number; higher = better fit. A score of 0
+ * indicates the agent is either fully trust-blocked, fully busy, or
+ * has no capability overlap on a task that requires capabilities.
+ */
+export function scoreAgent(agent: ScorableAgent, task: PlannedTask): number {
+  const required = task.required_capabilities ?? [];
+  const agentCaps = agent.capabilities ?? [];
+
+  // Capability match: Jaccard, then dampened if languages_supported is
+  // missing OR known to not overlap with the task's required caps.
+  const jaccard = jaccardIndex(agentCaps, required);
+  let langFactor = 0.5;
+  if (agent.languages_supported && agent.languages_supported.length > 0) {
+    if (required.length === 0) {
+      // No language requirement on the task → don't penalise the agent.
+      langFactor = 1.0;
+    } else {
+      const overlap = agent.languages_supported.some(l => required.includes(l));
+      langFactor = overlap ? 1.0 : 0.5;
+    }
+  }
+  const capabilityMatch = jaccard * langFactor;
+
+  const trustScore = trustWeight(agent.trust_level);
+
+  const maxParallel = agent.max_parallel_tasks ?? 1;
+  const inFlight = agent.in_flight ?? 0;
+  const idleFactor = maxParallel > 0
+    ? Math.max(0, maxParallel - inFlight) / maxParallel
+    : 0;
+
+  const hours = EFFORT_HOURS[task.effort];
+  const hourlyUsd = agent.cost_budget?.hourly_usd ?? 1.0;
+  const estimatedCost = Math.max(0.01, hours * hourlyUsd);
+
+  return (capabilityMatch * trustScore * idleFactor) / estimatedCost;
+}
 
 /**
  * Plan sprints from a DAG and constraints.

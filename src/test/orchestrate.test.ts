@@ -17,6 +17,9 @@ import {
   renderSprintMarkdown,
   writeSprintArtifacts,
   writePlanArtifacts,
+  scoreAgent,
+  jaccardIndex,
+  trustWeight,
 } from '../orchestrate';
 import type {
   ManifestTask,
@@ -24,6 +27,8 @@ import type {
   PlannerConfig,
   DAG,
   Sprint,
+  ScorableAgent,
+  PlannedTask,
 } from '../orchestrate';
 
 // ---------------------------------------------------------------------------
@@ -962,3 +967,161 @@ suite('Orchestrate — Sprint Markdown rendering', () => {
     assert.strictEqual(headerCount, 1, 'exactly one GENERATED header');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Capability-aware scorer (Phase 3 router)
+// ---------------------------------------------------------------------------
+
+suite('Orchestrate — jaccardIndex / trustWeight helpers', () => {
+  test('jaccardIndex of two empty arrays is 1 (vacuously true)', () => {
+    assert.strictEqual(jaccardIndex([], []), 1);
+  });
+
+  test('jaccardIndex of disjoint sets is 0', () => {
+    assert.strictEqual(jaccardIndex(['go'], ['typescript']), 0);
+  });
+
+  test('jaccardIndex of identical sets is 1', () => {
+    assert.strictEqual(jaccardIndex(['go', 'sql'], ['sql', 'go']), 1);
+  });
+
+  test('jaccardIndex of partial overlap is intersection / union', () => {
+    // {a,b,c} vs {b,c,d} → intersection 2, union 4 → 0.5
+    assert.strictEqual(jaccardIndex(['a', 'b', 'c'], ['b', 'c', 'd']), 0.5);
+  });
+
+  test('trustWeight maps the four levels deterministically', () => {
+    assert.strictEqual(trustWeight('untrusted'), 0);
+    assert.strictEqual(trustWeight('low'), 0.4);
+    assert.strictEqual(trustWeight('medium'), 0.7);
+    assert.strictEqual(trustWeight('high'), 1.0);
+    assert.strictEqual(trustWeight(undefined), 0.5);
+  });
+});
+
+suite('Orchestrate — scoreAgent', () => {
+  function makePlanned(
+    id: string,
+    required: string[] = [],
+    effort: 'S' | 'M' | 'L' | 'XL' = 'M'
+  ): PlannedTask {
+    return {
+      id,
+      name: id,
+      depends_on: [],
+      scope: [`internal/${id}/**`],
+      effort,
+      subtasks: [],
+      required_capabilities: required,
+    };
+  }
+
+  test('untrusted agent always scores 0 regardless of fit', () => {
+    const agent: ScorableAgent = {
+      capabilities: ['go'],
+      trust_level: 'untrusted',
+      max_parallel_tasks: 4,
+    };
+    const score = scoreAgent(agent, makePlanned('t', ['go']));
+    assert.strictEqual(score, 0);
+  });
+
+  test('zero capability overlap on a typed task scores 0', () => {
+    const agent: ScorableAgent = {
+      capabilities: ['rust'],
+      trust_level: 'high',
+      max_parallel_tasks: 4,
+    };
+    const score = scoreAgent(agent, makePlanned('t', ['go']));
+    assert.strictEqual(score, 0);
+  });
+
+  test('saturated agent (in_flight = max_parallel_tasks) scores 0', () => {
+    const agent: ScorableAgent = {
+      capabilities: ['go'],
+      trust_level: 'high',
+      max_parallel_tasks: 2,
+      in_flight: 2,
+    };
+    const score = scoreAgent(agent, makePlanned('t', ['go']));
+    assert.strictEqual(score, 0);
+  });
+
+  test('higher trust agent outscores lower trust on identical capability fit', () => {
+    const high: ScorableAgent = {
+      capabilities: ['go'], trust_level: 'high', max_parallel_tasks: 1,
+      languages_supported: ['go'],
+    };
+    const low: ScorableAgent = {
+      capabilities: ['go'], trust_level: 'low', max_parallel_tasks: 1,
+      languages_supported: ['go'],
+    };
+    const task = makePlanned('t', ['go']);
+    assert.ok(scoreAgent(high, task) > scoreAgent(low, task));
+  });
+
+  test('language overlap doubles capability_match relative to no-overlap', () => {
+    const overlap: ScorableAgent = {
+      capabilities: ['go'], trust_level: 'high', max_parallel_tasks: 1,
+      languages_supported: ['go'],
+    };
+    const noOverlap: ScorableAgent = {
+      capabilities: ['go'], trust_level: 'high', max_parallel_tasks: 1,
+      languages_supported: ['rust'],
+    };
+    const task = makePlanned('t', ['go']);
+    const sOverlap = scoreAgent(overlap, task);
+    const sNo = scoreAgent(noOverlap, task);
+    assert.ok(sOverlap > 0 && sNo > 0);
+    // 1.0 vs 0.5 multiplier on capability_match
+    assert.ok(Math.abs(sOverlap / sNo - 2) < 1e-9, `expected 2x ratio, got ${sOverlap / sNo}`);
+  });
+
+  test('idle_factor scales linearly with remaining capacity', () => {
+    const idle: ScorableAgent = {
+      capabilities: ['go'], trust_level: 'high', max_parallel_tasks: 4,
+      in_flight: 0, languages_supported: ['go'],
+    };
+    const half: ScorableAgent = { ...idle, in_flight: 2 };
+    const task = makePlanned('t', ['go']);
+    const sIdle = scoreAgent(idle, task);
+    const sHalf = scoreAgent(half, task);
+    // idle = (4-0)/4 = 1.0; half = (4-2)/4 = 0.5
+    assert.ok(Math.abs(sIdle / sHalf - 2) < 1e-9, `expected 2x ratio, got ${sIdle / sHalf}`);
+  });
+
+  test('cheaper agent (lower hourly_usd) outscores expensive on equal fit', () => {
+    const cheap: ScorableAgent = {
+      capabilities: ['go'], trust_level: 'high', max_parallel_tasks: 1,
+      cost_budget: { hourly_usd: 0.5 }, languages_supported: ['go'],
+    };
+    const pricey: ScorableAgent = {
+      capabilities: ['go'], trust_level: 'high', max_parallel_tasks: 1,
+      cost_budget: { hourly_usd: 5 }, languages_supported: ['go'],
+    };
+    const task = makePlanned('t', ['go']);
+    assert.ok(scoreAgent(cheap, task) > scoreAgent(pricey, task));
+  });
+
+  test('all-default agent on a no-cap task still scores > 0 (registry under-populated)', () => {
+    // No capabilities, no trust, no cost — but task has no required caps,
+    // so jaccard({}, {}) = 1 and scoring still produces a positive value.
+    const blank: ScorableAgent = {};
+    const task = makePlanned('t', []);
+    const score = scoreAgent(blank, task);
+    assert.ok(score > 0, `expected positive score, got ${score}`);
+  });
+
+  test('higher-effort task lowers score (cost normalisation)', () => {
+    const agent: ScorableAgent = {
+      capabilities: ['go'], trust_level: 'high', max_parallel_tasks: 1,
+      languages_supported: ['go'],
+    };
+    const small = scoreAgent(agent, makePlanned('s', ['go'], 'S'));
+    const large = scoreAgent(agent, makePlanned('l', ['go'], 'XL'));
+    // S = 2h, XL = 16h, ratio 8
+    assert.ok(small > large);
+    assert.ok(Math.abs(small / large - 8) < 1e-9, `expected 8x ratio, got ${small / large}`);
+  });
+});
+
