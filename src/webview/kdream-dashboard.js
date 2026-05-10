@@ -60,6 +60,10 @@
         case 'updateMessages': renderMessages(data); break;
         case 'updateSprints': renderSprints(data); break;
         case 'updateTimeline': renderTimeline(data); break;
+        // v2.5 panel additions
+        case 'updateAgentCards': renderAgentCardsHtml(data); break;
+        case 'updateAwaitingYou': renderAwaitingYouHtml(data); break;
+        case 'updateFabricHealth': renderFabricHealthHtml(data); break;
         // Errors
         case 'error': showError(data); break;
       }
@@ -91,6 +95,68 @@
       h += '</tr>';
     }
     el.innerHTML = h + '</table>';
+  }
+
+  // ── v2.5 Agent cards (HTML pre-rendered server-side) ──────────────
+  function renderAgentCardsHtml(payload) {
+    const el = document.getElementById('agents-content');
+    if (!el) return;
+    const html = (payload && typeof payload.html === 'string') ? payload.html : '';
+    const count = (payload && typeof payload.count === 'number') ? payload.count : 0;
+    el.innerHTML = html || '<p class="empty">No agents detected.</p>';
+    setBadge('agents-badge', String(count));
+    // Wire up expand/collapse + Reply buttons after each render.
+    el.querySelectorAll('.agent-card-head').forEach(head => {
+      head.addEventListener('click', () => toggleAgentCard(head));
+      head.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggleAgentCard(head);
+        }
+      });
+    });
+  }
+
+  function toggleAgentCard(head) {
+    const card = head.closest('.agent-card');
+    if (!card) return;
+    const isOpen = card.classList.toggle('open');
+    head.setAttribute('aria-expanded', String(isOpen));
+    const body = head.parentElement?.querySelector('.agent-card-body');
+    if (body) {
+      if (isOpen) body.removeAttribute('hidden'); else body.setAttribute('hidden', '');
+    }
+  }
+
+  // ── v2.5 Awaiting You section ─────────────────────────────────────
+  function renderAwaitingYouHtml(payload) {
+    const el = document.getElementById('awaiting-you-content');
+    if (!el) return;
+    const html = (payload && typeof payload.html === 'string') ? payload.html : '';
+    const count = (payload && typeof payload.count === 'number') ? payload.count : 0;
+    el.innerHTML = html || '<p class="empty">Nothing awaiting your response.</p>';
+    setBadge('awaiting-you-badge', String(count));
+    const section = document.getElementById('awaiting-you-section');
+    if (section) {
+      // Auto-open when there is anything to show.
+      if (count > 0) section.classList.add('open');
+    }
+    // Wire Reply buttons
+    el.querySelectorAll('.reply-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const messageId = btn.getAttribute('data-message-id');
+        const from = btn.getAttribute('data-from');
+        const type = btn.getAttribute('data-type');
+        vscode.postMessage({ command: 'replyAwaiting', messageId, from, type });
+      });
+    });
+  }
+
+  // ── v2.5 Fabric health badges ─────────────────────────────────────
+  function renderFabricHealthHtml(payload) {
+    const el = document.getElementById('fabric-health-bar');
+    if (!el) return;
+    el.innerHTML = (payload && typeof payload.html === 'string') ? payload.html : '';
   }
 
   // ── Sprints section ───────────────────────────────────────────────

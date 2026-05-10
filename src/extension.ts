@@ -64,8 +64,14 @@ import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistry
 import { registerChatParticipant } from './chatparticipant';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat, readHeartbeat,
-  cleanupOldMessages, sendMessage, type CommsLogEntry,
+  cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
+  markMessageReplied,
+  type CommsLogEntry, type Message,
 } from './comms';
+import {
+  renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
+  renderFabricHealth, type FabricHealth, type InboxSummary, type AwaitingYouRow,
+} from './webview-render';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
   startBridge, stopBridge, createRemoteAgentToken, revokeToken, readTokens,
@@ -1347,6 +1353,14 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           }
           break;
         }
+        case 'replyAwaiting': {
+          await handleReplyAwaiting(webviewView, {
+            messageId: message.messageId,
+            from: message.from,
+            type: message.type,
+          });
+          break;
+        }
       }
     });
     
@@ -1405,6 +1419,24 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             <button id="btn-launch-skill" class="primary" type="button" aria-label="Launch Skill">&#9889; Launch Skill</button>
             <button id="btn-refresh" type="button" aria-label="Refresh">&#8635; Refresh</button>
             <button id="btn-export" type="button" aria-label="Export Snapshot">&#128230; Export</button>
+        </div>
+
+        <!-- Fabric health badges (bridge + kg-daemon) -->
+        <div class="fabric-health-bar" id="fabric-health-bar" role="status" aria-live="polite" aria-label="Fabric health">
+            <span class="health-badge bridge-poll">bridge: poll</span>
+            <span class="health-badge kg-off">kg: off</span>
+        </div>
+
+        <!-- Awaiting You section (per COORDINATION_IMPROVEMENTS §2.7) -->
+        <div class="panel-section" id="awaiting-you-section">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="awaiting-you-body">
+                <span class="section-chevron"></span>
+                Awaiting You
+                <span class="section-badge" id="awaiting-you-badge">0</span>
+            </div>
+            <div class="section-body" id="awaiting-you-body">
+                <div id="awaiting-you-content" aria-live="polite"><p class="empty">Loading...</p></div>
+            </div>
         </div>
 
         <!-- Agents section -->
@@ -2716,7 +2748,57 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wr) { return; }
   const commsDir = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
-  try { view.webview.postMessage({ command: 'updateAgents', data: await getAgentStatuses(commsDir) }); } catch {}
+  let agents: Awaited<ReturnType<typeof getAgentStatuses>> = [];
+  try { agents = await getAgentStatuses(commsDir); } catch {}
+  try { view.webview.postMessage({ command: 'updateAgents', data: agents }); } catch {}
+
+  // v2.5: per-agent inbox summaries + server-rendered cards
+  const summaries: Record<string, InboxSummary> = {};
+  for (const a of agents) {
+    try {
+      summaries[a.id] = await getInboxSummary(commsDir, a.id);
+    } catch { /* skip */ }
+  }
+  try {
+    view.webview.postMessage({
+      command: 'updateAgentCards',
+      data: {
+        html: renderAgentList(agents, summaries),
+        count: agents.length,
+      },
+    });
+  } catch {}
+
+  // v2.5: Awaiting You list — uses the active host agent as "me".
+  try {
+    const me = activeHostAgentId();
+    if (me) {
+      const messages = await readInbox(commsDir, me);
+      const stateById: Record<string, { replied_at: string | null }> = {};
+      for (const m of messages) {
+        const s = await readMessageState(commsDir, me, m.id);
+        if (s) { stateById[m.id] = { replied_at: s.replied_at }; }
+      }
+      const awaiting = filterAwaitingYou(messages, me, stateById);
+      const rows: AwaitingYouRow[] = awaiting.map(m => ({
+        message: m,
+        excerpt: payloadExcerpt(m.payload as Record<string, unknown>),
+      }));
+      view.webview.postMessage({
+        command: 'updateAwaitingYou',
+        data: {
+          html: renderAwaitingYou(rows),
+          count: rows.length,
+        },
+      });
+    } else {
+      view.webview.postMessage({
+        command: 'updateAwaitingYou',
+        data: { html: renderAwaitingYou([]), count: 0 },
+      });
+    }
+  } catch {}
+
   try { view.webview.postMessage({ command: 'updateMessages', data: await readCommsLog(commsDir, { limit: 50 }) }); } catch {}
   try {
     const sp = path.join(wr, '.autoclaw', 'orchestrator', 'sprints', 'plan-summary.yaml');
@@ -2734,6 +2816,148 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     }
   } catch {}
   try { view.webview.postMessage({ command: 'updateTimeline', data: await readSnapshots(commsDir) }); } catch {}
+
+  // v2.5: Fabric (push-channel + kg-daemon) health.
+  try {
+    const health = await probeFabricHealth();
+    view.webview.postMessage({
+      command: 'updateFabricHealth',
+      data: { html: renderFabricHealth(health) },
+    });
+  } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// v2.5 helpers — host-agent identity, fabric health, and reply orchestration.
+// ---------------------------------------------------------------------------
+
+/** Best-effort "who am I?" for the host running this extension instance.
+ *  Used to populate the "Awaiting You" filter. Falls back to undefined. */
+function activeHostAgentId(): string | undefined {
+  const appName = (vscode.env.appName || '').toLowerCase();
+  if (appName.includes('antigravity')) { return 'antigravity'; }
+  if (appName.includes('kiro')) { return 'kiro'; }
+  if (appName.includes('cursor')) { return 'cursor'; }
+  if (appName.includes('windsurf')) { return 'windsurf'; }
+  // Default VS Code; let the user pick the agent name via setting if needed.
+  const cfg = vscode.workspace.getConfiguration('autoclaw');
+  const explicit = cfg.get<string>('hostAgentId');
+  if (explicit && explicit.length > 0) { return explicit; }
+  return 'claude-code';
+}
+
+/** Probe the local bridge `/api/v1/health` and the kg-daemon to label header
+ *  badges. Always resolves — never throws. */
+async function probeFabricHealth(): Promise<FabricHealth> {
+  const out: FabricHealth = { bridge: 'off', kg: 'off' };
+
+  // Bridge state — only meaningful if the extension actually started one.
+  if (activeBridge?.running) {
+    try {
+      const cfg = activeBridge.config;
+      const body = await httpGetJson(`http://${cfg.host}:${cfg.port}/api/v1/health`, 1000);
+      const sse = typeof body?.sse_clients === 'number' ? body.sse_clients : 0;
+      const ws = typeof body?.ws_clients === 'number' ? body.ws_clients : 0;
+      out.bridge_port = cfg.port;
+      out.sse_clients = sse;
+      out.ws_clients = ws;
+      if (ws > 0) { out.bridge = 'ws'; }
+      else if (sse > 0) { out.bridge = 'sse'; }
+      else { out.bridge = 'poll'; }
+    } catch {
+      out.bridge = 'poll';
+    }
+  } else {
+    out.bridge = 'off';
+  }
+
+  // KG daemon — opt-in. We only set 'running' when the child is alive AND
+  // the health endpoint answers ok. Otherwise label appropriately.
+  if (activeKg?.child && activeKg.child.exitCode === null) {
+    try {
+      const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
+      const port = kgCfg.get<number>('port', 9877);
+      const r = await fetchKgHealth(port);
+      out.kg = r.ok ? 'running' : 'unreachable';
+    } catch {
+      out.kg = 'unreachable';
+    }
+  } else {
+    out.kg = 'off';
+  }
+
+  return out;
+}
+
+/** Tiny GET-JSON helper — uses node http. Resolves null on any failure. */
+function httpGetJson(url: string, timeoutMs: number): Promise<Record<string, unknown> | null> {
+  return new Promise((resolve) => {
+    try {
+      const u = new URL(url);
+      const http = require('http') as typeof import('http');
+      const req = http.request(
+        {
+          host: u.hostname,
+          port: u.port,
+          path: u.pathname + u.search,
+          method: 'GET',
+          timeout: timeoutMs,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+            } catch { resolve(null); }
+          });
+        }
+      );
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { try { req.destroy(); } catch {} resolve(null); });
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+/** Handle a Reply click from the Awaiting You panel: prompt user for body
+ *  text, write a `review_response` or `answer` message back to the sender's
+ *  inbox, and mark the original message replied. */
+async function handleReplyAwaiting(
+  view: vscode.WebviewView,
+  args: { messageId?: string; from?: string; type?: string }
+): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr || !args.messageId || !args.from) { return; }
+  const commsDir = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+  const me = activeHostAgentId();
+  if (!me) { return; }
+
+  const body = await vscode.window.showInputBox({
+    prompt: `Reply to ${args.from} (${args.type ?? 'message'})`,
+    placeHolder: 'Type your reply…',
+    ignoreFocusOut: true,
+  });
+  if (!body) { return; }
+
+  const responseType: Message['type'] = args.type === 'question' ? 'answer' : 'review_response';
+
+  try {
+    await sendMessage(commsDir, {
+      id: '',
+      from: me,
+      to: args.from,
+      type: responseType,
+      timestamp: '',
+      payload: { in_reply_to: args.messageId, body },
+      requires_response: false,
+    });
+    await markMessageReplied(commsDir, me, args.messageId);
+    vscode.window.showInformationMessage(`Reply sent to ${args.from}.`);
+    await refreshOrchestratorData(view);
+  } catch (e) {
+    vscode.window.showWarningMessage(`Reply failed: ${(e as Error).message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
