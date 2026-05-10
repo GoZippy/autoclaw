@@ -483,5 +483,8 @@
   },
   "dependencies": {
     "ws": "^8.20.0"
+  },
+  "optionalDependencies": {
+    "nats": "^2.29.0"
   }
 }

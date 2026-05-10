@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { createFabricBus, compileTopicMatcher } from '../fabric';
+import { createFabricBus, compileTopicMatcher, type FabricBus } from '../fabric';
 import { BridgeEventBus } from '../bridge';
 
 // ---------------------------------------------------------------------------
@@ -80,6 +80,55 @@ suite('FabricBus — ws driver', () => {
     await bus.publish('any.thing', 1);
     // After close, fanout is severed.
     assert.strictEqual(count, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// nats driver
+// ---------------------------------------------------------------------------
+
+suite('FabricBus — nats driver fallback', () => {
+  test('falls back to fs driver and warns when import throws', async () => {
+    const warnings: string[] = [];
+    const bus: FabricBus = await createFabricBus({
+      driver: 'nats',
+      _mockImport: async () => { throw new Error('Cannot find module \'nats\''); },
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    try {
+      assert.strictEqual(bus.driver, 'fs');
+      assert.ok(warnings.length === 1, `expected one warning, got ${warnings.length}`);
+      assert.match(warnings[0], /nats package not available/);
+    } finally { await bus.close(); }
+  });
+
+  test('falls back to fs driver when import returns no connect() entry', async () => {
+    const warnings: string[] = [];
+    const bus = await createFabricBus({
+      driver: 'nats',
+      _mockImport: async () => ({ /* no connect */ }),
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    try {
+      assert.strictEqual(bus.driver, 'fs');
+      assert.match(warnings[0], /no connect\(\) entry/);
+    } finally { await bus.close(); }
+  });
+
+  test('falls back to fs driver when connect() rejects (server unreachable)', async () => {
+    const warnings: string[] = [];
+    const bus = await createFabricBus({
+      driver: 'nats',
+      natsUrl: 'nats://127.0.0.1:1', // guaranteed-unreachable
+      _mockImport: async () => ({
+        connect: async () => { throw new Error('ECONNREFUSED'); },
+      }),
+      logger: { warn: (m) => warnings.push(m) },
+    });
+    try {
+      assert.strictEqual(bus.driver, 'fs');
+      assert.match(warnings[0], /could not connect to NATS/);
+    } finally { await bus.close(); }
   });
 });
 

@@ -11,8 +11,7 @@
  * is a fanout for ephemeral events and a future fast-path for durable
  * envelopes (callers always FS-write first, then publish to the bus).
  *
- * Driver inventory (this file as of stage 1: fs + ws only; nats arrives in a
- * follow-up commit):
+ * Three drivers:
  *   - `fs`   No-op pub/sub. comms.ts already writes to disk; the FS driver
  *            simply records stats and returns. publish/subscribe are
  *            silent — subscribers will not see published messages because
@@ -20,6 +19,11 @@
  *   - `ws`   Wraps the existing in-process `BridgeEventBus` from bridge.ts.
  *            publish() forwards to BridgeEventBus.publish(); subscribe()
  *            registers a handler. Useful for tests and SSE/WS push paths.
+ *   - `nats` Lazy-loaded NATS client (the `nats` npm package). Listed under
+ *            `optionalDependencies` in package.json so installs without it
+ *            still succeed. If the package can't be loaded or the server
+ *            can't be reached, this driver falls back gracefully to the
+ *            `fs` no-op driver and emits a one-line warning.
  *
  * Important: this module MUST NOT import `vscode`. It is unit-tested in
  * plain Mocha. Anything VS Code-specific lives in extension.ts.
@@ -44,10 +48,25 @@ export interface FabricBus {
   stats(): { driver: BusDriver; subscribers: number; published: number };
 }
 
+/**
+ * Optional override hook passed to {@link createFabricBus} for tests. When
+ * provided, it replaces the dynamic `import('nats')` call so unit tests can
+ * simulate "nats package missing" without touching the real module loader.
+ * Internal — not part of the production contract.
+ */
+export type NatsImporter = () => Promise<unknown>;
+
 export interface CreateFabricBusOptions {
   driver: BusDriver;
   /** Used by the `nats` driver. Defaults to `nats://127.0.0.1:4222`. */
   natsUrl?: string;
+  /**
+   * Test seam: if the `nats` driver is requested, this function is awaited
+   * instead of the real `import('nats')`. A return value missing
+   * `connect()` or a thrown error triggers the documented graceful fallback
+   * to the `fs` driver. Production callers leave this unset.
+   */
+  _mockImport?: NatsImporter;
   /**
    * Optional pre-built `BridgeEventBus` used by the `ws` driver. When unset,
    * the driver creates its own bus. Production code passes the same bus
@@ -187,6 +206,95 @@ class WsBus implements FabricBus {
 }
 
 // ---------------------------------------------------------------------------
+// `nats` driver — dynamically loaded
+// ---------------------------------------------------------------------------
+
+/** Minimal subset of the `nats` package surface we use. */
+interface NatsConnectionLike {
+  publish(subject: string, payload: Uint8Array): void;
+  subscribe(subject: string, opts?: unknown): NatsSubscriptionLike;
+  close(): Promise<void>;
+  /** The real `nats` lib exposes a closed promise that resolves on disconnect. */
+  closed?(): Promise<void | Error>;
+}
+
+interface NatsSubscriptionLike {
+  unsubscribe(): void;
+  /** AsyncIterable<NatsMsg> */
+  [Symbol.asyncIterator](): AsyncIterator<NatsMessageLike>;
+}
+
+interface NatsMessageLike {
+  subject: string;
+  data: Uint8Array;
+}
+
+interface NatsModuleLike {
+  connect(opts: { servers: string | string[] }): Promise<NatsConnectionLike>;
+}
+
+class NatsBus implements FabricBus {
+  readonly driver: BusDriver = 'nats';
+  private subscribers = 0;
+  private published = 0;
+  private subs: NatsSubscriptionLike[] = [];
+  private closed = false;
+  private encoder = new TextEncoder();
+  private decoder = new TextDecoder();
+
+  constructor(private readonly nc: NatsConnectionLike) { /* nothing to do */ }
+
+  async publish(topic: string, data: unknown): Promise<void> {
+    if (this.closed) { return; }
+    const payload = this.encoder.encode(JSON.stringify(data ?? null));
+    this.nc.publish(topic, payload);
+    this.published++;
+  }
+
+  async subscribe(
+    pattern: string,
+    handler: (topic: string, data: unknown) => void
+  ): Promise<() => void> {
+    if (this.closed) { return () => { /* noop */ }; }
+    const sub = this.nc.subscribe(pattern);
+    this.subs.push(sub);
+    this.subscribers++;
+    // Drain the async iterator in the background; one consumer per sub.
+    (async () => {
+      try {
+        for await (const m of sub) {
+          let data: unknown = null;
+          try { data = JSON.parse(this.decoder.decode(m.data)); } catch { data = null; }
+          try { handler(m.subject, data); }
+          catch (e) { console.error('FabricBus(nats) handler error:', e); }
+        }
+      } catch { /* unsubscribed or connection closed */ }
+    })();
+    let live = true;
+    return () => {
+      if (!live) { return; }
+      live = false;
+      this.subscribers = Math.max(0, this.subscribers - 1);
+      try { sub.unsubscribe(); } catch { /* ignore */ }
+      this.subs = this.subs.filter(s => s !== sub);
+    };
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) { return; }
+    this.closed = true;
+    for (const s of this.subs.splice(0)) {
+      try { s.unsubscribe(); } catch { /* ignore */ }
+    }
+    try { await this.nc.close(); } catch { /* ignore */ }
+  }
+
+  stats(): { driver: BusDriver; subscribers: number; published: number } {
+    return { driver: this.driver, subscribers: this.subscribers, published: this.published };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Topic matcher (used by ws driver and any future driver that needs
 // client-side filtering)
 // ---------------------------------------------------------------------------
@@ -219,9 +327,8 @@ export function compileTopicMatcher(pattern: string): (topic: string) => boolean
 
 /**
  * Create a {@link FabricBus} for the given driver. See the module header for
- * driver semantics. A request for the `nats` driver in this stage returns
- * the `fs` driver with a warning — the real implementation lands in a
- * follow-up commit.
+ * driver semantics. Never throws on a missing optional `nats` dependency —
+ * that case logs a warning and returns the `fs` driver.
  */
 export async function createFabricBus(opts: CreateFabricBusOptions): Promise<FabricBus> {
   const logger = opts.logger ?? console;
@@ -235,7 +342,28 @@ export async function createFabricBus(opts: CreateFabricBusOptions): Promise<Fab
     return new WsBus(bus);
   }
 
-  // driver === 'nats' — placeholder until the nats driver lands.
-  logger.warn('FabricBus: nats driver not yet implemented; falling back to fs driver');
-  return new FsBus();
+  // driver === 'nats'
+  // The cast to `string` defeats tsc's static module resolution so this file
+  // compiles cleanly when the optional `nats` package is not installed.
+  const importer: NatsImporter = opts._mockImport ?? (() => import('nats' as string));
+  let mod: unknown;
+  try {
+    mod = await importer();
+  } catch (e) {
+    logger.warn(`FabricBus: nats package not available (${(e as Error).message}); falling back to fs driver`);
+    return new FsBus();
+  }
+  if (!mod || typeof (mod as NatsModuleLike).connect !== 'function') {
+    logger.warn('FabricBus: nats package returned no connect() entry point; falling back to fs driver');
+    return new FsBus();
+  }
+
+  const url = opts.natsUrl ?? 'nats://127.0.0.1:4222';
+  try {
+    const nc = await (mod as NatsModuleLike).connect({ servers: url });
+    return new NatsBus(nc);
+  } catch (e) {
+    logger.warn(`FabricBus: could not connect to NATS at ${url} (${(e as Error).message}); falling back to fs driver`);
+    return new FsBus();
+  }
 }
