@@ -13,14 +13,66 @@ import {
 } from './comms';
 import {
   evaluateConsensus, DEFAULT_CONSENSUS_CONFIG,
-  type ValidationVote,
+  type ValidationVote, type ConsensusResult,
 } from './orchestrate';
 
 const fsPromises = fs.promises;
 
 export interface BridgeConfig { port: number; host: string; commsDir: string; tokensPath: string; }
 export interface RemoteAgentToken { agent_id: string; token: string; created_at: string; expires_at: string; scopes: string[]; }
-export interface BridgeState { server: http.Server | null; config: BridgeConfig; running: boolean; }
+export interface BridgeState {
+  server: http.Server | null;
+  config: BridgeConfig;
+  running: boolean;
+  bus?: BridgeEventBus;
+  sseClients?: Set<unknown>;
+  wsClients?: Set<unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// BridgeEventBus — in-process pub/sub for push channels (SSE + WS).
+// ---------------------------------------------------------------------------
+
+/** Event types the bridge publishes. Names mirror NATS subjects we'll use later. */
+export type BridgeEventType = 'message' | 'heartbeat' | 'consensus';
+
+/** Payload shapes for each event. The data is the JSON object we wrote to disk. */
+export interface BridgeEventData {
+  message: Message;
+  heartbeat: Heartbeat;
+  consensus: ConsensusResult;
+}
+
+export type BridgeEventHandler<T extends BridgeEventType = BridgeEventType> =
+  (data: BridgeEventData[T]) => void;
+
+/** Minimal in-memory pub/sub. Per-event subscriber lists; subscribe returns
+ *  an unsubscribe function. publish() catches handler errors so one bad
+ *  subscriber can't break the others. */
+export class BridgeEventBus {
+  private handlers: Map<BridgeEventType, Set<BridgeEventHandler>> = new Map();
+
+  subscribe<T extends BridgeEventType>(eventType: T, handler: BridgeEventHandler<T>): () => void {
+    let set = this.handlers.get(eventType);
+    if (!set) { set = new Set(); this.handlers.set(eventType, set); }
+    set.add(handler as BridgeEventHandler);
+    return () => { set!.delete(handler as BridgeEventHandler); };
+  }
+
+  publish<T extends BridgeEventType>(eventType: T, data: BridgeEventData[T]): void {
+    const set = this.handlers.get(eventType);
+    if (!set) { return; }
+    for (const h of set) {
+      try { (h as BridgeEventHandler<T>)(data); }
+      catch (e) { console.error(`BridgeEventBus handler error (${eventType}):`, e); }
+    }
+  }
+
+  /** Test/diagnostic helper: number of subscribers for an event type. */
+  subscriberCount(eventType: BridgeEventType): number {
+    return this.handlers.get(eventType)?.size ?? 0;
+  }
+}
 
 export function generateToken(): string { return `acl_${crypto.randomBytes(32).toString('hex')}`; }
 
@@ -52,6 +104,16 @@ export async function validateToken(tokensPath: string, auth: string | undefined
   return m;
 }
 
+/** Validate a raw token string (no "Bearer " prefix). Used for SSE/WS where
+ *  the token comes via subprotocol or query param rather than Authorization. */
+export async function validateRawToken(tokensPath: string, raw: string | undefined): Promise<RemoteAgentToken | null> {
+  if (!raw) { return null; }
+  const tokens = await readTokens(tokensPath);
+  const m = tokens.find(t => t.token === raw);
+  if (!m || new Date(m.expires_at).getTime() < Date.now()) { return null; }
+  return m;
+}
+
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     const c: Buffer[] = [];
@@ -70,8 +132,24 @@ function err(res: http.ServerResponse, status: number, msg: string): void {
   json(res, status, { error: { code: status, message: msg } });
 }
 
-export function createBridgeServer(config: BridgeConfig): http.Server {
-  return http.createServer(async (req, res) => {
+export interface CreateBridgeServerOptions {
+  /** Optional shared event bus. If omitted, the server creates its own. */
+  bus?: BridgeEventBus;
+  /** Optional shared SSE-client set. */
+  sseClients?: Set<http.ServerResponse>;
+  /** Optional shared WS-client set (opaque — ws lib types not pulled into core). */
+  wsClients?: Set<unknown>;
+}
+
+export function createBridgeServer(
+  config: BridgeConfig,
+  opts: CreateBridgeServerOptions = {}
+): http.Server {
+  const bus = opts.bus ?? new BridgeEventBus();
+  const sseClients = opts.sseClients ?? new Set<http.ServerResponse>();
+  const wsClients = opts.wsClients ?? new Set<unknown>();
+
+  const server = http.createServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://${req.headers.host}`);
     const method = req.method?.toUpperCase() || 'GET';
     const p = url.pathname;
@@ -81,9 +159,32 @@ export function createBridgeServer(config: BridgeConfig): http.Server {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     if (method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-    if (p === '/health' && method === 'GET') { return json(res, 200, { status: 'ok', version: '2.0.0', port: config.port }); }
+    if (p === '/health' && method === 'GET') {
+      return json(res, 200, {
+        status: 'ok', version: '2.0.0', port: config.port,
+        sse_clients: sseClients.size, ws_clients: wsClients.size,
+      });
+    }
+    if (p === '/api/v1/health' && method === 'GET') {
+      return json(res, 200, {
+        status: 'ok', version: '2.0.0', port: config.port,
+        sse_clients: sseClients.size, ws_clients: wsClients.size,
+      });
+    }
 
     if (p.startsWith('/api/')) {
+      // SSE stream: handled separately because handshake needs different headers
+      // and a long-lived response. Token comes from Authorization header OR a
+      // ?token= query param so plain `EventSource` can authenticate.
+      if (p === '/api/v1/messages/stream' && method === 'GET') {
+        const headerTok = req.headers.authorization?.startsWith('Bearer ')
+          ? req.headers.authorization.slice(7) : undefined;
+        const queryTok = url.searchParams.get('token') ?? undefined;
+        const tok = await validateRawToken(config.tokensPath, headerTok ?? queryTok);
+        if (!tok) { return err(res, 401, 'Invalid or expired token'); }
+        return handleSseStream(req, res, url, tok, bus, sseClients);
+      }
+
       const token = await validateToken(config.tokensPath, req.headers.authorization);
       if (!token) { return err(res, 401, 'Invalid or expired token'); }
 
@@ -94,6 +195,7 @@ export function createBridgeServer(config: BridgeConfig): http.Server {
           try { msg = JSON.parse(body); } catch { return err(res, 400, 'Invalid JSON'); }
           if (msg.from !== token.agent_id) { return err(res, 403, 'Agent ID mismatch'); }
           const fp = await sendMessage(config.commsDir, msg);
+          bus.publish('message', msg);
           return json(res, 201, { ok: true, message_id: msg.id, path: fp });
         }
         if (p === '/api/v1/messages' && method === 'GET') {
@@ -107,6 +209,7 @@ export function createBridgeServer(config: BridgeConfig): http.Server {
           try { hb = JSON.parse(body); } catch { return err(res, 400, 'Invalid JSON'); }
           if (hb.agent_id !== token.agent_id) { return err(res, 403, 'Agent ID mismatch'); }
           await writeHeartbeat(config.commsDir, hb);
+          bus.publish('heartbeat', hb);
           return json(res, 200, { ok: true });
         }
         if (p === '/api/v1/status' && method === 'GET') {
@@ -157,6 +260,7 @@ export function createBridgeServer(config: BridgeConfig): http.Server {
             task_id: tid,
             message: `${token.agent_id} evaluated ${tid}: ${result.status} (${result.final_verdict})`,
           });
+          bus.publish('consensus', result);
           return json(res, 200, result);
         }
         const cm = p.match(/^\/api\/v1\/consensus\/(.+)$/);
@@ -174,6 +278,101 @@ export function createBridgeServer(config: BridgeConfig): http.Server {
     }
     err(res, 404, 'Not found');
   });
+
+  // Stash the bus & client sets on the server object so startBridge can wire
+  // the WebSocket upgrade handler against the same instances.
+  (server as unknown as { __bridgeBus: BridgeEventBus }).__bridgeBus = bus;
+  (server as unknown as { __sseClients: Set<http.ServerResponse> }).__sseClients = sseClients;
+  (server as unknown as { __wsClients: Set<unknown> }).__wsClients = wsClients;
+
+  return server;
+}
+
+// ---------------------------------------------------------------------------
+// SSE handler — long-lived `text/event-stream` response.
+// ---------------------------------------------------------------------------
+
+/** SSE keepalive interval (ms). Must be < typical proxy idle timeout (~60s). */
+export const SSE_KEEPALIVE_MS = 25_000;
+
+function sseWrite(res: http.ServerResponse, eventType: string, data: unknown): void {
+  // Each SSE event is `event: <type>\ndata: <json>\n\n`. We JSON.stringify the
+  // payload on a single line; SSE forbids a literal newline inside a data
+  // field unless it's split into multiple `data:` lines.
+  const line = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+  try { res.write(line); } catch { /* client gone — disconnect handler will clean up */ }
+}
+
+function handleSseStream(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+  token: RemoteAgentToken,
+  bus: BridgeEventBus,
+  sseClients: Set<http.ServerResponse>,
+): void {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  // Initial flush so the client sees the response headers immediately.
+  res.write(': connected\n\n');
+  sseClients.add(res);
+
+  // Per-stream filters. ?agent= scopes heartbeat events to a single agent.
+  // Inbox messages are scoped server-side: we only forward messages whose
+  // `to` matches the authenticated agent or 'shared'.
+  const heartbeatAgent = url.searchParams.get('agent') ?? undefined;
+
+  const onMessage = (msg: Message): void => {
+    if (msg.to !== token.agent_id && msg.to !== 'shared') { return; }
+    sseWrite(res, 'message', msg);
+  };
+  const onHeartbeat = (hb: Heartbeat): void => {
+    if (heartbeatAgent && hb.agent_id !== heartbeatAgent) { return; }
+    sseWrite(res, 'heartbeat', hb);
+  };
+  const onConsensus = (result: ConsensusResult): void => {
+    sseWrite(res, 'consensus', result);
+  };
+
+  const unsubMessage = bus.subscribe('message', onMessage);
+  const unsubHeartbeat = bus.subscribe('heartbeat', onHeartbeat);
+  const unsubConsensus = bus.subscribe('consensus', onConsensus);
+
+  // Keepalive: SSE comments (`: ...\n\n`) keep idle proxies from culling.
+  const keepalive = setInterval(() => {
+    try { res.write(': keepalive\n\n'); } catch { /* ignore */ }
+  }, SSE_KEEPALIVE_MS);
+  // Don't keep the event loop alive solely on this timer.
+  if (typeof keepalive.unref === 'function') { keepalive.unref(); }
+
+  const cleanup = (): void => {
+    clearInterval(keepalive);
+    unsubMessage();
+    unsubHeartbeat();
+    unsubConsensus();
+    sseClients.delete(res);
+    try { res.end(); } catch { /* ignore */ }
+  };
+
+  req.on('close', cleanup);
+  req.on('error', cleanup);
+}
+
+/** Hook for WebSocket support. Replaced with the real implementation in
+ *  bridge-ws.ts once the `ws` dependency lands. Default no-op so SSE works
+ *  on its own. */
+let attachWebSocketIfAvailable: (
+  server: http.Server, config: BridgeConfig,
+  bus: BridgeEventBus, wsClients: Set<unknown>
+) => void = () => { /* no-op until bridge-ws.ts is wired */ };
+
+/** Internal: replace the WS attach hook. Called by bridge-ws.ts at module load. */
+export function setWebSocketAttacher(fn: typeof attachWebSocketIfAvailable): void {
+  attachWebSocketIfAvailable = fn;
 }
 
 /** Number of fallback ports the bridge will try after the configured port if it is busy.
@@ -203,12 +402,18 @@ export async function startBridge(config: BridgeConfig): Promise<BridgeState> {
   let lastErr: NodeJS.ErrnoException | undefined;
   for (let i = 0; i <= BRIDGE_PORT_FALLBACK_COUNT; i++) {
     const port = startPort + i;
-    const server = createBridgeServer({ ...config, port });
+    const bus = new BridgeEventBus();
+    const sseClients = new Set<http.ServerResponse>();
+    const wsClients = new Set<unknown>();
+    const server = createBridgeServer({ ...config, port }, { bus, sseClients, wsClients });
     try {
       await tryListen(server, config.host, port);
       const effectiveConfig: BridgeConfig = { ...config, port };
+      // WebSocket upgrade handler is attached in a follow-up commit once the
+      // `ws` dependency is installed. SSE alone works on top of pure http.
+      attachWebSocketIfAvailable(server, effectiveConfig, bus, wsClients);
       console.log(`AutoClaw bridge on ${config.host}:${port}`);
-      return { server, config: effectiveConfig, running: true };
+      return { server, config: effectiveConfig, running: true, bus, sseClients, wsClients };
     } catch (e) {
       lastErr = e as NodeJS.ErrnoException;
       // Close and try next port only on EADDRINUSE; bubble up any other error.
@@ -225,6 +430,20 @@ export async function startBridge(config: BridgeConfig): Promise<BridgeState> {
 
 export function stopBridge(state: BridgeState): Promise<void> {
   return new Promise(resolve => {
+    // Force-close any active SSE responses so server.close() can complete.
+    if (state.sseClients) {
+      for (const res of state.sseClients) {
+        try { (res as http.ServerResponse).end(); } catch { /* ignore */ }
+      }
+      state.sseClients.clear();
+    }
+    // Force-close any open WS clients.
+    if (state.wsClients) {
+      for (const ws of state.wsClients) {
+        try { (ws as { terminate?: () => void }).terminate?.(); } catch { /* ignore */ }
+      }
+      state.wsClients.clear();
+    }
     if (state.server) { state.server.close(() => { state.running = false; resolve(); }); }
     else { resolve(); }
   });

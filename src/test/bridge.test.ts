@@ -5,8 +5,10 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   startBridge, stopBridge, createRemoteAgentToken, validateToken,
-  generateToken, type BridgeConfig, type BridgeState,
+  generateToken, BridgeEventBus, SSE_KEEPALIVE_MS,
+  type BridgeConfig, type BridgeState,
 } from '../bridge';
+import type { Message, Heartbeat } from '../comms';
 
 function tmpDir(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-bridge-'));
@@ -300,5 +302,283 @@ suite('Bridge — port fallback on EADDRINUSE', () => {
     assert.strictEqual(r.status, 200);
     const parsed = JSON.parse(r.body) as { port?: number };
     assert.strictEqual(parsed.port, bridge.config.port);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// BridgeEventBus (Phase 2 — push channels)
+// ---------------------------------------------------------------------------
+
+suite('BridgeEventBus — pub/sub', () => {
+  test('subscribe → publish delivers payload to handler', () => {
+    const bus = new BridgeEventBus();
+    let got: Message | null = null;
+    bus.subscribe('message', m => { got = m; });
+    const msg = {
+      id: 'm1', from: 'a1', to: 'a2', type: 'question' as const,
+      timestamp: '2026-05-09T00:00:00Z', payload: {}, requires_response: false,
+    };
+    bus.publish('message', msg);
+    assert.deepStrictEqual(got, msg);
+  });
+
+  test('unsubscribe stops further deliveries', () => {
+    const bus = new BridgeEventBus();
+    let calls = 0;
+    const off = bus.subscribe('heartbeat', () => { calls++; });
+    const hb: Heartbeat = {
+      agent_id: 'a1', timestamp: '2026-05-09T00:00:00Z',
+      status: 'active', current_task: null, sprint: null,
+    };
+    bus.publish('heartbeat', hb);
+    off();
+    bus.publish('heartbeat', hb);
+    assert.strictEqual(calls, 1);
+    assert.strictEqual(bus.subscriberCount('heartbeat'), 0);
+  });
+
+  test('publish with no subscribers is a no-op', () => {
+    const bus = new BridgeEventBus();
+    bus.publish('consensus', {
+      task_id: 'T1', round: 1, status: 'consensus_pending',
+      final_verdict: 'inconclusive', votes: [], summary: '',
+    } as unknown as Parameters<typeof bus.publish<'consensus'>>[1]);
+    // No throw → pass.
+    assert.strictEqual(bus.subscriberCount('consensus'), 0);
+  });
+
+  test('one handler error does not block others', () => {
+    const bus = new BridgeEventBus();
+    let secondCalled = false;
+    bus.subscribe('message', () => { throw new Error('boom'); });
+    bus.subscribe('message', () => { secondCalled = true; });
+    const origErr = console.error;
+    console.error = (): void => { /* swallow */ };
+    try {
+      bus.publish('message', {
+        id: 'm1', from: 'a1', to: 'a2', type: 'question',
+        timestamp: '', payload: {}, requires_response: false,
+      });
+    } finally {
+      console.error = origErr;
+    }
+    assert.strictEqual(secondCalled, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SSE streaming endpoint (Phase 2 — push channels)
+// ---------------------------------------------------------------------------
+
+interface SseHandle {
+  req: http.ClientRequest;
+  res: http.IncomingMessage;
+  buffer: string;
+  events: Array<{ type: string; data: string }>;
+  close(): void;
+}
+
+/** Open an SSE stream and accumulate decoded events. The client lets us
+ *  inspect raw frames (incl. `: keepalive` comments) and parsed events. */
+function openSse(state: BridgeState, path_: string, headers: Record<string, string>): Promise<SseHandle> {
+  return new Promise((resolve, reject) => {
+    const events: Array<{ type: string; data: string }> = [];
+    let buffer = '';
+    const req = http.request({
+      host: state.config.host,
+      port: state.config.port,
+      path: path_,
+      method: 'GET',
+      headers,
+    }, res => {
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => {
+        buffer += chunk;
+        // Parse complete event blocks (terminated by \n\n).
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, idx);
+          buffer = buffer.slice(idx + 2);
+          // Skip pure-comment blocks (lines starting with ':').
+          let evType = 'message';
+          const dataLines: string[] = [];
+          for (const line of block.split('\n')) {
+            if (line.startsWith(':')) { continue; }
+            if (line.startsWith('event:')) { evType = line.slice(6).trim(); }
+            else if (line.startsWith('data:')) { dataLines.push(line.slice(5).trim()); }
+          }
+          if (dataLines.length > 0) {
+            events.push({ type: evType, data: dataLines.join('\n') });
+          }
+        }
+      });
+      const handle: SseHandle = {
+        req, res, buffer: '', events,
+        close: () => { try { req.destroy(); } catch { /* ignore */ } },
+      };
+      // Expose live buffer via getter (capture snapshot when read).
+      Object.defineProperty(handle, 'buffer', { get: () => buffer });
+      resolve(handle);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function waitFor(pred: () => boolean, timeoutMs = 2000, pollMs = 25): Promise<void> {
+  const start = Date.now();
+  while (!pred()) {
+    if (Date.now() - start > timeoutMs) { throw new Error('waitFor timeout'); }
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+}
+
+suite('Bridge — SSE /api/v1/messages/stream', () => {
+  let state: BridgeState | null = null;
+  let sse: SseHandle | null = null;
+
+  teardown(async () => {
+    if (sse) { sse.close(); sse = null; }
+    if (state) { await stopBridge(state); state = null; }
+  });
+
+  test('rejects request without a valid token (401)', async () => {
+    state = await bring();
+    const r = await new Promise<{ status: number }>((resolve, reject) => {
+      const req = http.request({
+        host: state!.config.host, port: state!.config.port,
+        path: '/api/v1/messages/stream', method: 'GET',
+      }, res => { resolve({ status: res.statusCode ?? 0 }); res.resume(); });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.strictEqual(r.status, 401);
+  });
+
+  test('opens with text/event-stream content-type and emits message event after POST', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a2');
+    const tSender = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    sse = await openSse(state, '/api/v1/messages/stream', {
+      Authorization: `Bearer ${t.token}`,
+    });
+    assert.strictEqual(sse.res.headers['content-type'], 'text/event-stream');
+    assert.match(String(sse.res.headers['cache-control'] ?? ''), /no-cache/);
+
+    // Post a message addressed to a2 — the SSE subscriber should receive it.
+    const msg = {
+      id: 'm-sse-1', from: 'a1', to: 'a2', type: 'question',
+      timestamp: '2026-05-09T00:00:00Z', payload: { q: 'hi' },
+      requires_response: false,
+    };
+    const post = await request(state, 'POST', '/api/v1/messages',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${tSender.token}` },
+      JSON.stringify(msg));
+    assert.strictEqual(post.status, 201);
+
+    await waitFor(() => sse!.events.some(e => e.type === 'message' && e.data.includes('m-sse-1')), 2000);
+    const ev = sse.events.find(e => e.type === 'message')!;
+    assert.match(ev.data, /"id":\s*"m-sse-1"/);
+  });
+
+  test('forwards heartbeat events and respects ?agent= filter', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    const t2 = await createRemoteAgentToken(state.config.tokensPath, 'a2');
+    sse = await openSse(state, '/api/v1/messages/stream?agent=a1', {
+      Authorization: `Bearer ${t.token}`,
+    });
+
+    const hbA1 = { agent_id: 'a1', timestamp: '2026-05-09T00:00:01Z', status: 'active', current_task: null, sprint: null };
+    const hbA2 = { agent_id: 'a2', timestamp: '2026-05-09T00:00:02Z', status: 'active', current_task: null, sprint: null };
+    await request(state, 'POST', '/api/v1/heartbeat',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` },
+      JSON.stringify(hbA1));
+    await request(state, 'POST', '/api/v1/heartbeat',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t2.token}` },
+      JSON.stringify(hbA2));
+
+    await waitFor(() => sse!.events.some(e => e.type === 'heartbeat'), 2000);
+    const hbs = sse.events.filter(e => e.type === 'heartbeat');
+    // a1 included, a2 filtered out.
+    assert.ok(hbs.some(e => e.data.includes('"agent_id": "a1"') || e.data.includes('"agent_id":"a1"')));
+    assert.ok(!hbs.some(e => e.data.includes('"agent_id": "a2"') || e.data.includes('"agent_id":"a2"')),
+      `expected no a2 heartbeats, got: ${JSON.stringify(hbs)}`);
+  });
+
+  test('forwards consensus_result events', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    sse = await openSse(state, '/api/v1/messages/stream', {
+      Authorization: `Bearer ${t.token}`,
+    });
+    await request(state, 'POST', '/api/v1/consensus/T-sse/evaluate',
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` }, '{}');
+    await waitFor(() => sse!.events.some(e => e.type === 'consensus'), 2000);
+    const ev = sse.events.find(e => e.type === 'consensus')!;
+    assert.match(ev.data, /"task_id":\s*"T-sse"/);
+  });
+
+  test('accepts ?token= query-param auth (for EventSource which can not set headers)', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    sse = await openSse(state, `/api/v1/messages/stream?token=${t.token}`, {});
+    assert.strictEqual(sse.res.headers['content-type'], 'text/event-stream');
+  });
+
+  test('client disconnect unsubscribes the stream', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    sse = await openSse(state, '/api/v1/messages/stream', {
+      Authorization: `Bearer ${t.token}`,
+    });
+    // Wait for the bus subscription to register on the server.
+    await waitFor(() => state!.bus!.subscriberCount('message') >= 1, 1000);
+    sse.close(); sse = null;
+    await waitFor(() => state!.bus!.subscriberCount('message') === 0, 2000);
+    assert.strictEqual(state!.bus!.subscriberCount('message'), 0);
+    assert.strictEqual(state!.bus!.subscriberCount('heartbeat'), 0);
+    assert.strictEqual(state!.bus!.subscriberCount('consensus'), 0);
+  });
+
+  test('SSE_KEEPALIVE_MS is sub-60s so proxies do not idle-cull', () => {
+    assert.ok(SSE_KEEPALIVE_MS > 0 && SSE_KEEPALIVE_MS < 60_000,
+      `keepalive must be in (0, 60_000); got ${SSE_KEEPALIVE_MS}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Health endpoint includes push-channel counts (Phase 2)
+// ---------------------------------------------------------------------------
+
+suite('Bridge — /health push-channel counts', () => {
+  let state: BridgeState | null = null;
+  let sse: SseHandle | null = null;
+
+  teardown(async () => {
+    if (sse) { sse.close(); sse = null; }
+    if (state) { await stopBridge(state); state = null; }
+  });
+
+  test('reports sse_clients and ws_clients fields', async () => {
+    state = await bring();
+    const r = await request(state, 'GET', '/health');
+    const parsed = JSON.parse(r.body) as { sse_clients?: number; ws_clients?: number; port?: number };
+    assert.strictEqual(typeof parsed.port, 'number');
+    assert.strictEqual(parsed.sse_clients, 0);
+    assert.strictEqual(parsed.ws_clients, 0);
+  });
+
+  test('sse_clients increments while a stream is open', async () => {
+    state = await bring();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+    sse = await openSse(state, '/api/v1/messages/stream', {
+      Authorization: `Bearer ${t.token}`,
+    });
+    // Allow registration to land.
+    await waitFor(() => state!.sseClients!.size >= 1, 1000);
+    const r = await request(state, 'GET', '/health');
+    const parsed = JSON.parse(r.body) as { sse_clients: number };
+    assert.strictEqual(parsed.sse_clients, 1);
   });
 });
