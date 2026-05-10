@@ -7,15 +7,18 @@
 > [program-plane-registry.md](./program-plane-registry.md),
 > [coordination-improvements-mapping.md](./coordination-improvements-mapping.md).
 >
-> **Spec verification flag:** WebFetch was not exercised at authoring time.
-> The Biscuit Datalog grammar in §3, the AIP IBCT verification numbers, and
-> the SPIFFE SVID JWT shape in §6 are reproduced from
-> [`docs/research/distributed-orchestration-prior-art.md` §5](../research/distributed-orchestration-prior-art.md).
-> Items flagged **[needs verification]** must be checked against
-> <https://www.biscuitsec.org/>, the
-> [biscuit-auth GitHub repo](https://github.com/biscuit-auth/biscuit), and
-> [SPIFFE JWT-SVID spec](https://spiffe.io/docs/latest/spiffe-specs/jwt-svid/)
-> before code merges.
+> **Spec verification status (2026-05-10):** §2 (token shape), §3
+> (attenuation invariants), §5 (revocation), and §9 (license) have been
+> verified against the
+> [Biscuit SPECIFICATIONS.md (eclipse-biscuit)](https://github.com/biscuit-auth/biscuit/blob/master/SPECIFICATIONS.md)
+> and the
+> [biscuit-auth LICENSE](https://github.com/biscuit-auth/biscuit/blob/master/LICENSE)
+> (Apache-2.0 confirmed). §6 (JWT-SVID claim shape) has been verified
+> against the SPIFFE JWT-SVID standard.
+> The **AIP IBCT verification figures (0.049 ms / 0.189 ms) remain
+> unverified** — the cited arXiv ID `2603.24775` could not be fetched
+> (WebFetch denied to arxiv.org) and the ID format itself is suspect.
+> See [§ Sources](#sources) at end of file.
 
 ## 1. Why Biscuit (not JWT, not Macaroons)
 
@@ -26,8 +29,8 @@ We compared three signed-token formats for AutoClaw subagent dispatch:
 | Attenuation by holder | ✗ | ✓ (caveats) | **✓ (Datalog blocks)** |
 | Offline verification | ✓ | ✓ | **✓** |
 | Revocation list | needs server | needs server | **revocation IDs in token** |
-| Verification cost | ms-class | ms-class | **0.049 ms (Rust) / 0.189 ms (Python)** [needs verification — AIP paper figure] |
-| Public-key alg | RS256 / ES256 | varies | **Ed25519** |
+| Verification cost | ms-class | ms-class | **0.049 ms (Rust) / 0.189 ms (Python)** [**still needs verification** — AIP arXiv ID `2603.24775` unfetchable from sandbox; the canonical [Biscuit SPECIFICATIONS.md](https://github.com/biscuit-auth/biscuit/blob/master/SPECIFICATIONS.md) does not publish performance benchmarks. Treat these numbers as advisory until a maintainer confirms against the AIP paper or runs a local benchmark.] |
+| Public-key alg | RS256 / ES256 | varies | **Ed25519** [verified 2026-05-10 against [Biscuit SPECIFICATIONS.md](https://github.com/biscuit-auth/biscuit/blob/master/SPECIFICATIONS.md) — root keys defined as `(pk_0, sk_0)` Ed25519 key pair] |
 | Multi-hop delegation | manual chain | caveat-chain | **first-class**, with completion blocks |
 | Datalog policy expressivity | none | string equality | **rules + facts + checks** |
 
@@ -105,6 +108,16 @@ Verifiers refuse any token whose authority block contains a revoked
 `revocation_id`. The list is small (UUID-ish IDs), syncs in milliseconds,
 and survives restarts via local cache.
 
+> **[verified 2026-05-10]** Biscuit's canonical revocation mechanism:
+> per [Biscuit SPECIFICATIONS.md](https://github.com/biscuit-auth/biscuit/blob/master/SPECIFICATIONS.md),
+> *"The revocation identifier for a block is its signature serialized to
+> a byte array. For each of these, a fact `revocation_id(<index>, <byte
+> array>)` will be generated."* AutoClaw's friendly `rev-3a9f12c0` IDs in
+> the example above are an application-level alias on top of the canonical
+> per-block signature-bytes identifier; AutoClaw verifiers must check the
+> token's revocation list against the **canonical** signature-derived
+> revocation IDs, not just the friendly aliases.
+
 ## 3. Attenuation rules
 
 A parent agent issuing a subcontract MUST satisfy the following invariants
@@ -146,8 +159,12 @@ Invariants:
 
 - Parent CANNOT widen anything. Block-append cannot remove facts or checks
   from earlier blocks; only add new checks. This is structural, not
-  enforced by AutoClaw. **[needs verification]** against the
-  [biscuit-auth Rust reference](https://github.com/biscuit-auth/biscuit).
+  enforced by AutoClaw. [verified 2026-05-10 against
+  [Biscuit SPECIFICATIONS.md](https://github.com/biscuit-auth/biscuit/blob/master/SPECIFICATIONS.md):
+  *"The holder of a biscuit token can at any time create a new token by
+  adding a block with more checks, thus restricting the rights of the new
+  token, but they cannot remove existing blocks without invalidating the
+  signature."*]
 - Parent MUST attenuate scope when issuing a subcontract.
 - Parent MAY attenuate `task_id` to a single ID (e.g. parent has scope on
   3 tasks; child gets only 1).
@@ -174,9 +191,24 @@ account auth), the verification routine is:
    (e.g. the message envelope's `task_id` MUST equal the token's task_id).
 ```
 
-Per AIP IBCT figures, verification is **0.049 ms in Rust, 0.189 ms in
-Python** **[needs verification]** — fast enough to run on every bridge call
-without batching.
+Per AIP IBCT figures (cited in
+[research/distributed-orchestration-prior-art.md §5.2](../research/distributed-orchestration-prior-art.md)),
+verification is **0.049 ms in Rust, 0.189 ms in Python** — fast enough to
+run on every bridge call without batching.
+
+> **Discrepancy / open follow-up (2026-05-10):** These figures **remain
+> unverified**. The cited arXiv URL `https://arxiv.org/html/2603.24775`
+> could not be fetched (WebFetch denied to arxiv.org from the sandbox),
+> and the arXiv identifier format `2603.24775` is suspect (arXiv IDs are
+> `YYMM.NNNNN` and `2603` would be Mar 2026, plausible, but the 5-digit
+> NNNNN is typical only for very-high-volume months). The canonical
+> [Biscuit SPECIFICATIONS.md](https://github.com/biscuit-auth/biscuit/blob/master/SPECIFICATIONS.md)
+> publishes **no** performance benchmarks. Action: a maintainer should
+> either (a) confirm the arXiv reference and quote a real ID, (b) run a
+> local `biscuit-auth` verification benchmark and replace these numbers
+> with measured ones, or (c) drop the specific timings and replace with
+> "sub-millisecond verification, fast enough for per-call use". Until
+> resolved, treat these numbers as advisory.
 
 Concrete enforcement examples for AutoClaw operations:
 
@@ -193,6 +225,11 @@ Three triggers fire a revocation:
 
 1. **Time-based** (default): tokens TTL = 5 min. After expiry the
    `time($t) < expires_at` check fails; no list lookup needed.
+   [verified 2026-05-10: the
+   [Biscuit specification](https://github.com/biscuit-auth/biscuit/blob/master/SPECIFICATIONS.md)
+   does **not** prescribe a default TTL — TTL is application-policy. The
+   5-min default in AutoClaw is borrowed from SPIFFE SVID rotation
+   guidance (see §6) and the AIP IBCT pattern, not from Biscuit itself.]
 2. **Explicit** (operator): orchestrator publishes the `revocation_id` on
    `ac.security.revocations`; every verifier rejects within one bus round
    trip (< 100 ms on LAN).
@@ -252,8 +289,8 @@ automatically compromise the other:
 - Stolen SVID but no Biscuit → can connect, but every endpoint requires a
   capability check → useless.
 
-JWT-SVID shape (informational, **[needs verification]** against
-[SPIFFE spec](https://spiffe.io/docs/latest/spiffe-specs/jwt-svid/)):
+JWT-SVID shape (informational; verified 2026-05-10 against
+[SPIFFE JWT-SVID standard (spiffe/spiffe repo)](https://github.com/spiffe/spiffe/blob/main/standards/JWT-SVID.md)):
 
 ```json
 {
@@ -264,6 +301,16 @@ JWT-SVID shape (informational, **[needs verification]** against
   "iat": 1746820500
 }
 ```
+
+> **Annotation (2026-05-10) per JWT-SVID standard:** the standard
+> mandates only `sub` (set to the SPIFFE ID of the workload), `aud`
+> (one or more values; validators reject if their identifier isn't in
+> `aud`), and `exp` (validators MUST reject tokens without `exp`). `iss`
+> and `iat` are NOT mandated by the JWT-SVID standard, though both are
+> permitted and AutoClaw will populate them. The SPIFFE ID URI format
+> is `spiffe://<trust-domain>/<workload-path>`; AutoClaw's example uses
+> `spiffe://autoclaw.local/agent/<machine_id>-window<N>` which is
+> conformant.
 
 ## 7. Compatibility with the current bearer-token bridge
 
@@ -340,3 +387,18 @@ SPIFFE/SPIRE is **Apache-2.0**.
   [coordination-improvements-mapping.md](./coordination-improvements-mapping.md).
 - Research basis:
   [../research/distributed-orchestration-prior-art.md §5](../research/distributed-orchestration-prior-art.md).
+
+## Sources
+
+Verified 2026-05-10 against the following canonical sources:
+
+- [Biscuit SPECIFICATIONS.md (eclipse-biscuit/biscuit)](https://github.com/biscuit-auth/biscuit/blob/master/SPECIFICATIONS.md)
+  — block grammar (facts/rules/checks), attenuation rules, revocation IDs,
+  Ed25519 signing.
+- [biscuit-auth LICENSE](https://github.com/biscuit-auth/biscuit/blob/master/LICENSE)
+  — Apache-2.0 (verified by direct fetch).
+- [SPIFFE JWT-SVID standard](https://github.com/spiffe/spiffe/blob/main/standards/JWT-SVID.md)
+  — required claims (`sub`, `aud`, `exp`), SPIFFE ID URI format.
+- arXiv `2603.24775` (Agent Identity Protocol / IBCT) — **NOT verified**;
+  WebFetch denied to arxiv.org from sandbox. Performance figures (0.049 ms
+  Rust / 0.189 ms Python) carry a discrepancy block; see §4.

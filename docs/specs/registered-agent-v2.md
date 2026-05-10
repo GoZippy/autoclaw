@@ -8,6 +8,15 @@
 > **Goal:** Extend `RegisteredAgent` in `src/comms.ts` so the registry can
 > express capabilities, trust, cost, and machine identity *without* breaking
 > any existing v1 reader or registry file on disk.
+>
+> **A2A namespace note (verified 2026-05-10):** all references to "Agent
+> Card `x-autoclaw.*`" fields below adopt the namespace defined in
+> [agent-card-schema.md §2](./agent-card-schema.md), which has been
+> reconciled against A2A v0.2.5 (see that doc's verification block). A2A
+> v0.2.5 does not define a top-level `x-autoclaw` field; AutoClaw uses it
+> as a tolerated extension key alongside the canonical
+> `capabilities.extensions[]` mirror — see the agent-card-schema spec for
+> the authoritative discussion.
 
 ## 1. Current shape (v1)
 

@@ -5,42 +5,62 @@
 > Companion specs: [registered-agent-v2.md](./registered-agent-v2.md),
 > [heartbeat-v2.md](./heartbeat-v2.md).
 >
-> **Spec verification flag:** WebFetch to `a2a-protocol.org` was unavailable
-> at authoring time. The A2A v0.2.5 field set in §1 is reproduced from our
-> internal synthesis in
-> [`docs/research/distributed-orchestration-prior-art.md` §1.1](../research/distributed-orchestration-prior-art.md)
-> and [`DISTRIBUTED_AGENT_FABRIC.md` §2.1](../DISTRIBUTED_AGENT_FABRIC.md).
-> Before merging, a maintainer must diff this section against the live spec
-> at <https://a2a-protocol.org/latest/specification/> and the
-> Linux Foundation A2A repo on GitHub.
+> **Spec verification status (2026-05-10):** §1 has been diff'd against the
+> canonical A2A v0.2.5 schema and specification document at the
+> [a2aproject/A2A v0.2.5 tag](https://github.com/a2aproject/A2A/tree/v0.2.5)
+> (`specification/json/a2a.json` and `docs/specification.md`). The field set
+> is **correct against v0.2.5**, with two corrections noted below
+> (well-known path; `schema_version` alias is non-canonical). A2A has since
+> evolved (v0.3.0, v1.0.0) and the canonical proto in `main` has restructured
+> several fields (e.g. `supported_interfaces[]` instead of `url`,
+> `extended_agent_card` capability flag instead of
+> `supportsAuthenticatedExtendedCard`). This doc remains pinned to v0.2.5;
+> a future bump must re-verify against the target tag.
+> See [§ Sources](#sources) at end of file.
 
 ## 1. A2A v0.2.5 fields adopted verbatim
 
 AutoClaw publishes one Agent Card per registered agent at
-`/.well-known/agent-card.json` on the bridge host (per A2A discovery
-convention). The following fields are taken directly from the A2A
+`/.well-known/agent.json` on the bridge host
+([verified 2026-05-10 against A2A v0.2.5 specification §5.3](https://github.com/a2aproject/A2A/blob/v0.2.5/docs/specification.md#53-recommended-location)).
+A2A v0.2.5 explicitly recommends `https://{server_domain}/.well-known/agent.json`
+per RFC 8615 well-known URI convention.
+
+> **Discrepancy fix (2026-05-10):** Earlier drafts used
+> `/.well-known/agent-card.json`. The canonical v0.2.5 path is
+> `/.well-known/agent.json`. AutoClaw bridge implementations MUST serve at
+> `/.well-known/agent.json`; legacy `/.well-known/agent-card.json` MAY be
+> kept as a redirect during cutover.
+
+The following fields are taken directly from the A2A
 specification — names, types, and semantics are **not modified**.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `protocolVersion` (a.k.a. `schema_version`) | string | yes | Pinned to `"0.2.5"` for Phase 1. Track the spec; bump as A2A progresses. |
+| `protocolVersion` | string | yes | Pinned to `"0.2.5"` for Phase 1. Track the spec; bump as A2A progresses. **`schema_version` is NOT a canonical A2A field name** — earlier drafts called this out as an alias; the alias has been removed. [verified 2026-05-10 against [a2a.json v0.2.5](https://github.com/a2aproject/A2A/blob/v0.2.5/specification/json/a2a.json)]. |
 | `name` | string | yes | Human-readable agent name. |
-| `description` | string | yes | One-paragraph capability summary. |
-| `url` | string (URI) | yes | Base endpoint for A2A JSON-RPC requests. For AutoClaw: bridge URL + `/a2a`. |
-| `version` | string (semver) | yes | Agent (not protocol) version. AutoClaw uses the IDE adapter version. |
-| `capabilities` | object | yes | A2A capability flags: `streaming`, `pushNotifications`, `stateTransitionHistory`. |
-| `defaultInputModes` | string[] | yes | MIME types the agent accepts. Default: `["text/plain", "application/json"]`. |
+| `description` | string | yes | One-paragraph capability summary. CommonMark MAY be used per v0.2.5 §5.5. |
+| `url` | string (URI) | yes | Base URL for the agent's A2A service. Must be absolute; HTTPS for production. AutoClaw uses bridge URL + `/a2a`. |
+| `version` | string | yes | Agent (or A2A implementation) version string — format up to provider. AutoClaw uses the IDE adapter version. |
+| `capabilities` | object | yes | A2A capability flags: `streaming`, `pushNotifications`, `stateTransitionHistory`, `extensions[]`. All four are optional with default `false` / `[]`. [verified 2026-05-10 against [v0.2.5 spec §5.5.2](https://github.com/a2aproject/A2A/blob/v0.2.5/docs/specification.md#552-agentcapabilities-object)]. Note: `stateTransitionHistory` is a v0.2.5 placeholder field and was removed in later A2A versions; do not rely on it for routing. |
+| `defaultInputModes` | string[] | yes | MIME types the agent accepts. Default in AutoClaw bootstrap: `["text/plain", "application/json"]`. |
 | `defaultOutputModes` | string[] | yes | MIME types the agent emits. |
-| `skills` | object[] | yes | A2A skill descriptors (id, name, description, tags, examples, inputModes, outputModes). |
-| `securitySchemes` | object | optional | A2A auth schemes (bearer, mTLS, etc.). |
+| `skills` | object[] | yes | A2A `AgentSkill` descriptors (`id`, `name`, `description`, `tags`, `examples`, `inputModes`, `outputModes`). At least one skill required if the agent performs actions. [verified 2026-05-10 against [v0.2.5 §5.5.4](https://github.com/a2aproject/A2A/blob/v0.2.5/docs/specification.md#554-agentskill-object)]. |
+| `securitySchemes` | object | optional | Map of name → `SecurityScheme`. A2A auth schemes (bearer, mTLS, OAuth2, OpenID Connect, API key). |
 | `security` | object[] | optional | Required scheme(s) for this card. |
-| `provider` | object | optional | `{organization, url}`. AutoClaw fills with the IDE vendor. |
-| `documentationUrl` | string (URI) | optional | Link to docs. |
-| `supportsAuthenticatedExtendedCard` | boolean | optional | When true, an authenticated `GET /agent/authenticatedExtendedCard` returns a richer card. AutoClaw uses this to gate `x-autoclaw.machine_ip` (see §2). |
+| `provider` | object | optional | `{organization, url}` — both required when `provider` present. AutoClaw fills with the IDE vendor. |
+| `documentationUrl` | string (URI) | optional | Link to human-readable docs. |
+| `iconUrl` | string (URI) | optional | URL to an icon for the agent. **Was missing from earlier drafts; added 2026-05-10** [verified against [v0.2.5 §5.5](https://github.com/a2aproject/A2A/blob/v0.2.5/docs/specification.md#55-agentcard-object)]. |
+| `supportsAuthenticatedExtendedCard` | boolean | optional | When true, an authenticated `GET {url}/../agent/authenticatedExtendedCard` returns a richer card (per [v0.2.5 §7.10](https://github.com/a2aproject/A2A/blob/v0.2.5/docs/specification.md#710-agentauthenticatedextendedcard)). AutoClaw uses this to gate `x-autoclaw.machine_ip` (see §2). |
+
+[verified 2026-05-10] All required-field designations above match
+[a2a.json v0.2.5 line 238-248](https://github.com/a2aproject/A2A/blob/v0.2.5/specification/json/a2a.json):
+required = `[capabilities, defaultInputModes, defaultOutputModes,
+description, name, protocolVersion, skills, url, version]`.
 
 Citations:
-[A2A spec](https://a2a-protocol.org/latest/specification/),
-[A2A streaming docs](https://a2a-protocol.org/latest/topics/streaming-and-async/),
+[A2A v0.2.5 specification.md](https://github.com/a2aproject/A2A/blob/v0.2.5/docs/specification.md),
+[A2A v0.2.5 JSON schema](https://github.com/a2aproject/A2A/blob/v0.2.5/specification/json/a2a.json),
 [IBM A2A explainer](https://www.ibm.com/think/topics/agent2agent-protocol).
 
 The A2A `skills[]` array is the integration seam for AutoClaw's existing
@@ -50,9 +70,29 @@ message-type taxonomy. We map current message types
 
 ## 2. AutoClaw extensions (`x-autoclaw` namespace)
 
-A2A explicitly permits extension fields. We scope all AutoClaw additions
-under a single top-level object key, `x-autoclaw`, so we never collide with
-future A2A core fields and so a strict-A2A consumer can ignore us cleanly.
+A2A v0.2.5 defines a first-class extension mechanism via
+`AgentCapabilities.extensions[]` (each entry an `AgentExtension { uri,
+required, description, params }`)
+[verified 2026-05-10 against [v0.2.5 §5.5.2.1](https://github.com/a2aproject/A2A/blob/v0.2.5/docs/specification.md#5521-agentextension-object)].
+The v0.2.5 JSON schema does **not** declare
+`additionalProperties: false` on `AgentCard`, so by JSON Schema draft-07
+default semantics extra top-level keys are tolerated by the schema, but
+they are **not** the canonical extension surface.
+
+> **Discrepancy / forward-compat note:** Earlier drafts implied that A2A
+> "explicitly permits extension fields" via top-level `x-…` keys. The
+> canonical extension surface is `capabilities.extensions[]` keyed by URI,
+> not arbitrary `x-` prefixes. Phase 1 of AutoClaw will publish the
+> `x-autoclaw` block at the top level for backward compatibility AND mirror
+> the same data into a single
+> `capabilities.extensions[{ uri: "https://autoclaw.dev/extensions/v1",
+> required: false, params: { ...x-autoclaw fields... } }]` entry so strict
+> A2A consumers see the canonical form. Phase 2 may drop the top-level
+> `x-autoclaw` block once all known consumers read the canonical extension.
+
+We scope all AutoClaw additions under a single top-level object key,
+`x-autoclaw`, so we never collide with future A2A core fields and so a
+strict-A2A consumer can ignore us cleanly.
 
 All extension fields are **optional from the A2A consumer's perspective**.
 AutoClaw's own router (the orchestrator) treats `x-autoclaw.machine_id` as
@@ -199,6 +239,24 @@ upgrades `resolveAgentId(slot, task)` to consult the Agent Card store:
 
 This is a routing change only; no card field is read more than once per
 planning pass, and no telemetry is emitted.
+
+---
+
+## Sources
+
+Verified 2026-05-10 against the following canonical sources (fetched via
+`gh api` against `repos/a2aproject/A2A` at tag `v0.2.5`):
+
+- [A2A v0.2.5 specification document](https://github.com/a2aproject/A2A/blob/v0.2.5/docs/specification.md)
+  — section 5.3 (well-known location), 5.5 (AgentCard), 5.5.2 (capabilities),
+  5.5.2.1 (extensions), 5.5.4 (skills), 7.10 (authenticated extended card).
+- [A2A v0.2.5 JSON schema (`specification/json/a2a.json`)](https://github.com/a2aproject/A2A/blob/v0.2.5/specification/json/a2a.json)
+  — `AgentCard` definition lines 130-249; required fields list lines 238-248.
+- [A2A v0.2.5 README](https://github.com/a2aproject/A2A/blob/v0.2.5/README.md)
+  — license (Apache-2.0), governance.
+- [A2A repo tag listing](https://github.com/a2aproject/A2A/tags) — confirmed
+  v0.2.5 exists; later tags v0.2.6, v0.3.0, v1.0.0 progressively restructure
+  the AgentCard.
 
 ---
 *See also: [registered-agent-v2.md](./registered-agent-v2.md),

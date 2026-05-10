@@ -7,14 +7,19 @@
 > [program-plane-registry.md](./program-plane-registry.md),
 > [coordination-improvements-mapping.md](./coordination-improvements-mapping.md).
 >
-> **Spec verification flag:** WebFetch was not exercised at authoring time.
-> Subject grammar limits, JetStream replica defaults, and account permission
-> grammar below are reproduced from our internal synthesis in
-> [`docs/research/distributed-orchestration-prior-art.md` §2.1](../research/distributed-orchestration-prior-art.md).
-> Before code merges, a maintainer must diff this against the live
-> [NATS subject docs](https://docs.nats.io/nats-concepts/subjects)
-> and the [JetStream config reference](https://docs.nats.io/nats-concepts/jetstream).
-> Items flagged **[needs verification]** below are best-effort internal claims.
+> **Spec verification status (2026-05-10):** §2 (subject grammar) and §6
+> (JetStream replicas) have been verified against the canonical NATS
+> documentation in
+> [nats-io/nats.docs/nats-concepts/subjects.md](https://github.com/nats-io/nats.docs/blob/master/nats-concepts/subjects.md)
+> and
+> [nats-io/nats.docs/nats-concepts/jetstream/streams.md](https://github.com/nats-io/nats.docs/blob/master/nats-concepts/jetstream/streams.md).
+> The "≤ 32 chars per token" rule has been **corrected**: the canonical
+> NATS docs do not specify a per-token character limit; only a
+> recommended overall ceiling of "max 16 tokens, < 256 characters total".
+> §5 NATS account permission `{{user}}` substitution claim remains a
+> best-effort assertion — it requires either NATS 2.x JWT-based auth
+> callout or per-agent user records.
+> See [§ Sources](#sources) at end of file.
 
 ## 1. Why a topic convention matters
 
@@ -52,6 +57,20 @@ NATS micro and other tenants on a shared cluster.
 | `ac.system.escalation` | any agent → orchestrator + humans | escalation envelope | JetStream `AC_SYS`, ∞ (compact) | 1 / 3 | broadcast |
 | `ac.security.revocations` | orchestrator → all | revoked Biscuit IDs | JetStream `AC_SEC`, 24h | 1 / 3 | broadcast (every node syncs) |
 
+> **JetStream replica defaults [verified 2026-05-10 against
+> [nats-concepts/jetstream/streams.md](https://github.com/nats-io/nats.docs/blob/master/nats-concepts/jetstream/streams.md)]:**
+> the canonical Stream `Replicas` field accepts **1–5** with the docs
+> noting *"How many replicas to keep for each message in a clustered
+> JetStream, maximum 5."* The **default** when unspecified is **1** (no
+> replication; effective on a single-node embedded server). AutoClaw's
+> "1 (laptop) / 3 (LAN)" column reflects an AutoClaw policy: laptop-mode
+> embedded `nats-server` runs single-replica, LAN-mode bumps to 3 when ≥
+> 3 peers are reachable. Default storage type is `File` (per docs §
+> StorageType), default retention is `LimitsPolicy`, default discard is
+> `DiscardOld`. AutoClaw streams use defaults except where the table
+> above declares a `MaxAge` (the `7d` / `30d` / `14d` / `90d` / `24h`
+> values are configured `MaxAge` settings).
+
 Wildcards a typical agent subscribes to:
 
 ```
@@ -63,12 +82,28 @@ ac.subcontract.>                # all subcontract envelopes (filter by request_i
 ac.security.revocations         # always
 ```
 
-Subject token grammar (alphanumerics + `-` + `_`) follows
+Subject token grammar follows
 [NATS subject rules][nats-subj]; periods are reserved as separators.
-**[needs verification]** for any per-token length limits — we use ≤ 32 chars
-per token defensively.
+[verified 2026-05-10 against
+[nats-concepts/subjects.md](https://github.com/nats-io/nats.docs/blob/master/nats-concepts/subjects.md)]:
+the canonical rule is *"Allowed characters: any Unicode character except
+`null`, space, `.`, `*` and `>`"* with **recommended** characters
+`[a-zA-Z0-9_-]` (case-sensitive). The wildcards `*` (single token) and
+`>` (terminal multi-token) are reserved.
 
-[nats-subj]: https://docs.nats.io/nats-concepts/subjects
+> **Discrepancy fix (2026-05-10):** Earlier drafts said "we use ≤ 32 chars
+> per token defensively" with a `[needs verification]` flag. The canonical
+> NATS docs **do not specify any per-token character limit**; the
+> documented recommendation is *"a maximum of 16 tokens in your subjects
+> and the subject length to less than 256 characters"* (overall, not
+> per-token). AutoClaw's defensive 32-char-per-token cap is therefore an
+> **internal best-effort policy**, not a NATS constraint. Phase 2
+> implementations MAY choose to enforce a per-token limit (e.g. 32 or
+> 64 chars) for ACL pattern simplicity, but MUST NOT advertise it as a
+> NATS-level requirement. The hard ceiling AutoClaw must respect is the
+> documented overall recommendation: ≤ 16 tokens, ≤ 256 chars total.
+
+[nats-subj]: https://github.com/nats-io/nats.docs/blob/master/nats-concepts/subjects.md
 
 ## 3. Payload shape examples
 
@@ -187,10 +222,17 @@ accounts:
 
 Notes:
 
-- The `{{user}}` substitution above is a notation convenience for this spec.
-  **[needs verification]** — NATS supports per-user variable substitution in
-  permissions only via account templates / JWT-based auth callout in some
-  versions. If unavailable, generate per-agent user records at registration.
+- The `{{user}}` substitution above is a notation convenience for this
+  spec — it is **NOT** a literal NATS server-config feature. **[still
+  needs verification with implementation prototype]**: NATS supports
+  per-user dynamic permissions only via (a) account templates with
+  decentralized JWT-based auth (`nsc`/`nats-jwt` flow) or (b)
+  `auth_callout` (NATS 2.10+) which delegates auth to an external
+  service. The static `nats-server.conf` user list above does **not**
+  expand `{{user}}`. The Phase 2 implementation must either generate one
+  user record per registered agent at registration (preferred for
+  zero-config) or adopt JWT-based auth. Action: prototype both during
+  Phase 2 and pick the lower-friction path.
 - The `observer` role powers the AutoClaw panel: it watches everything,
   publishes nothing.
 - `agent` cannot publish task assignments or revocations (orchestrator-only
@@ -275,3 +317,22 @@ gap and dedup absorbs the doubles.
 - COORDINATION_IMPROVEMENTS items realized here:
   [coordination-improvements-mapping.md](./coordination-improvements-mapping.md).
 - Research basis: [../research/distributed-orchestration-prior-art.md §2.1](../research/distributed-orchestration-prior-art.md).
+
+## Sources
+
+Verified 2026-05-10 against the following canonical sources (fetched via
+`gh api` against `repos/nats-io/nats.docs`):
+
+- [nats-concepts/subjects.md](https://github.com/nats-io/nats.docs/blob/master/nats-concepts/subjects.md)
+  — allowed characters, recommended characters, wildcard rules (`*`, `>`),
+  reserved `$SYS`/`$JS`/`$KV` namespaces, "max 16 tokens / < 256 chars"
+  guidance.
+- [nats-concepts/jetstream/streams.md](https://github.com/nats-io/nats.docs/blob/master/nats-concepts/jetstream/streams.md)
+  — Stream configuration table (replicas max 5, `LimitsPolicy` default
+  retention, `DiscardOld` default discard, `File` default storage,
+  `MaxAge`/`MaxBytes`/`MaxMsgs` semantics).
+- The exact "default replicas = 1" was inferred from the NATS docs
+  describing replicas as opt-in for clustered mode; single-server JetStream
+  is the implicit default. A maintainer should double-check against the
+  Go server's stream-config defaults if a precise replicas-default value
+  is load-bearing for testing.
