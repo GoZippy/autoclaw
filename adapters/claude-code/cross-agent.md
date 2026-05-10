@@ -19,6 +19,9 @@ Read any `.json` files found. Process and act on them before starting new work.
 - `finding_report` — A security or quality finding
 - `question` — A question from another agent
 - `answer` — An answer to your question (also used by orchestrator to explain blocked assignments)
+- `capability_query` / `capability_offer` — Phase-3 capability discovery: orchestrator broadcasts requirements; agents reply with their capabilities and current load
+- `thought_record` — KG-bound finding/insight envelope (see packages/kg-daemon)
+- `subcontract_request` / `subcontract_accept` / `subcontract_deliver` / `subcontract_ack` — Phase-3 work-subcontracting fanout between parent and child agents
 
 ## Sending Messages
 Write JSON files to the target agent's inbox directory.
