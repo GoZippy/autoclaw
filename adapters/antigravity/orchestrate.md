@@ -47,8 +47,9 @@ Read the manifest YAML from the specified path (default: first `.yaml` in `manif
 ### Algorithm
 
 **Phase 1: Parse & Validate**
-- Parse manifest YAML into task list with `id`, `name`, `depends_on`, `scope`, `effort`, `subtasks`.
+- Parse manifest YAML into task list with `id`, `name`, `depends_on`, `scope`, `effort`, `subtasks`, and the optional `required_capabilities`.
 - Validate: no duplicate IDs, all `depends_on` references exist, no empty scopes.
+- `required_capabilities` (optional, defaults to `[]`) is a list of capability tags (e.g. `["go", "security-review"]`) consumed by the capability-aware router. Manifests without this field continue to plan exactly as before.
 
 **Phase 2: Build Dependency Graph (DAG)**
 - Nodes = tasks, Edges = `depends_on` relationships.
@@ -70,6 +71,7 @@ Read the manifest YAML from the specified path (default: first `.yaml` in `manif
   - Scope isolation (no overlap within same sprint)
   - Effort capacity per agent per sprint
   - `constraints.mutual_exclusion` from manifest
+- **Capability-aware routing** (when the agent registry populates v2 fields — capabilities, trust_level, cost_budget, max_parallel_tasks, languages_supported): for each remaining task, score every slot via `score(agent, task) = capability_match × trust_score × idle_factor / estimated_cost` and pick the highest-scoring slot. If no slot scores > 0, fall back to round-robin and record a warning in the sprint's `notes` field. Without v2 fields the planner uses the legacy slot-index round-robin unchanged.
   - `constraints.affinity` from manifest (co-locate related tasks on same agent)
 - Priority heuristics:
   1. Critical path length (longest downstream chain first)

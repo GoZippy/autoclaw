@@ -206,7 +206,7 @@ export function generateMessageId(): string {
 
 function messageFilename(msg: Message): string {
   const ts = msg.timestamp.replace(/[:.]/g, '-');
-  return `${ts}-${msg.type}-${msg.from}.json`;
+  return `${ts}-${msg.type}-${msg.from}-${msg.id.slice(-8)}.json`;
 }
 
 export async function sendMessage(commsDir: string, msg: Message): Promise<string> {

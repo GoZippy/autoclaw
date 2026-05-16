@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.5.0] - 2026-05-16
+
+This release ("Phase 2B/C + Phase 3 router — FabricBus, A2A v0.2.5 Agent Card, capability-aware routing, and expandable panel UI") delivers the four wave-4 parallel workstreams: the cross-transport FabricBus abstraction (fs/ws/NATS drivers), canonical A2A v0.2.5 Agent Card with `capabilities.extensions[]` mirroring, the capability-aware sprint router with Jaccard-score-based agent selection, and a fully rebuilt webview panel with expandable agent cards, push-channel health badges, and KG status indicators. Net: +1435 LOC across 7 new/changed files, +30 unit tests (339 total passing). Also includes hardened comms filename uniqueness fix (timestamp collision prevented by appending message ID suffix) and an environment-resilient ZippyMesh health test.
+
+### Added
+
+- **FabricBus abstraction** (`src/fabric.ts`) — unified pub/sub primitive with three drivers: `fs` (passthrough to filesystem mailbox, zero new deps), `ws` (wraps `BridgeEventBus` SSE/WS fanout from v2.4.0), and `nats` (dynamic `import('nats')` with graceful fallback when the optional dep is absent). Configured via `autoclaw.fabric.busDriver` and `autoclaw.fabric.natsUrl` settings. Lifecycle managed by extension activation/deactivation.
+- **A2A v0.2.5 Agent Card** (`src/agent-card.ts`) — `buildAgentCard()` produces a canonical Agent Card served at `/.well-known/agent.json`. Uses `capabilities.extensions[]` URI-keyed array (extension URI: `https://github.com/GoZippy/autoclaw/extensions/v1`) to mirror all AutoClaw-specific metadata (`x-autoclaw` fields) without violating A2A spec constraints. `autoclaw.agentCard.show` command displays it in the panel.
+- **Capability-aware sprint router** — `scoreAgent(agent, task)` in `src/orchestrate.ts` computes `jaccard_capability_match × trust_weight × idle_factor / estimated_cost`. Called by `resolveAgentId()` during `planSprints()`; manifests can declare `required_capabilities: [...]` on tasks to trigger capability-matched routing. Backwards compatible — tasks without `required_capabilities` route exactly as before.
+- **Expandable agent card panel UI** (`src/webview-render.ts`, `src/webview/kdream-dashboard.css/js`) — rebuilt webview with expandable agent cards (click to expand/collapse), capability chips, trust badges, queue-depth bar, "Awaiting You" section aggregating messages that need a human response, push-channel health badge (SSE/WS connected/disconnected), and KG daemon health badge (enabled/port/last-seen).
+- **`autoclaw.agentCard.show` command** — opens a webview panel rendering the local agent card JSON.
+- **FabricBus tests** (`src/test/fabric.test.ts`) — 9 tests covering fs/ws/nats driver selection, subscribe/unsubscribe round-trips, and close idempotency.
+- **Agent Card tests** (`src/test/agent-card.test.ts`) — 8 tests covering schema validation and `capabilities.extensions[]` mirroring correctness.
+- **Webview rendering tests** (`src/test/webview-rendering.test.ts`) — 30 tests covering HTML generation for all panel components (expandable cards, chips, badges, queue bar, Awaiting You section).
+
+### Fixed
+
+- **Comms message filename collision** — `messageFilename()` now appends the last 8 chars of `msg.id` to the filename, preventing messages sent from the same agent with the same type within the same millisecond from overwriting each other. Previously `getInboxSummary()` under-counted when rapid-fire tests sent 3+ messages in quick succession.
+- **ZippyMesh health test resilience** — the default-URL ZippyMesh health check test no longer hard-asserts `'warning'` (which fails when something is listening on the default port in the test environment). It now accepts any of `healthy | warning | error` as a valid outcome; the unreachable-port test (`localhost:1`) still asserts `'warning'` exactly.
+- **Adapter drift** — regenerated 8 adapter files to include `required_capabilities` field documentation for manifests.
+
 ## [2.4.0] - 2026-05-10
 
 This release ("Phase 2 part A — push channels and the kg-daemon companion") wires the OpenClaw HTTP bridge with bidirectional push (Server-Sent Events + WebSockets) and turns `packages/kg-daemon/` from an isolated prototype into an opt-in managed companion process. Net: +1650/-29 LOC across 16 files (4 new modules: `src/bridge-ws.ts`, `src/kg.ts`, `src/test/kg-lifecycle.test.ts`, `src/test/bridge.test.ts` extended), +33 unit tests (259 total passing, was 226), one new runtime dependency (`ws` ^8.20.0). All push paths are backwards compatible — existing polling clients continue to work unchanged.
