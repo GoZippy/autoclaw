@@ -611,11 +611,13 @@ import {
   evaluateConsensus,
   mergeFindings,
   DEFAULT_CONSENSUS_CONFIG,
+  consensusConfigForTask,
 } from '../orchestrate';
 import type {
   ValidationVote,
   ValidationFinding,
   ConsensusConfig,
+  TaskCriticality,
 } from '../orchestrate';
 
 // ---------------------------------------------------------------------------
@@ -1375,6 +1377,73 @@ suite('Orchestrate — broadcastCapabilityQueries + resolveCapabilityOffers', ()
     fs.writeFileSync(path.join(inboxDir, '2026-01-01-capability_offer-remote-x.json'), JSON.stringify(wrongOffer));
     const resolutions = await resolveCapabilityOffers(commsDir, 'orchestrator', pending);
     assert.deepStrictEqual(resolutions, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task criticality → consensus config mapping
+// ---------------------------------------------------------------------------
+
+suite('consensusConfigForTask — criticality tier routing', () => {
+  const makeVotes = (approvals: number, total: number): ValidationVote[] => {
+    const votes: ValidationVote[] = [];
+    for (let i = 0; i < total; i++) {
+      votes.push({
+        agent_id: `agent-${i}`,
+        provider: `provider-${i}`,
+        verdict: i < approvals ? 'approved' : 'needs_changes',
+        confidence: 0.9, findings: [], timestamp: '',
+      });
+    }
+    return votes;
+  };
+
+  test('criticality 1 (CRITICAL) sets unanimous threshold (1.0)', () => {
+    const cfg = consensusConfigForTask(1 as TaskCriticality);
+    assert.strictEqual(cfg.approval_threshold, 1.0);
+    assert.strictEqual(cfg.block_is_veto, true);
+  });
+
+  test('criticality 2 (MAJOR) returns default config (0.66)', () => {
+    const cfg = consensusConfigForTask(2 as TaskCriticality);
+    assert.strictEqual(cfg.approval_threshold, DEFAULT_CONSENSUS_CONFIG.approval_threshold);
+  });
+
+  test('criticality 3 (ROUTINE) sets simple majority threshold (0.501)', () => {
+    const cfg = consensusConfigForTask(3 as TaskCriticality);
+    assert.ok(cfg.approval_threshold < 0.51 && cfg.approval_threshold > 0.5);
+  });
+
+  test('undefined criticality returns default config', () => {
+    const cfg = consensusConfigForTask(undefined);
+    assert.strictEqual(cfg.approval_threshold, DEFAULT_CONSENSUS_CONFIG.approval_threshold);
+  });
+
+  test('CRITICAL task fails when one voter dissents (unanimous required)', () => {
+    const cfg = consensusConfigForTask(1 as TaskCriticality);
+    // 2 of 3 approve — not unanimous
+    const result = evaluateConsensus(makeVotes(2, 3), 1, cfg);
+    assert.notStrictEqual(result.status, 'consensus_reached', 'should not reach consensus with 2/3 for CRITICAL');
+  });
+
+  test('CRITICAL task succeeds when all voters approve', () => {
+    const cfg = consensusConfigForTask(1 as TaskCriticality);
+    const result = evaluateConsensus(makeVotes(3, 3), 1, cfg);
+    assert.strictEqual(result.status, 'consensus_reached');
+    assert.strictEqual(result.final_verdict, 'approved');
+  });
+
+  test('ROUTINE task succeeds with simple majority (2 of 3)', () => {
+    const cfg = consensusConfigForTask(3 as TaskCriticality);
+    const result = evaluateConsensus(makeVotes(2, 3), 1, cfg);
+    assert.strictEqual(result.status, 'consensus_reached');
+    assert.strictEqual(result.final_verdict, 'approved');
+  });
+
+  test('MAJOR task fails with 1 of 3 approvals (below 2/3)', () => {
+    const cfg = consensusConfigForTask(2 as TaskCriticality);
+    const result = evaluateConsensus(makeVotes(1, 3), 1, cfg);
+    assert.notStrictEqual(result.status, 'consensus_reached');
   });
 });
 

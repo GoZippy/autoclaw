@@ -167,12 +167,24 @@ export function buildApp(
     const agent = strParam(req, "agent");
     const since = strParam(req, "since");
     const at = strParam(req, "at"); // bi-temporal time-travel
+    const strategy = strParam(req, "strategy") as "multi" | "vec" | "fts" | undefined;
+    const graphSeed = strParam(req, "graph_seed");
+    const graphEdgeKindsRaw = strParam(req, "graph_edge_kinds");
+    const graphEdgeKinds = graphEdgeKindsRaw
+      ? graphEdgeKindsRaw.split(",").map(s => s.trim()).filter(Boolean)
+      : undefined;
+    const graphDepth = numParam(req, "graph_depth", 2);
     const hits = await kg.searchSimilar(q, {
       k,
       project: project || undefined,
       agent: agent || undefined,
       since: since || undefined,
       at: at || undefined,
+      strategy: (strategy === "vec" || strategy === "fts" || strategy === "multi")
+        ? strategy : undefined,
+      graph_seed: graphSeed || undefined,
+      graph_edge_kinds: graphEdgeKinds,
+      graph_depth: graphDepth,
     });
     res.json({ thoughts: hits });
   }));

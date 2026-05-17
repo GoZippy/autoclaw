@@ -43,6 +43,14 @@ export interface Edge {
   meta?: Record<string, unknown>;
 }
 
+/**
+ * Multi-strategy recall mode (Hindsight-inspired — §4 cross-pollination).
+ * "multi" runs vec + fts + graph in parallel and merges by score.
+ * "vec" and "fts" use only the named strategy.
+ * Defaults to "multi" when the field is omitted.
+ */
+export type SearchStrategy = "multi" | "vec" | "fts";
+
 export interface SearchOpts {
   k?: number;
   project?: string;
@@ -51,6 +59,14 @@ export interface SearchOpts {
   /** Time-travel query: only return thoughts that were valid at this ISO instant. */
   at?: string;          // ISO 8601 — bi-temporal validity filter
   includeText?: boolean;
+  /** Retrieval strategy. Defaults to "multi" (parallel vec+fts merge). */
+  strategy?: SearchStrategy;
+  /** Seed thought ID for graph-traversal arm of multi-strategy recall. */
+  graph_seed?: string;
+  /** Edge kinds to follow during graph traversal arm. */
+  graph_edge_kinds?: string[];
+  /** Graph traversal depth (max 8). Defaults to 2. */
+  graph_depth?: number;
 }
 
 export interface KnowledgeGraph {

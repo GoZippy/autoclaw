@@ -95,6 +95,8 @@ import {
   readProgramLink, touchParticipant, fanInCommsLog,
 } from './program-plane';
 import { stopSvidRefresh } from './svid';
+import { getFleetMetrics, recordTaskDuration, resetMetrics } from './metrics';
+export { recordTaskDuration }; // allow reconcile and other callers to import directly
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -378,6 +380,25 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.program.leave', async () => {
       await programLeaveCommand();
+    })
+  );
+
+  // Fleet metrics command
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.fleet.metrics', async () => {
+      const m = getFleetMetrics();
+      if (!m) {
+        vscode.window.showInformationMessage('AutoClaw Fleet Metrics: No task samples recorded yet.');
+        return;
+      }
+      const lines = [
+        `AutoClaw Fleet Metrics (${m.sample_count} tasks in window)`,
+        `  p50: ${Math.round(m.p50_ms / 1000)}s  p95: ${Math.round(m.p95_ms / 1000)}s  p99: ${Math.round(m.p99_ms / 1000)}s`,
+        `  min: ${Math.round(m.min_ms / 1000)}s  max: ${Math.round(m.max_ms / 1000)}s  mean: ${Math.round(m.mean_ms / 1000)}s`,
+        `  throughput: ${m.throughput_per_hour.toFixed(1)} tasks/hr`,
+        ...Object.entries(m.by_agent).map(([id, s]) => `  ${id}: p50=${Math.round(s.p50_ms / 1000)}s (${s.count} tasks)`),
+      ];
+      vscode.window.showInformationMessage(lines.join('\n'), { modal: true });
     })
   );
 
@@ -3193,6 +3214,7 @@ export function deactivate() {
     kgOutputChannel = undefined;
   }
   stopSvidRefresh();
+  resetMetrics();
 }
 
 // ---------------------------------------------------------------------------

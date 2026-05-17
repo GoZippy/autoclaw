@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Background agents, parallel sprint orchestration, and multi-agent teams. Type @autoclaw in any chat. Works with Claude, Copilot, Kiro, KiloCode, Cline, Cursor, Windsurf, and Continue. Zero setup.",
-  "version": "2.9.0",
+  "version": "3.0.0",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.95.0"
@@ -182,6 +182,10 @@
       {
         "command": "autoclaw.program.leave",
         "title": "AutoClaw: Leave Program"
+      },
+      {
+        "command": "autoclaw.fleet.metrics",
+        "title": "AutoClaw: Show Fleet Metrics"
       },
       {
         "command": "orchestrator.showDashboard",
@@ -488,7 +492,7 @@
     "pretest": "tsc -p ./",
     "test": "vscode-test",
     "test:integration": "vscode-test",
-    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js out/test/bridge.test.js out/test/comms.test.js out/test/manifest-probe.test.js out/test/reconcile.test.js out/test/kg-lifecycle.test.js out/test/fabric.test.js out/test/agent-card.test.js out/test/webview-rendering.test.js out/test/program-plane.test.js out/test/biscuit.test.js out/test/hatchet.test.js out/test/svid.test.js",
+    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js out/test/bridge.test.js out/test/comms.test.js out/test/manifest-probe.test.js out/test/reconcile.test.js out/test/kg-lifecycle.test.js out/test/fabric.test.js out/test/agent-card.test.js out/test/webview-rendering.test.js out/test/program-plane.test.js out/test/biscuit.test.js out/test/hatchet.test.js out/test/svid.test.js out/test/metrics.test.js",
     "sample:snapshot": "node scripts/sample-snapshot.js",
     "sample:autobuild": "node scripts/sample-autobuild-run.js",
     "sample:doctor": "node scripts/sample-doctor.js",

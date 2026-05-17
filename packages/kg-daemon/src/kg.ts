@@ -128,16 +128,54 @@ export class SqliteKnowledgeGraph implements KnowledgeGraph {
   async searchSimilar(text: string, opts: SearchOpts = {}): Promise<Thought[]> {
     if (typeof text !== "string" || text.length === 0) return [];
     const k = clampInt(opts.k ?? 10, 1, 200);
+    const strategy = opts.strategy ?? "multi";
 
-    // Try vector search first when available; fall back to FTS.
-    if (this.handle.caps.vec) {
-      const vec = await embed(text);
-      if (vec && vec.length === EMBEDDING_DIM) {
-        const hits = this.vecSearch(vec, k, opts);
-        if (hits.length > 0) return hits;
-      }
+    if (strategy === "fts") {
+      return this.ftsSearch(text, k, opts);
     }
-    return this.ftsSearch(text, k, opts);
+    if (strategy === "vec") {
+      if (!this.handle.caps.vec) return this.ftsSearch(text, k, opts);
+      const vec = await embed(text);
+      if (!vec || vec.length !== EMBEDDING_DIM) return this.ftsSearch(text, k, opts);
+      const hits = this.vecSearch(vec, k, opts);
+      return hits.length > 0 ? hits : this.ftsSearch(text, k, opts);
+    }
+
+    // "multi": run vec + fts (+ optional graph) in parallel, then merge by score.
+    const arms: Promise<Thought[]>[] = [];
+
+    const vecArm = this.handle.caps.vec
+      ? embed(text).then(vec => {
+          if (!vec || vec.length !== EMBEDDING_DIM) return [] as Thought[];
+          return this.vecSearch(vec, k * 2, opts);
+        }).catch(() => [] as Thought[])
+      : Promise.resolve([] as Thought[]);
+    arms.push(vecArm);
+
+    const ftsArm = Promise.resolve(this.ftsSearch(text, k * 2, opts));
+    arms.push(ftsArm);
+
+    if (opts.graph_seed) {
+      const graphArm = this.traverseFrom(
+        opts.graph_seed,
+        opts.graph_edge_kinds ?? [],
+        opts.graph_depth ?? 2,
+      ).then(thoughts => thoughts.filter(t => {
+        if (opts.project && t.project !== opts.project) return false;
+        if (opts.agent && t.agent !== opts.agent) return false;
+        if (opts.since && t.created_at < opts.since) return false;
+        if (opts.at) {
+          const vf = t.valid_from ?? t.created_at;
+          if (vf > opts.at) return false;
+          if (t.valid_to && t.valid_to <= opts.at) return false;
+        }
+        return true;
+      })).catch(() => [] as Thought[]);
+      arms.push(graphArm);
+    }
+
+    const results = await Promise.all(arms);
+    return mergeAndRank(results, k);
   }
 
   async traverseFrom(
@@ -319,4 +357,26 @@ function rowToThought(r: ThoughtRow): Thought {
 
 function safeParse(s: string): Record<string, unknown> | undefined {
   try { return JSON.parse(s) as Record<string, unknown>; } catch { return undefined; }
+}
+
+/**
+ * Merge results from multiple retrieval arms (Hindsight-inspired multi-strategy
+ * recall). Deduplicates by thought ID. Arm order determines priority when scores
+ * are equal — first arm (vec) wins ties.
+ */
+function mergeAndRank(arms: Thought[][], k: number): Thought[] {
+  const seen = new Set<string>();
+  const merged: Thought[] = [];
+  for (const arm of arms) {
+    for (const t of arm) {
+      if (!seen.has(t.id)) {
+        seen.add(t.id);
+        merged.push(t);
+      }
+    }
+  }
+  // Arm results are already ranked within each arm. After dedup, the merged
+  // list retains the natural interleaving order (vec first, fts second, graph
+  // third). Return at most k results.
+  return merged.slice(0, k);
 }

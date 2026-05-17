@@ -24,6 +24,15 @@ const fsPromises = fs.promises;
 /** Effort size: S = 1-2 days, M = 3-4 days, L = 5+ days */
 export type EffortSize = 'S' | 'M' | 'L' | 'XL';
 
+/**
+ * Task criticality tier (inspired by clawbridge-a2a NCR/IV workflow).
+ * Controls the consensus threshold required for approval:
+ *   1 = CRITICAL — all voters must approve (unanimous)
+ *   2 = MAJOR    — 2/3 approval threshold (default)
+ *   3 = ROUTINE  — simple majority (>50%)
+ */
+export type TaskCriticality = 1 | 2 | 3;
+
 export interface ManifestTask {
   id: string;
   name: string;
@@ -38,6 +47,11 @@ export interface ManifestTask {
    * full capability score.
    */
   required_capabilities?: string[];
+  /**
+   * Criticality tier controlling the consensus threshold.
+   * Defaults to 2 (MAJOR, 2/3 majority) when omitted.
+   */
+  criticality?: TaskCriticality;
 }
 
 /**
@@ -1333,6 +1347,27 @@ export const DEFAULT_CONSENSUS_CONFIG: ConsensusConfig = {
   min_confidence: 0.5,
   unanimous_categories: ['security'],
 };
+
+/**
+ * Map a task criticality tier to the appropriate `ConsensusConfig`.
+ * When `criticality` is omitted, the default config (2/3 majority) is returned.
+ *
+ *   criticality 1 (CRITICAL) → unanimous: approval_threshold = 1.0
+ *   criticality 2 (MAJOR)    → 2/3 majority (default)
+ *   criticality 3 (ROUTINE)  → simple majority: approval_threshold = 0.501
+ */
+export function consensusConfigForTask(
+  criticality: TaskCriticality | undefined,
+  base: ConsensusConfig = DEFAULT_CONSENSUS_CONFIG
+): ConsensusConfig {
+  if (criticality === 1) {
+    return { ...base, approval_threshold: 1.0, block_is_veto: true };
+  }
+  if (criticality === 3) {
+    return { ...base, approval_threshold: 0.501 };
+  }
+  return base; // criticality 2 or undefined → default (0.66)
+}
 
 /**
  * Evaluate whether consensus has been reached from a set of validation votes.

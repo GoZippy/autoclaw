@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.0.0] - 2026-05-17
+
+This release ("v3.0.0 — Cross-pollination harvest: criticality tiers, multi-strategy recall, fleet metrics") completes the `docs/DISTRIBUTED_AGENT_FABRIC.md` §4 cross-pollination roadmap. All Phase 3 and Phase 4 items from the spec are now shipped. Net: +420 LOC across 5 new/changed files, +19 tests (424 total passing).
+
+### Added
+
+- **Task criticality tiers** (`src/orchestrate.ts`) — `TaskCriticality = 1 | 2 | 3` on `ManifestTask` maps to consensus thresholds: 1=CRITICAL (unanimous, threshold=1.0), 2=MAJOR (2/3 majority, default), 3=ROUTINE (simple majority, threshold=0.501). New `consensusConfigForTask(criticality, base?)` helper selects the right `ConsensusConfig` without changing `evaluateConsensus()` API. Inspired by clawbridge-a2a NCR/IV criticality tiers. +8 tests.
+- **Hindsight-style multi-strategy parallel recall** (`packages/kg-daemon/`) — `SearchOpts.strategy` field (`"multi" | "vec" | "fts"`, default `"multi"`) controls retrieval. `"multi"` runs vector + FTS arms in parallel and optionally a graph traversal arm (`graph_seed`, `graph_edge_kinds`, `graph_depth` opts). Results are merged by deduplication with arm-priority ordering (vec wins ties). `GET /api/v1/thoughts/search` exposes all new params as query strings. Inspired by Hindsight Retain/Recall/Reflect parallel recall architecture.
+- **Fleet metrics** (`src/metrics.ts`) — `recordTaskDuration(taskId, agentId, durationMs)` accumulates task latency samples in a rolling 1-hour window (configurable). `getFleetMetrics()` returns p50/p95/p99/min/max/mean in ms, throughput in tasks/hour, per-agent breakdowns, and window timestamps. `autoclaw.fleet.metrics` command shows a modal summary in VS Code. `resetMetrics()` called on deactivation. Inspired by zippy-mcp-kit p50/p95/p99 instrumentation. +11 tests.
+
+### Changed
+
+- **`evaluateConsensus()` is unchanged** — `consensusConfigForTask()` is the public API for criticality-aware threshold selection; existing callers using `DEFAULT_CONSENSUS_CONFIG` continue to work.
+
 ## [2.9.0] - 2026-05-17
 
 This release ("Phase 4 SPIFFE/SVID workload identity") completes the final Phase 4 item from `docs/DISTRIBUTED_AGENT_FABRIC.md`. Net: +290 LOC across 3 new/changed files, +17 tests (405 total passing).
