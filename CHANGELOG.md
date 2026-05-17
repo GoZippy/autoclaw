@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.7.0] - 2026-05-17
+
+This release ("Phase 4 Biscuit capability tokens — mint, attenuate, verify, bridge integration") delivers the Biscuit token layer from `docs/specs/biscuit-token-attenuation.md`. Net: +360 LOC across 3 files, +14 tests (376 total passing).
+
+### Added
+
+- **Biscuit capability token layer** (`src/biscuit.ts`) — `mintBiscuitToken(agentId, capabilities, ttl)` creates an authority block with Ed25519 (WASM) or HMAC-SHA256 (mock). `attenuateBiscuitToken(token, restriction)` appends a restriction block narrowing capabilities to their intersection and expiry to the minimum — preventing privilege escalation. `verifyBiscuitToken(raw, required, revokedIds)` checks MAC, expiry, revocation, and required capabilities; returns `effective_capabilities`. `decodeBiscuitTokenUnsafe(raw)` for display-only decoding.
+- **Biscuit → bridge integration** — `validateRawToken()` (and `validateToken()`) now tries Biscuit verification before falling back to the UUID bearer DB. Biscuit tokens minted by any AutoClaw agent are accepted by the bridge without pre-registration. When `@biscuit-auth/biscuit-wasm` is installed as an optional dep, real Ed25519 tokens are used; without it the HMAC-SHA256 mock handles all local development.
+- **Biscuit tests** (`src/test/biscuit.test.ts`) — 11 tests: mint, verify, reject tampered/expired/revoked, attenuation privilege-escalation prevention, expiry narrowing.
+- **Bridge Biscuit tests** (`src/test/bridge.test.ts`) — 3 new tests: accept valid Biscuit token, reject expired, fall through to bearer DB.
+
 ## [2.6.0] - 2026-05-17
 
 This release ("Phase 3 remaining + Phase 4 foundations — capability query/offer handler, program-plane registry, kg-daemon path fix, panel v2 fields") completes Phase 3's distributed capability resolution cycle and delivers the Phase 4 cross-repo program-plane registry. Net: +700 LOC across 6 new/changed files, +24 tests (362 total passing).
