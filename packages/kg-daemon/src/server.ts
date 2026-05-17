@@ -10,7 +10,9 @@
  */
 
 import { fileURLToPath } from "node:url";
-import { resolve as resolvePath } from "node:path";
+import { resolve as resolvePath, join as joinPath } from "node:path";
+import { homedir } from "node:os";
+import { mkdirSync } from "node:fs";
 import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
 import type { Server } from "node:http";
@@ -36,10 +38,15 @@ export interface DaemonHandle {
 
 const DEFAULT_PORT = 9877;
 const DEFAULT_HOST = "127.0.0.1";
-const DEFAULT_DB = "./kg-prototype.db";
+
+function defaultDbPath(): string {
+  const dir = joinPath(homedir(), ".autoclaw", "kg");
+  mkdirSync(dir, { recursive: true });
+  return joinPath(dir, "kg.db");
+}
 
 export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> {
-  const dbPath = opts.dbPath ?? process.env.KG_DB_PATH ?? DEFAULT_DB;
+  const dbPath = opts.dbPath ?? process.env.KG_DB_PATH ?? defaultDbPath();
   const host = opts.host ?? process.env.KG_HOST ?? DEFAULT_HOST;
   const port = opts.port ?? Number(process.env.KG_PORT) ?? DEFAULT_PORT;
 

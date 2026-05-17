@@ -184,6 +184,18 @@ export function renderAgentCard(
     if (typeof agent.cost_budget.hourly_usd === 'number') { parts.push(`$${agent.cost_budget.hourly_usd}/hr`); }
     if (parts.length) { body += renderDetailRow('Budget', parts.join(' · ')); }
   }
+  // v2 identity + routing fields
+  if (agent.machine_id) { body += renderDetailRow('Machine', agent.machine_id); }
+  if (agent.machine_ip) { body += renderDetailRow('Machine IP', agent.machine_ip); }
+  if (typeof agent.max_parallel_tasks === 'number') {
+    body += renderDetailRow('Max Parallel', String(agent.max_parallel_tasks));
+  }
+  if (agent.human_in_loop_required) {
+    body += renderDetailRow('Human-in-Loop', 'required');
+  }
+  body += renderChips('Tools', agent.tools_supported);
+  body += renderChips('Skills', agent.skills_loaded);
+
   body += renderDetailRow('Last Heartbeat', formatAge(lastBeat, now));
   if (hb?.current_llm) { body += renderDetailRow('Current LLM', hb.current_llm); }
   if (typeof hb?.queue_depth === 'number') {

@@ -350,4 +350,42 @@ suite('webview-render — defensive edges', () => {
     const html = renderAgentCard(a);
     assert.match(html, /class="agent-name">cursor</);
   });
+
+  test('v2 fields: machine_id, machine_ip, max_parallel_tasks rendered', () => {
+    const a = makeMinimalAgent();
+    a.machine_id = 'dev-laptop-01';
+    a.machine_ip = '192.168.1.42';
+    a.max_parallel_tasks = 3;
+    const html = renderAgentCard(a);
+    assert.ok(html.includes('dev-laptop-01'), 'machine_id rendered');
+    assert.ok(html.includes('192.168.1.42'), 'machine_ip rendered');
+    assert.ok(html.includes('>3<'), 'max_parallel_tasks rendered');
+  });
+
+  test('v2 fields: human_in_loop_required shows required label', () => {
+    const a = makeMinimalAgent();
+    a.human_in_loop_required = true;
+    const html = renderAgentCard(a);
+    assert.ok(html.includes('Human-in-Loop'), 'label rendered');
+    assert.ok(html.includes('required'), 'value rendered');
+  });
+
+  test('v2 fields: tools_supported and skills_loaded rendered as chips', () => {
+    const a = makeMinimalAgent();
+    a.tools_supported = ['read_file', 'run_tests'];
+    a.skills_loaded = ['kdream', 'orchestrate'];
+    const html = renderAgentCard(a);
+    assert.ok(html.includes('read_file'), 'tool chip rendered');
+    assert.ok(html.includes('run_tests'), 'tool chip rendered');
+    assert.ok(html.includes('kdream'), 'skill chip rendered');
+    assert.ok(html.includes('orchestrate'), 'skill chip rendered');
+  });
+
+  test('v2 fields: absent optional fields produce no output', () => {
+    const a = makeMinimalAgent();
+    const html = renderAgentCard(a);
+    assert.ok(!html.includes('Machine'), 'no machine_id row when absent');
+    assert.ok(!html.includes('Human-in-Loop'), 'no human_in_loop row when absent');
+    assert.ok(!html.includes('Max Parallel'), 'no max_parallel row when absent');
+  });
 });
