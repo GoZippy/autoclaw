@@ -90,6 +90,10 @@ import {
 } from './kg';
 import { hasOrchestratorManifest } from './manifest-probe';
 import { runReconcile } from './reconcile';
+import {
+  listPrograms, createProgram, joinProgram, leaveProgram,
+  readProgramLink, touchParticipant, fanInCommsLog,
+} from './program-plane';
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -356,6 +360,23 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.kg.healthCheck', async () => {
       await kgHealthCheckCommand();
+    })
+  );
+
+  // Program-plane commands (Phase 4 cross-repo registry)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.program.create', async () => {
+      await programCreateCommand(context);
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.program.join', async () => {
+      await programJoinCommand(context);
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.program.leave', async () => {
+      await programLeaveCommand();
     })
   );
 
@@ -1964,6 +1985,17 @@ function startReconcileTicker(context: vscode.ExtensionContext): void {
       // any sprint YAML files, broadcast queries for new ones, and resolve
       // offers for previously broadcast queries.
       await runCapabilityResolutionSweep(workspaceRoot, commsDir);
+
+      // Program-plane heartbeat + fan-in
+      const homeDir = require('os').homedir() as string;
+      await touchParticipant(workspaceRoot, homeDir).catch(() => {});
+      const link = await readProgramLink(workspaceRoot).catch(() => null);
+      if (link) {
+        const added = await fanInCommsLog(link.program_id, homeDir).catch(() => 0);
+        if (added > 0) {
+          console.log(`[autoclaw] program-plane fan-in: +${added} lines`);
+        }
+      }
     } catch (err) {
       console.error('reconcile sweep failed:', err);
     }
@@ -3159,4 +3191,72 @@ export function deactivate() {
     kgOutputChannel.dispose();
     kgOutputChannel = undefined;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Program-plane commands (Phase 4)
+// ---------------------------------------------------------------------------
+
+async function programCreateCommand(context: vscode.ExtensionContext): Promise<void> {
+  const name = await vscode.window.showInputBox({
+    prompt: 'Program name (e.g. "My Zippy stack")',
+    placeHolder: 'My multi-repo program',
+  });
+  if (!name) { return; }
+
+  const homeDir = require('os').homedir() as string;
+  const reg = await createProgram({ programName: name, homeDir });
+
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (workspaceRoot) {
+    const addSelf = await vscode.window.showQuickPick(['Yes', 'No'], {
+      placeHolder: `Add current workspace (${path.basename(workspaceRoot)}) as a participant?`,
+    });
+    if (addSelf === 'Yes') {
+      await joinProgram({ programId: reg.program_id, repoPath: workspaceRoot, homeDir });
+    }
+  }
+  vscode.window.showInformationMessage(`Program "${name}" created (ID: ${reg.program_id})`);
+}
+
+async function programJoinCommand(context: vscode.ExtensionContext): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('Open a workspace first.'); return; }
+
+  const homeDir = require('os').homedir() as string;
+  const programs = await listPrograms(homeDir);
+  if (programs.length === 0) {
+    vscode.window.showWarningMessage('No programs found. Use "AutoClaw: Create Program…" first.');
+    return;
+  }
+
+  const items = programs.map(p => ({ label: p.program_name, description: p.program_id, detail: `${p.participants.length} participant(s)` }));
+  const picked = await vscode.window.showQuickPick(items, { placeHolder: 'Select a program to join' });
+  if (!picked) { return; }
+
+  const roleItem = await vscode.window.showQuickPick(
+    [{ label: 'orchestrator', description: 'Receives task assignments' }, { label: 'observer', description: 'Read-only; watches without receiving tasks' }],
+    { placeHolder: 'Role for this workspace' }
+  );
+  const role = (roleItem?.label ?? 'orchestrator') as 'orchestrator' | 'observer';
+  await joinProgram({ programId: picked.description!, repoPath: workspaceRoot, homeDir, role });
+  vscode.window.showInformationMessage(`Joined program "${picked.label}" as ${role}.`);
+}
+
+async function programLeaveCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('Open a workspace first.'); return; }
+
+  const homeDir = require('os').homedir() as string;
+  const link = await readProgramLink(workspaceRoot);
+  if (!link) {
+    vscode.window.showInformationMessage('This workspace is not joined to any program.');
+    return;
+  }
+  const confirm = await vscode.window.showQuickPick(['Yes, leave', 'Cancel'], {
+    placeHolder: `Leave program ${link.program_id}?`,
+  });
+  if (!confirm?.startsWith('Yes')) { return; }
+  await leaveProgram(workspaceRoot, homeDir);
+  vscode.window.showInformationMessage('Left the program. The backref has been removed.');
 }
