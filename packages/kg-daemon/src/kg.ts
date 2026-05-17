@@ -26,6 +26,8 @@ interface ThoughtRow {
   meta_json: string | null;
   has_embed: number;
   rowid: number;
+  valid_from: string | null;
+  valid_to: string | null;
 }
 
 export class SqliteKnowledgeGraph implements KnowledgeGraph {
@@ -62,8 +64,8 @@ export class SqliteKnowledgeGraph implements KnowledgeGraph {
         : 0;
 
     const stmt = this.handle.db.prepare(`
-      INSERT INTO thoughts (id, project, agent, sprint, task_id, kind, text, created_at, meta_json, has_embed)
-      VALUES (@id, @project, @agent, @sprint, @task_id, @kind, @text, @created_at, @meta_json, @has_embed)
+      INSERT INTO thoughts (id, project, agent, sprint, task_id, kind, text, created_at, meta_json, has_embed, valid_from, valid_to)
+      VALUES (@id, @project, @agent, @sprint, @task_id, @kind, @text, @created_at, @meta_json, @has_embed, @valid_from, @valid_to)
     `);
 
     const tx = this.handle.db.transaction(() => {
@@ -78,6 +80,8 @@ export class SqliteKnowledgeGraph implements KnowledgeGraph {
         created_at: createdAt,
         meta_json: t.meta ? JSON.stringify(t.meta) : null,
         has_embed: hasEmbed,
+        valid_from: (t as Record<string, unknown>).valid_from as string ?? createdAt,
+        valid_to: (t as Record<string, unknown>).valid_to as string ?? null,
       });
       if (hasEmbed === 1 && embedding) {
         const row = this.handle.db
@@ -286,6 +290,13 @@ function applyPostFilters<R extends ThoughtRow>(rows: R[], opts: SearchOpts): R[
     if (opts.project && r.project !== opts.project) return false;
     if (opts.agent && r.agent !== opts.agent) return false;
     if (opts.since && r.created_at < opts.since) return false;
+    // Bi-temporal validity filter: when ?at= is provided, only include thoughts
+    // that were asserted by that instant and not yet retracted.
+    if (opts.at) {
+      const vf = r.valid_from ?? r.created_at;
+      if (vf > opts.at) return false;          // not yet valid
+      if (r.valid_to && r.valid_to <= opts.at) return false; // already retracted
+    }
     return true;
   });
 }
@@ -300,6 +311,8 @@ function rowToThought(r: ThoughtRow): Thought {
     kind: r.kind,
     text: r.text,
     created_at: r.created_at,
+    ...(r.valid_from ? { valid_from: r.valid_from } : {}),
+    ...(r.valid_to   ? { valid_to:   r.valid_to   } : {}),
     meta: r.meta_json ? safeParse(r.meta_json) : undefined,
   };
 }

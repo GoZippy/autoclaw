@@ -29,6 +29,10 @@ export interface Thought {
   text: string;
   embedding?: number[];
   created_at: string; // ISO 8601
+  /** Bi-temporal validity window (Graphiti Phase 4). When omitted, valid from created_at onwards. */
+  valid_from?: string;
+  /** When the assertion was retracted/superseded. Null = still valid. */
+  valid_to?: string;
   meta?: Record<string, unknown>;
 }
 
@@ -44,6 +48,8 @@ export interface SearchOpts {
   project?: string;
   agent?: string;
   since?: string;       // ISO 8601
+  /** Time-travel query: only return thoughts that were valid at this ISO instant. */
+  at?: string;          // ISO 8601 — bi-temporal validity filter
   includeText?: boolean;
 }
 

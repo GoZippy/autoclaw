@@ -130,8 +130,10 @@ export function buildApp(
         kind: body.kind as string,
         text: body.text as string,
         embedding: body.embedding as number[] | undefined,
+        valid_from: typeof body.valid_from === "string" ? body.valid_from : undefined,
+        valid_to:   typeof body.valid_to   === "string" ? body.valid_to   : undefined,
         meta: body.meta as Record<string, unknown> | undefined,
-      });
+      } as Parameters<typeof kg.recordThought>[0]);
       res.status(201).json({ id });
     } catch (e) {
       sendErr(res, 400, (e as Error).message);
@@ -164,11 +166,13 @@ export function buildApp(
     const project = strParam(req, "project");
     const agent = strParam(req, "agent");
     const since = strParam(req, "since");
+    const at = strParam(req, "at"); // bi-temporal time-travel
     const hits = await kg.searchSimilar(q, {
       k,
       project: project || undefined,
       agent: agent || undefined,
       since: since || undefined,
+      at: at || undefined,
     });
     res.json({ thoughts: hits });
   }));

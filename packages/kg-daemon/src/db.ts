@@ -78,6 +78,22 @@ function createSchema(db: SqliteDb, caps: Capabilities): void {
       ON thoughts(created_at DESC);
   `);
 
+  // Bi-temporal validity migration (Graphiti-inspired Phase 4 feature).
+  // `valid_from` / `valid_to` record the assertion window so agents can
+  // query "what did the fleet believe at sprint N" via ?at=<ISO>.
+  // Migration is additive (ALTER TABLE IF column doesn't exist).
+  const cols = (db.pragma("table_info(thoughts)") as Array<{ name: string }>).map(c => c.name);
+  if (!cols.includes('valid_from')) {
+    db.exec(`ALTER TABLE thoughts ADD COLUMN valid_from TEXT`);
+  }
+  if (!cols.includes('valid_to')) {
+    db.exec(`ALTER TABLE thoughts ADD COLUMN valid_to   TEXT`);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS thoughts_valid_from ON thoughts(valid_from);
+    CREATE INDEX IF NOT EXISTS thoughts_valid_to   ON thoughts(valid_to);
+  `);
+
   // Edges table — graph half of Tier 1.
   db.exec(`
     CREATE TABLE IF NOT EXISTS edges (

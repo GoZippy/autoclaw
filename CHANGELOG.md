@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.8.0] - 2026-05-17
+
+This release ("Phase 4 Hatchet durable workflow adapter + kg-daemon bi-temporal validity") delivers the final two Phase 4 items from `docs/DISTRIBUTED_AGENT_FABRIC.md`. Net: +310 LOC across 2 new/changed files, +12 tests (388 total passing).
+
+### Added
+
+- **Hatchet durable workflow adapter** (`src/hatchet.ts`) — `registerWorkflow(def)` registers a DAG-structured workflow; `triggerWorkflow(name, input)` executes it asynchronously and returns a `runId` immediately. `getWorkflowStatus(runId)` and `listWorkflowRuns(name?)` provide observability. Steps declare `depends_on[]` edges for topological execution; each step gets a `WorkflowContext` with prior `stepResults`. Per-step `timeout_ms` enforcement prevents hung handlers. `isHatchetAvailable()` dynamically probes for `@hatchet-dev/typescript-sdk` and transparently upgrades the `triggerWorkflow()` path to the real Hatchet runtime when found. `registerAutoclawPipeline()` registers the canonical plan→assign→review→merge pipeline as a built-in workflow. In-memory engine is always available as a fallback for local development without Hatchet credentials.
+- **Hatchet tests** (`src/test/hatchet.test.ts`) — 12 tests: registerWorkflow + trigger, unknown workflow rejection, succeeded status with stepResults, DAG chain with ctx.stepResults, failing step transitions to failed, step timeout, null status for unknown runId, listWorkflowRuns with and without filter, started_at/finished_at timestamps, input preservation, full 4-step pipeline.
+- **kg-daemon bi-temporal validity** (`packages/kg-daemon/`) — `thoughts` table gains `valid_from` and `valid_to` columns (additive `ALTER TABLE` migration — safe against existing databases). `POST /api/v1/thoughts` accepts `valid_from` and `valid_to` fields. `GET /api/v1/thoughts/search` accepts `?at=<ISO>` for time-travel queries returning only thoughts that were valid at that instant. `applyPostFilters()` in `kg.ts` enforces the bi-temporal window: `valid_from ≤ at < valid_to`. Agents can now query "what did the fleet believe at sprint N" without needing a snapshot.
+
 ## [2.7.0] - 2026-05-17
 
 This release ("Phase 4 Biscuit capability tokens — mint, attenuate, verify, bridge integration") delivers the Biscuit token layer from `docs/specs/biscuit-token-attenuation.md`. Net: +360 LOC across 3 files, +14 tests (376 total passing).
