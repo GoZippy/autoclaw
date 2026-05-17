@@ -15,6 +15,7 @@ import {
   evaluateConsensus, DEFAULT_CONSENSUS_CONFIG,
   type ValidationVote, type ConsensusResult,
 } from './orchestrate';
+import { verifyBiscuitToken } from './biscuit';
 
 const fsPromises = fs.promises;
 
@@ -107,17 +108,33 @@ export async function createRemoteAgentToken(tokensPath: string, agentId: string
 
 export async function validateToken(tokensPath: string, auth: string | undefined): Promise<RemoteAgentToken | null> {
   if (!auth?.startsWith('Bearer ')) { return null; }
-  const tokens = await readTokens(tokensPath);
-  const m = tokens.find(t => t.token === auth.slice(7));
-  if (!m || new Date(m.expires_at).getTime() < Date.now()) { return null; }
-  if (m.revoked_at) { return null; }
-  return m;
+  return validateRawToken(tokensPath, auth.slice(7));
 }
 
 /** Validate a raw token string (no "Bearer " prefix). Used for SSE/WS where
- *  the token comes via subprotocol or query param rather than Authorization. */
+ *  the token comes via subprotocol or query param rather than Authorization.
+ *
+ *  Supports two token formats:
+ *  1. UUID-style bearer tokens stored in tokens.json (existing behaviour).
+ *  2. Biscuit capability tokens (Phase 4) — detected by attempting Biscuit
+ *     verification; if it succeeds the token is accepted without a DB lookup.
+ */
 export async function validateRawToken(tokensPath: string, raw: string | undefined): Promise<RemoteAgentToken | null> {
   if (!raw) { return null; }
+
+  // Try Biscuit path first (dynamic — no WASM required; mock is always available)
+  const biscuitResult = await verifyBiscuitToken(raw).catch(() => ({ ok: false as const, reason: 'exception' }));
+  if (biscuitResult.ok) {
+    return {
+      agent_id: biscuitResult.facts.agent_id,
+      token: raw,
+      created_at: biscuitResult.facts.expires_at, // use expiry as proxy — Biscuit tokens are self-contained
+      expires_at: biscuitResult.facts.expires_at,
+      scopes: biscuitResult.effective_capabilities,
+    };
+  }
+
+  // Fall back to bearer token DB lookup
   const tokens = await readTokens(tokensPath);
   const m = tokens.find(t => t.token === raw);
   if (!m || new Date(m.expires_at).getTime() < Date.now()) { return null; }

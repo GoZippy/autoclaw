@@ -821,3 +821,43 @@ suite('Bridge — WebSocket /api/v1/messages/stream', () => {
     assert.strictEqual(state.bus!.subscriberCount('message'), before - 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Biscuit token validation path in validateRawToken
+// ---------------------------------------------------------------------------
+
+import { mintBiscuitToken } from '../biscuit';
+import { validateRawToken } from '../bridge';
+
+suite('Bridge — Biscuit token validation', () => {
+  function tmpDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'biscuit-bridge-'));
+  }
+
+  test('validateRawToken accepts a valid Biscuit token', async () => {
+    const tok = await mintBiscuitToken('remote-1', ['typescript', 'review'], 3600);
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    const result = await validateRawToken(tokensPath, tok.raw);
+    assert.ok(result !== null, 'should accept a valid Biscuit token');
+    assert.strictEqual(result!.agent_id, 'remote-1');
+    assert.ok(result!.scopes.includes('typescript'));
+  });
+
+  test('validateRawToken rejects an expired Biscuit token', async () => {
+    const tok = await mintBiscuitToken('remote-1', ['typescript'], -1); // expired
+    const dir = tmpDir();
+    const result = await validateRawToken(path.join(dir, 'tokens.json'), tok.raw);
+    assert.strictEqual(result, null, 'expired Biscuit token should be rejected');
+  });
+
+  test('validateRawToken falls through to bearer DB for non-Biscuit tokens', async () => {
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    const { createRemoteAgentToken } = await import('../bridge');
+    const bearerTok = await createRemoteAgentToken(tokensPath, 'legacyAgent');
+    const result = await validateRawToken(tokensPath, bearerTok.token);
+    assert.ok(result !== null, 'should accept a valid bearer token via fallback');
+    assert.strictEqual(result!.agent_id, 'legacyAgent');
+  });
+});
