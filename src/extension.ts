@@ -94,6 +94,7 @@ import {
   listPrograms, createProgram, joinProgram, leaveProgram,
   readProgramLink, touchParticipant, fanInCommsLog,
 } from './program-plane';
+import { stopSvidRefresh } from './svid';
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -3191,6 +3192,7 @@ export function deactivate() {
     kgOutputChannel.dispose();
     kgOutputChannel = undefined;
   }
+  stopSvidRefresh();
 }
 
 // ---------------------------------------------------------------------------

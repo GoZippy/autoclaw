@@ -16,6 +16,7 @@ import {
   type ValidationVote, type ConsensusResult,
 } from './orchestrate';
 import { verifyBiscuitToken } from './biscuit';
+import { verifySvid } from './svid';
 
 const fsPromises = fs.promises;
 
@@ -114,15 +115,30 @@ export async function validateToken(tokensPath: string, auth: string | undefined
 /** Validate a raw token string (no "Bearer " prefix). Used for SSE/WS where
  *  the token comes via subprotocol or query param rather than Authorization.
  *
- *  Supports two token formats:
- *  1. UUID-style bearer tokens stored in tokens.json (existing behaviour).
- *  2. Biscuit capability tokens (Phase 4) — detected by attempting Biscuit
- *     verification; if it succeeds the token is accepted without a DB lookup.
+ *  Supports three token formats, tried in order:
+ *  1. JWT-SVID (SPIFFE Phase 4) — detected by 3-part JWT shape + spiffe:// sub.
+ *  2. Biscuit capability tokens (Phase 4) — base64url envelope with HMAC/WASM.
+ *  3. UUID-style bearer tokens stored in tokens.json (existing behaviour).
  */
 export async function validateRawToken(tokensPath: string, raw: string | undefined): Promise<RemoteAgentToken | null> {
   if (!raw) { return null; }
 
-  // Try Biscuit path first (dynamic — no WASM required; mock is always available)
+  // Try JWT-SVID path (3-part JWT with spiffe:// subject)
+  if (raw.split('.').length === 3) {
+    const svidResult = await verifySvid(raw).catch(() => ({ ok: false as const, reason: 'exception' }));
+    if (svidResult.ok) {
+      const expiresAt = new Date(svidResult.claims.exp * 1000).toISOString();
+      return {
+        agent_id: svidResult.claims.agent_id,
+        token: raw,
+        created_at: new Date(svidResult.claims.iat * 1000).toISOString(),
+        expires_at: expiresAt,
+        scopes: [],
+      };
+    }
+  }
+
+  // Try Biscuit path (dynamic — no WASM required; mock is always available)
   const biscuitResult = await verifyBiscuitToken(raw).catch(() => ({ ok: false as const, reason: 'exception' }));
   if (biscuitResult.ok) {
     return {

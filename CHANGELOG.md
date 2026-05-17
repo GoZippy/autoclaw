@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.9.0] - 2026-05-17
+
+This release ("Phase 4 SPIFFE/SVID workload identity") completes the final Phase 4 item from `docs/DISTRIBUTED_AGENT_FABRIC.md`. Net: +290 LOC across 3 new/changed files, +17 tests (405 total passing).
+
+### Added
+
+- **SPIFFE/SVID workload identity layer** (`src/svid.ts`) — `mintSvid(agentId, opts)` produces a JWT-SVID (SPIFFE JWT-SVID spec) with a 5-minute TTL by default. The JWT uses HMAC-SHA256 signing (mock path, always available via `AUTOCLAW_SVID_SECRET` or `AUTOCLAW_BISCUIT_SECRET`); when `AUTOCLAW_SPIRE_SOCKET` points to a running SPIRE workload agent, real SVIDs are fetched via the SPIFFE Workload API gRPC endpoint. `verifySvid(raw, opts)` checks signature, expiry (with configurable clock-skew tolerance), and audience. `getCurrentSvid(agentId)` caches the current SVID and auto-refreshes every 4 minutes before the 5-minute TTL expires. `stopSvidRefresh()` clears the timer on extension deactivation. `isSpireAvailable()` probes for the optional `@spiffehq/spiffe-workload-api` dep.
+- **SVID → bridge integration** — `validateRawToken()` now tries JWT-SVID verification first (detected by 3-part JWT shape), then Biscuit, then bearer DB. This gives fleet agents a self-contained identity credential with short-lived tokens and no pre-registration required.
+- **SVID tests** (`src/test/svid.test.ts`) — 14 tests: mint, TTL defaults and custom, verify (fresh/tampered header/tampered sig/expired/wrong audience/malformed), unsafe decode, SPIRE unavailable, getCurrentSvid caching, stopSvidRefresh.
+- **Bridge SVID tests** (`src/test/bridge.test.ts`) — 3 new tests: accept valid SVID, reject expired, fall through from SVID to Biscuit when token format doesn't match.
+
 ## [2.8.0] - 2026-05-17
 
 This release ("Phase 4 Hatchet durable workflow adapter + kg-daemon bi-temporal validity") delivers the final two Phase 4 items from `docs/DISTRIBUTED_AGENT_FABRIC.md`. Net: +310 LOC across 2 new/changed files, +12 tests (388 total passing).

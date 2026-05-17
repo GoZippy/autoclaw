@@ -861,3 +861,46 @@ suite('Bridge — Biscuit token validation', () => {
     assert.strictEqual(result!.agent_id, 'legacyAgent');
   });
 });
+
+// ---------------------------------------------------------------------------
+// SVID validation path in validateRawToken
+// ---------------------------------------------------------------------------
+
+import { mintSvid, stopSvidRefresh } from '../svid';
+
+suite('Bridge — SVID token validation', () => {
+  function tmpDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'svid-bridge-'));
+  }
+
+  teardown(() => {
+    stopSvidRefresh();
+  });
+
+  test('validateRawToken accepts a valid SVID token', async () => {
+    const svid = await mintSvid('fleet-agent-1', { workspacePath: '/my/workspace' });
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    const result = await validateRawToken(tokensPath, svid.raw);
+    assert.ok(result !== null, 'should accept a valid JWT-SVID');
+    assert.strictEqual(result!.agent_id, 'fleet-agent-1');
+    assert.ok(result!.expires_at.length > 0);
+  });
+
+  test('validateRawToken rejects an expired SVID', async () => {
+    const svid = await mintSvid('fleet-agent-1', { ttlSeconds: -60 }); // clearly expired (beyond skew window)
+    const dir = tmpDir();
+    const result = await validateRawToken(path.join(dir, 'tokens.json'), svid.raw);
+    assert.strictEqual(result, null, 'expired SVID should be rejected');
+  });
+
+  test('validateRawToken falls through from SVID to Biscuit when token is not an SVID', async () => {
+    const biscuit = await mintBiscuitToken('orchestrator', ['review'], 3600);
+    const dir = tmpDir();
+    const tokensPath = path.join(dir, 'tokens.json');
+    // Biscuit raw is NOT a 3-part JWT, so SVID path is skipped
+    const result = await validateRawToken(tokensPath, biscuit.raw);
+    assert.ok(result !== null, 'should fall through to Biscuit path');
+    assert.strictEqual(result!.agent_id, 'orchestrator');
+  });
+});
