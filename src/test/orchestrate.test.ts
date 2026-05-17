@@ -20,6 +20,8 @@ import {
   scoreAgent,
   jaccardIndex,
   trustWeight,
+  broadcastCapabilityQueries,
+  resolveCapabilityOffers,
 } from '../orchestrate';
 import type {
   ManifestTask,
@@ -29,6 +31,7 @@ import type {
   Sprint,
   ScorableAgent,
   PlannedTask,
+  CapabilityPendingTask,
 } from '../orchestrate';
 
 // ---------------------------------------------------------------------------
@@ -1193,7 +1196,7 @@ suite('Orchestrate — planSprints with capability-aware registry', () => {
     assert.strictEqual(winner, 'WA-2', 'high-trust slot should win the security task');
   });
 
-  test('falls back to round-robin and emits a notes warning when no agent has positive score', () => {
+  test('emits capability_pending and a notes warning when no agent has positive score for a capabilities task', () => {
     // Task requires "rust" — no agent has it, so jaccard is 0 for everyone.
     const tasks = [taskWithCaps('rusty', ['rust'])];
     const dag = buildDAG(tasks);
@@ -1214,16 +1217,23 @@ suite('Orchestrate — planSprints with capability-aware registry', () => {
       undefined,
       agents
     );
-    // Task is still assigned (round-robin fallback).
+    // Task is still assigned (round-robin fallback) while awaiting a capability offer.
     const flat = sprints.flatMap(s => s.assignments);
     assert.ok(flat.some(a => a.tasks.some(t => t.id === 'rusty')),
-      'rust task should be assigned via round-robin fallback');
-    // Warning recorded in the sprint's notes.
-    const sprintWithNotes = sprints.find(s => s.notes && s.notes.length > 0);
-    assert.ok(sprintWithNotes, 'expected a sprint with notes when fallback fired');
+      'rust task should be assigned via round-robin fallback while awaiting capability offers');
+    // capability_pending recorded on the sprint.
+    const sprintWithPending = sprints.find(s => s.capability_pending && s.capability_pending.length > 0);
+    assert.ok(sprintWithPending, 'expected a sprint with capability_pending when no agent qualifies');
     assert.ok(
-      sprintWithNotes!.notes!.some(n => n.includes('rusty') && n.includes('round-robin')),
-      `expected notes to mention rusty + round-robin, got: ${JSON.stringify(sprintWithNotes!.notes)}`
+      sprintWithPending!.capability_pending!.some(p => p.task_id === 'rusty' && p.required_capabilities.includes('rust')),
+      `expected capability_pending entry for rusty, got: ${JSON.stringify(sprintWithPending!.capability_pending)}`
+    );
+    // Notes also mention the capability query broadcast.
+    const sprintWithNotes = sprints.find(s => s.notes && s.notes.length > 0);
+    assert.ok(sprintWithNotes, 'expected a sprint with notes when capability_pending fired');
+    assert.ok(
+      sprintWithNotes!.notes!.some(n => n.includes('rusty') && n.includes('capability_query')),
+      `expected notes to mention rusty + capability_query, got: ${JSON.stringify(sprintWithNotes!.notes)}`
     );
   });
 
@@ -1285,6 +1295,86 @@ suite('Orchestrate — planSprints with capability-aware registry', () => {
       .flatMap(s => s.assignments)
       .reduce((sum, a) => sum + a.tasks.length, 0);
     assert.strictEqual(totalAssigned, 2, 'both tasks should be assigned');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Capability Query / Offer round-trip
+// ---------------------------------------------------------------------------
+
+suite('Orchestrate — broadcastCapabilityQueries + resolveCapabilityOffers', () => {
+  function makeTmpDir(): string {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'capq-test-'));
+    return d;
+  }
+
+  const pending: CapabilityPendingTask[] = [
+    { task_id: 'rust-task', required_capabilities: ['rust'], sprint: 1, query_id: 'capq-rust-sp1' },
+  ];
+
+  test('broadcastCapabilityQueries writes a capability_query to shared inbox', async () => {
+    const commsDir = makeTmpDir();
+    await broadcastCapabilityQueries(commsDir, 'orchestrator', pending);
+    const sharedInbox = path.join(commsDir, 'inboxes', 'shared');
+    const files = fs.readdirSync(sharedInbox).filter(f => f.includes('capability_query'));
+    assert.strictEqual(files.length, 1, 'one capability_query file written');
+    const msg = JSON.parse(fs.readFileSync(path.join(sharedInbox, files[0]), 'utf8'));
+    assert.strictEqual(msg.type, 'capability_query');
+    assert.strictEqual(msg.payload.query_id, 'capq-rust-sp1');
+    assert.deepStrictEqual(msg.payload.required_capabilities, ['rust']);
+  });
+
+  test('broadcastCapabilityQueries is a no-op for empty pending list', async () => {
+    const commsDir = makeTmpDir();
+    await broadcastCapabilityQueries(commsDir, 'orchestrator', []);
+    assert.ok(!fs.existsSync(path.join(commsDir, 'inboxes', 'shared')), 'no inbox created for empty list');
+  });
+
+  test('resolveCapabilityOffers returns empty when no offers present', async () => {
+    const commsDir = makeTmpDir();
+    const resolutions = await resolveCapabilityOffers(commsDir, 'orchestrator', pending);
+    assert.deepStrictEqual(resolutions, []);
+  });
+
+  test('resolveCapabilityOffers picks best offer by Jaccard score', async () => {
+    const commsDir = makeTmpDir();
+    const inboxDir = path.join(commsDir, 'inboxes', 'orchestrator');
+    fs.mkdirSync(inboxDir, { recursive: true });
+
+    // Offer A: partial match (rust only)
+    const offerA = {
+      id: 'offer-a', from: 'remote-1', to: 'orchestrator', type: 'capability_offer',
+      timestamp: new Date().toISOString(),
+      payload: { for_query_id: 'capq-rust-sp1', agent_id: 'remote-1', capabilities: ['rust'], estimated_cost_usd: 5 },
+    };
+    // Offer B: full match + cheaper
+    const offerB = {
+      id: 'offer-b', from: 'remote-2', to: 'orchestrator', type: 'capability_offer',
+      timestamp: new Date().toISOString(),
+      payload: { for_query_id: 'capq-rust-sp1', agent_id: 'remote-2', capabilities: ['rust', 'wasm'], estimated_cost_usd: 1 },
+    };
+    fs.writeFileSync(path.join(inboxDir, '2026-01-01-capability_offer-remote-1.json'), JSON.stringify(offerA));
+    fs.writeFileSync(path.join(inboxDir, '2026-01-01-capability_offer-remote-2.json'), JSON.stringify(offerB));
+
+    const resolutions = await resolveCapabilityOffers(commsDir, 'orchestrator', pending);
+    assert.strictEqual(resolutions.length, 1);
+    assert.strictEqual(resolutions[0].task_id, 'rust-task');
+    // Both have recall=1.0 (both have 'rust'), B has lower cost_usd (1 vs 5) → B wins
+    assert.strictEqual(resolutions[0].winning_agent_id, 'remote-2');
+  });
+
+  test('resolveCapabilityOffers ignores offers for different query_id', async () => {
+    const commsDir = makeTmpDir();
+    const inboxDir = path.join(commsDir, 'inboxes', 'orchestrator');
+    fs.mkdirSync(inboxDir, { recursive: true });
+    const wrongOffer = {
+      id: 'offer-x', from: 'remote-x', to: 'orchestrator', type: 'capability_offer',
+      timestamp: new Date().toISOString(),
+      payload: { for_query_id: 'capq-wrong-sp9', agent_id: 'remote-x', capabilities: ['rust'] },
+    };
+    fs.writeFileSync(path.join(inboxDir, '2026-01-01-capability_offer-remote-x.json'), JSON.stringify(wrongOffer));
+    const resolutions = await resolveCapabilityOffers(commsDir, 'orchestrator', pending);
+    assert.deepStrictEqual(resolutions, []);
   });
 });
 

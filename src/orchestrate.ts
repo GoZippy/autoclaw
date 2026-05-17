@@ -80,6 +80,15 @@ export interface SprintAssignment {
   migration_range: { start: number; end: number } | null;
 }
 
+/** A task whose required capabilities could not be served by any local agent. */
+export interface CapabilityPendingTask {
+  task_id: string;
+  required_capabilities: string[];
+  sprint: number;
+  /** Stable query ID so offers can be correlated without duplicate broadcasts. */
+  query_id: string;
+}
+
 export interface Sprint {
   sprint: number;
   level: number;
@@ -93,6 +102,12 @@ export interface Sprint {
    * required_capabilities). Optional for backwards compatibility.
    */
   notes?: string[];
+  /**
+   * Tasks that have `required_capabilities` but no local agent can serve them.
+   * Callers should broadcast `capability_query` messages for these and re-plan
+   * once `capability_offer` responses arrive.
+   */
+  capability_pending?: CapabilityPendingTask[];
 }
 
 export interface PlanSummary {
@@ -548,6 +563,7 @@ export function planSprints(
     while (remaining.length > 0) {
       const remainingBefore = remaining.length;
       const sprintNotes: string[] = [];
+      const capabilityPending: CapabilityPendingTask[] = [];
 
       // Per-slot accumulators for THIS sprint. Indexed by agentIdx (0-based).
       interface SlotState {
@@ -649,18 +665,41 @@ export function planSprints(
           if (bestSlot && anyPositive) {
             commit(bestSlot, task);
           } else if (bestSlot && !anyPositive) {
-            // No agent had a positive score — fall back to round-robin
-            // for THIS task (lowest-numbered acceptable slot) and
-            // record a warning.
-            const fallbackSlot = slots.find(s => slotCanAccept(s, task));
-            if (fallbackSlot) {
-              commit(fallbackSlot, task);
+            // No agent had a positive score.
+            const required = task.required_capabilities ?? [];
+            if (required.length > 0) {
+              // Task declares specific capabilities — no local agent qualifies.
+              // Record as capability_pending so the caller can broadcast a
+              // capability_query and re-plan once offers arrive.
+              // Still fall back to round-robin so the sprint isn't blocked,
+              // but flag the pending query so callers can override if a remote
+              // agent responds before execution starts.
+              const fallbackSlot = slots.find(s => slotCanAccept(s, task));
+              if (fallbackSlot) {
+                commit(fallbackSlot, task);
+              }
+              capabilityPending.push({
+                task_id: task.id,
+                required_capabilities: required,
+                sprint: sprintNumber,
+                query_id: `capq-${task.id}-sp${sprintNumber}`,
+              });
               sprintNotes.push(
-                `task ${task.id}: no agent had positive capability score; ` +
-                `fell back to round-robin (assigned ${fallbackSlot.agentId})`
+                `task ${task.id}: requires [${required.join(', ')}] but no local agent qualifies; ` +
+                `capability_query broadcasted (query_id: capq-${task.id}-sp${sprintNumber})`
               );
             } else {
-              stillRemaining.push(taskId);
+              // No required capabilities — generic load-balancing fallback.
+              const fallbackSlot = slots.find(s => slotCanAccept(s, task));
+              if (fallbackSlot) {
+                commit(fallbackSlot, task);
+                sprintNotes.push(
+                  `task ${task.id}: no agent had positive capability score; ` +
+                  `fell back to round-robin (assigned ${fallbackSlot.agentId})`
+                );
+              } else {
+                stillRemaining.push(taskId);
+              }
             }
           } else {
             stillRemaining.push(taskId);
@@ -740,6 +779,9 @@ export function planSprints(
         };
         if (sprintNotes.length > 0) {
           sprint.notes = sprintNotes;
+        }
+        if (capabilityPending.length > 0) {
+          sprint.capability_pending = capabilityPending;
         }
         sprints.push(sprint);
         sprintNumber++;
@@ -1033,6 +1075,12 @@ export async function writeSprintArtifacts(
   const mdPath = path.join(sprintsDir, `sprint-${sprint.sprint}.md`);
   await writeYAMLFile(yamlPath, sprint);
   await fsPromises.writeFile(mdPath, renderSprintMarkdown(sprint, projectName), 'utf8');
+  // Write JSON sidecar when capability_pending tasks exist so the reconcile
+  // sweep can read them without a YAML parser.
+  if (sprint.capability_pending && sprint.capability_pending.length > 0) {
+    const jsonPath = path.join(sprintsDir, `sprint-${sprint.sprint}.json`);
+    await fsPromises.writeFile(jsonPath, JSON.stringify(sprint, null, 2), 'utf8');
+  }
   return { yamlPath, mdPath };
 }
 
@@ -1466,4 +1514,154 @@ export function mergeFindings(votes: ValidationVote[]): {
   }
 
   return { unique, agreements };
+}
+
+// ---------------------------------------------------------------------------
+// Capability Query / Offer — Phase 3 distributed capability resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Payload carried in a `capability_query` message (cf. comms.ts MessageType docs).
+ * Duplicated here so `orchestrate.ts` stays free of a comms.ts import.
+ */
+export interface CapabilityQueryPayload {
+  query_id: string;
+  required_capabilities: string[];
+  task_id: string;
+  sprint: number;
+  requested_by: string;
+  deadline_iso?: string;
+}
+
+/**
+ * Payload carried in a `capability_offer` message.
+ */
+export interface CapabilityOfferPayload {
+  for_query_id: string;
+  agent_id: string;
+  capabilities: string[];
+  trust_level?: string;
+  estimated_cost_usd?: number;
+  available_at_iso?: string;
+}
+
+/**
+ * A resolved capability offer — the best offer received for a pending task.
+ */
+export interface CapabilityResolution {
+  task_id: string;
+  query_id: string;
+  sprint: number;
+  winning_agent_id: string;
+  offer: CapabilityOfferPayload;
+}
+
+/**
+ * Broadcast `capability_query` messages for all pending tasks returned by
+ * `planSprints()`. Writes to the shared inbox so every listening agent can
+ * respond with a `capability_offer`.
+ *
+ * This is a no-op when `pendingTasks` is empty or `commsDir` is absent.
+ */
+export async function broadcastCapabilityQueries(
+  commsDir: string,
+  fromAgent: string,
+  pendingTasks: CapabilityPendingTask[],
+  deadlineIso?: string
+): Promise<void> {
+  if (!commsDir || pendingTasks.length === 0) { return; }
+  const sharedInbox = path.join(commsDir, 'inboxes', 'shared');
+  await ensureDir(sharedInbox);
+  for (const pending of pendingTasks) {
+    const payload: CapabilityQueryPayload = {
+      query_id: pending.query_id,
+      required_capabilities: pending.required_capabilities,
+      task_id: pending.task_id,
+      sprint: pending.sprint,
+      requested_by: fromAgent,
+      ...(deadlineIso ? { deadline_iso: deadlineIso } : {}),
+    };
+    const filename = `${new Date().toISOString().replace(/[:.]/g, '-')}-capability_query-${fromAgent}-${pending.query_id.slice(-8)}.json`;
+    const msg = {
+      id: `msg-capq-${pending.query_id}`,
+      from: fromAgent,
+      to: 'shared',
+      type: 'capability_query',
+      timestamp: new Date().toISOString(),
+      payload,
+    };
+    await fsPromises.writeFile(
+      path.join(sharedInbox, filename),
+      JSON.stringify(msg, null, 2),
+      'utf8'
+    );
+  }
+}
+
+/**
+ * Read `capability_offer` messages from `agentId`'s inbox and return the
+ * best offer for each pending query. Call this from the reconcile ticker
+ * (after `broadcastCapabilityQueries`) to discover if any remote agent can
+ * serve tasks that local agents couldn't.
+ *
+ * The winning offer is selected by highest Jaccard similarity between the
+ * task's required_capabilities and the offer's capabilities, falling back to
+ * lowest estimated_cost_usd as a tie-breaker.
+ */
+export async function resolveCapabilityOffers(
+  commsDir: string,
+  agentId: string,
+  pendingTasks: CapabilityPendingTask[]
+): Promise<CapabilityResolution[]> {
+  if (!commsDir || pendingTasks.length === 0) { return []; }
+  const inboxDir = path.join(commsDir, 'inboxes', agentId);
+  let offerMessages: Array<{ id: string; payload: CapabilityOfferPayload }> = [];
+  try {
+    const files = await fsPromises.readdir(inboxDir);
+    for (const file of files.filter(f => f.includes('capability_offer') && f.endsWith('.json'))) {
+      try {
+        const raw = await fsPromises.readFile(path.join(inboxDir, file), 'utf8');
+        const msg = JSON.parse(raw.replace(/^﻿/, ''));
+        if (msg.type === 'capability_offer' && msg.payload?.for_query_id) {
+          offerMessages.push({ id: msg.id, payload: msg.payload as CapabilityOfferPayload });
+        }
+      } catch { /* skip malformed */ }
+    }
+  } catch { /* inbox missing */ }
+
+  const resolutions: CapabilityResolution[] = [];
+  for (const pending of pendingTasks) {
+    const offers = offerMessages.filter(o => o.payload.for_query_id === pending.query_id);
+    if (offers.length === 0) { continue; }
+
+    const required = new Set(pending.required_capabilities);
+    let best: CapabilityOfferPayload | null = null;
+    let bestScore = -1;
+
+    for (const { payload } of offers) {
+      const offered = new Set(payload.capabilities ?? []);
+      const intersection = [...required].filter(c => offered.has(c)).length;
+      // Use recall (intersection / required_size) rather than Jaccard: agents
+      // with a superset of the required capabilities can still serve the task,
+      // so penalising extra capabilities would incorrectly favour narrow agents.
+      const recall = required.size === 0 ? 1 : intersection / required.size;
+      const cost = payload.estimated_cost_usd ?? 0;
+      const score = recall * 1000 - cost;
+      if (score > bestScore) {
+        bestScore = score;
+        best = payload;
+      }
+    }
+
+    if (best) {
+      resolutions.push({
+        task_id: pending.task_id,
+        query_id: pending.query_id,
+        sprint: pending.sprint,
+        winning_agent_id: best.agent_id,
+        offer: best,
+      });
+    }
+  }
+  return resolutions;
 }

@@ -59,8 +59,10 @@ import {
   writeAgentRegistry,
   evaluateConsensus,
   DEFAULT_CONSENSUS_CONFIG,
+  broadcastCapabilityQueries,
+  resolveCapabilityOffers,
 } from './orchestrate';
-import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry } from './orchestrate';
+import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat, readHeartbeat,
@@ -1944,8 +1946,8 @@ function startReconcileTicker(context: vscode.ExtensionContext): void {
       await fsPromises.mkdir(path.dirname(reportPath), { recursive: true });
       await fsPromises.writeFile(reportPath, JSON.stringify(report, null, 2), 'utf8');
 
+      const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
       if (report.mismatches.length > 0) {
-        const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
         await sendMessage(commsDir, {
           id: '', from: 'orchestrator', to: 'shared', type: 'system',
           timestamp: new Date().toISOString(),
@@ -1957,6 +1959,11 @@ function startReconcileTicker(context: vscode.ExtensionContext): void {
           requires_response: false,
         }).catch(() => {});
       }
+
+      // Capability resolution sweep — collect capability_pending tasks from
+      // any sprint YAML files, broadcast queries for new ones, and resolve
+      // offers for previously broadcast queries.
+      await runCapabilityResolutionSweep(workspaceRoot, commsDir);
     } catch (err) {
       console.error('reconcile sweep failed:', err);
     }
@@ -1974,6 +1981,56 @@ function startReconcileTicker(context: vscode.ExtensionContext): void {
       }
     },
   });
+}
+
+/**
+ * Scans sprint YAML files for `capability_pending` tasks, broadcasts
+ * `capability_query` messages for any not yet broadcast, and resolves
+ * any received `capability_offer` messages by logging the winner.
+ */
+async function runCapabilityResolutionSweep(workspaceRoot: string, commsDir: string): Promise<void> {
+  const sprintsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'sprints');
+  let pendingTasks: CapabilityPendingTask[] = [];
+  try {
+    const files = await fsPromises.readdir(sprintsDir);
+    for (const file of files.filter(f => f.endsWith('.yaml') || f.endsWith('.yml'))) {
+      try {
+        const raw = await fsPromises.readFile(path.join(sprintsDir, file), 'utf8');
+        // Extract capability_pending arrays from simple YAML (avoid heavy parser dep)
+        const match = raw.match(/capability_pending:\s*\n([\s\S]*?)(?=\n\w|\n---|\Z)/);
+        if (match) {
+          // Use JSON-keyed sprint file if available (written by writePlanArtifacts)
+          const jsonFile = file.replace(/\.ya?ml$/, '.json');
+          try {
+            const jsonRaw = await fsPromises.readFile(path.join(sprintsDir, jsonFile), 'utf8');
+            const sprint = JSON.parse(jsonRaw);
+            if (Array.isArray(sprint.capability_pending)) {
+              pendingTasks.push(...(sprint.capability_pending as CapabilityPendingTask[]));
+            }
+          } catch { /* no JSON twin — skip */ }
+        }
+      } catch { /* skip unreadable */ }
+    }
+  } catch { /* sprints dir absent */ }
+
+  if (pendingTasks.length === 0) { return; }
+
+  // Deduplicate by query_id
+  const seen = new Set<string>();
+  pendingTasks = pendingTasks.filter(t => {
+    if (seen.has(t.query_id)) { return false; }
+    seen.add(t.query_id);
+    return true;
+  });
+
+  await broadcastCapabilityQueries(commsDir, 'orchestrator', pendingTasks).catch(() => {});
+
+  const resolutions = await resolveCapabilityOffers(commsDir, 'orchestrator', pendingTasks).catch(() => []);
+  if (resolutions.length > 0) {
+    const resolvedPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'capability-resolutions.json');
+    await fsPromises.writeFile(resolvedPath, JSON.stringify(resolutions, null, 2), 'utf8').catch(() => {});
+    console.log(`[autoclaw] capability resolution: ${resolutions.length} task(s) matched to remote agents`);
+  }
 }
 
 async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Promise<void> {
