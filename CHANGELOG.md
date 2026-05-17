@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.6.0] - 2026-05-17
+
+This release ("Phase 3 remaining + Phase 4 foundations — capability query/offer handler, program-plane registry, kg-daemon path fix, panel v2 fields") completes Phase 3's distributed capability resolution cycle and delivers the Phase 4 cross-repo program-plane registry. Net: +700 LOC across 6 new/changed files, +24 tests (362 total passing).
+
+### Added
+
+- **Capability query/offer handler** (`src/orchestrate.ts`) — `planSprints()` now populates `sprint.capability_pending[]` with `CapabilityPendingTask` entries (query_id, required_capabilities, sprint, task_id) when a task declares `required_capabilities` that no local agent satisfies. `broadcastCapabilityQueries(commsDir, fromAgent, pending)` fans out `capability_query` messages to the shared inbox. `resolveCapabilityOffers(commsDir, agentId, pending)` reads `capability_offer` responses and picks the best agent by recall × inverse-cost. `runCapabilityResolutionSweep()` in `extension.ts` calls both functions from the reconcile ticker. Sprint YAML artifacts now include a JSON sidecar when `capability_pending` is non-empty.
+- **Program-plane registry** (`src/program-plane.ts`) — `createProgram()`, `joinProgram()`, `leaveProgram()`, `listPrograms()`, `touchParticipant()`, `fanInCommsLog()`. Programs stored at `~/.autoclaw/programs/<program_id>/registry.json`; per-workspace backref at `<repo>/.autoclaw/program-link.json`. Comms-log fan-in (`fanInCommsLog`) tails each participant's JSONL and merges into `<program_root>/comms-log.jsonl` using crash-safe byte offsets. Reconcile tick calls `touchParticipant` + `fanInCommsLog` every interval.
+- **`autoclaw.program.create/join/leave` commands** — Quick Pick UI for creating, joining, and leaving cross-repo programs. Registered in `package.json` and wired to Command Palette.
+- **Program-plane tests** (`src/test/program-plane.test.ts`) — 14 tests covering full lifecycle (create, join, leave, listPrograms, touchParticipant, fanInCommsLog idempotency).
+- **Capability query/offer tests** (`src/test/orchestrate.test.ts`) — 5 tests (broadcastCapabilityQueries round-trip, resolveCapabilityOffers best-offer selection, no-offers case, wrong-query-id filtering).
+- **Webview panel v2 fields** — `renderAgentCard()` now renders `machine_id`, `machine_ip`, `max_parallel_tasks`, `human_in_loop_required`, `tools_supported` (chips), and `skills_loaded` (chips) in the expanded body. +5 tests.
+
+### Fixed
+
+- **kg-daemon default DB path** — changed from `./kg-prototype.db` (relative to process CWD, wrong on Windows when spawned from the extension) to `~/.autoclaw/kg/kg.db`; directory created automatically. Override via `KG_DB_PATH` env var as before.
+- **Capability router recall semantics** — `resolveCapabilityOffers()` uses recall (intersection / required_size) rather than Jaccard, so agents with a superset of required capabilities aren't penalized for having additional capabilities.
+
 ## [2.5.0] - 2026-05-16
 
 This release ("Phase 2B/C + Phase 3 router — FabricBus, A2A v0.2.5 Agent Card, capability-aware routing, and expandable panel UI") delivers the four wave-4 parallel workstreams: the cross-transport FabricBus abstraction (fs/ws/NATS drivers), canonical A2A v0.2.5 Agent Card with `capabilities.extensions[]` mirroring, the capability-aware sprint router with Jaccard-score-based agent selection, and a fully rebuilt webview panel with expandable agent cards, push-channel health badges, and KG status indicators. Net: +1435 LOC across 7 new/changed files, +30 unit tests (339 total passing). Also includes hardened comms filename uniqueness fix (timestamp collision prevented by appending message ID suffix) and an environment-resilient ZippyMesh health test.
