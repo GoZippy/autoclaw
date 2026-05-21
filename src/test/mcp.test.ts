@@ -20,6 +20,7 @@ import {
   CostLedger,
   hashArgs,
   READ_ONLY_TOOLS,
+  WRITE_TOOLS,
   activeTools,
   checkWriteGate,
   installAll,
@@ -424,11 +425,25 @@ suite('MCP — write-tool gate (BP3)', () => {
     args: Record<string, unknown>,
     env: NodeJS.ProcessEnv
   ) {
+    // The write-tool gate in production reads process.env, not the caller's env.
+    // For testing, when AUTOCLAW_MCP_ALLOW_WRITES is set in the test env,
+    // also write it to .autoclaw/mcp/config.json so the gate can read it.
+    if (env.AUTOCLAW_MCP_ALLOW_WRITES) {
+      const cfgDir = path.join(root, '.autoclaw', 'mcp');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(cfgDir, 'config.json'),
+        JSON.stringify({ allowWrites: true }, null, 2),
+        'utf8'
+      );
+    }
     const ctx = buildContext(env, root);
     const ledger = new CostLedger(ctx.autoclawDir);
+    // Use activeTools so write tools are included when allowWrites is set.
+    const toolMap = buildToolMap(activeTools(ctx, env));
     const resp = await dispatch(
       { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
-      ctx, buildToolMap(READ_ONLY_TOOLS), ledger, env
+      ctx, toolMap, ledger, env
     );
     const result = resp!.result as { content: Array<{ text: string }>; isError?: boolean };
     return {
@@ -532,7 +547,7 @@ suite('MCP — write-tool gate (BP3)', () => {
       const ledger = new CostLedger(ctx.autoclawDir);
       const resp = await dispatch(
         { jsonrpc: '2.0', id: 2, method: 'tools/list' },
-        ctx, buildToolMap(READ_ONLY_TOOLS), ledger, env
+        ctx, buildToolMap(activeTools(ctx, env)), ledger, env
       );
       const result = resp!.result as { tools: Array<{ name: string }> };
       const names = result.tools.map(t => t.name);

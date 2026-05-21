@@ -88,6 +88,18 @@ import {
   startKgDaemon, stopKgDaemon, fetchKgHealth,
   type KgState,
 } from './kg';
+import {
+  startOrchestratorLoop,
+  type OrchestratorLoopHandle,
+} from './orchestratorLoop';
+import {
+  buildPackage,
+  commitPackage,
+  ccTask,
+  type CommitResult,
+  type PackageResult,
+  type DispatchContext,
+} from './handoff_factory';
 import { hasOrchestratorManifest } from './manifest-probe';
 import { runReconcile } from './reconcile';
 import {
@@ -510,6 +522,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Periodic reconciliation sweep — detects drift between tasks.md / sprint YAML / comms-log
   startReconcileTicker(context);
+
+  // Orchestrator perpetual loop: health → inbox → work → dispatch → log
+  startOrchestratorLoopTick(context);
 
   // Register @autoclaw chat participant (VS Code 1.90+; degrades on older builds / other IDEs)
   registerChatParticipant(
@@ -1942,6 +1957,8 @@ const sessionId: string = (() => {
   const c = require('crypto') as typeof import('crypto');
   return typeof c.randomUUID === 'function' ? c.randomUUID() : c.randomBytes(16).toString('hex');
 })();
+/** Orchestrator perpetual loop handle — started in activate(), stopped in deactivate(). */
+let activeOrchestratorLoopHandle: OrchestratorLoopHandle | null = null;
 
 function startHeartbeatTicker(context: vscode.ExtensionContext): void {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -2234,7 +2251,55 @@ async function provisionCrossAgentComms(): Promise<void> {
   console.log(`AutoClaw: cross-agent comms provisioned for ${detectedAgents.length} agents`);
 }
 
-// ---------------------------------------------------------------------------
+/**
+ * startOrchestratorLoopTick — one-shot entry point for the eternal loop.
+ * Reads the workspace, computes the health check, and dispatches work every
+ * 30 s without any LLM call.
+ *
+ * Lifecycle:
+ *  1. checkHealth   — reads heartbeat files, builds the agent health grid
+ *  2. nextWork      — discovers assignable work for idle agents
+ *  3. workNow       — dispatches work packages
+ *  4. checkProgress — compares health changes to expected actor outcomes
+ *  5. loop          — re-evaluate; repeat while actor is active
+ */
+function startOrchestratorLoopTick(context: vscode.ExtensionContext): void {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { return; }
+
+  // Start the perpetual health→work→dispatch→log loop.
+  // The loop is headless (no vscode API calls in the hot path).
+  activeOrchestratorLoopHandle = startOrchestratorLoop({
+    workspaceRoot,
+    tickMs: 30_000, // 30 s between ticks
+    onTick(result) {
+      // Surface health/dispatch alerts in the output channel.
+      const unhealthy = result.health.stalledIds.length + result.health.deadIds.length;
+      if (unhealthy > 0 || result.dispatched > 0 || result.errors > 0) {
+        getOrchestrateOutputChannel().appendLine(
+          `[loop tick ${result.tick}] agents=${result.health.entries.length} ` +
+          `healthy=${result.health.healthyCount} stalled=${result.health.stalledIds.length} ` +
+          `dead=${result.health.deadIds.length} dispatched=${result.dispatched} ` +
+          `errors=${result.errors} (${result.durationMs}ms)`
+        );
+      }
+      if (result.health.deadIds.length > 0) {
+        console.warn(`[autoclaw-loop] dead agents: ${result.health.deadIds.join(', ')}`);
+      }
+    },
+  });
+
+  context.subscriptions.push({
+    dispose: () => {
+      activeOrchestratorLoopHandle?.stop();
+      activeOrchestratorLoopHandle = null;
+      console.log('[autoclaw] orchestrator loop stopped');
+    },
+  });
+
+  console.log(`[autoclaw] orchestrator loop started – tickMs=30000 workspace="${workspaceRoot}"`);
+}
+
 // Orchestrate Commands
 // ---------------------------------------------------------------------------
 
