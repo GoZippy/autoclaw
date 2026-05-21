@@ -26,6 +26,18 @@
  * a losing racer gets `{ ok: false, reason: 'conflict' }`.
  *
  * Sprint 2 — BP3 (WA-3)
+ *
+ * Sprint 3 — BP3 polish (WA-3):
+ *   - **Per-tool authorization** beyond the coarse `allowWrites` boolean.
+ *     `authorizeWriteTool` (scoping.ts) lets an operator withhold an
+ *     individual tool via `.autoclaw/mcp/config.json` → `tools.<name>.allow`
+ *     while leaving writes broadly enabled. Each tool now calls
+ *     {@link authorizeTool} before mutating anything.
+ *   - **Write-tool audit trail** in `state.json` → `write_tool_audit`: every
+ *     write attempt (allowed *or* denied) appends an immutable audit row so
+ *     `doctor` and the fleet panel can see who invoked which write tool, when,
+ *     and whether it was authorized — distinct from the `message_ledger`,
+ *     which only indexes *successful* message-shaped writes.
  */
 
 import * as crypto from 'crypto';
@@ -33,6 +45,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import type { ToolContext, ToolHandler, ToolResult } from './types';
+import {
+  authorizeWriteTool,
+  parseToolAuthPolicy,
+  type ScopingDecision,
+  type ToolAuthPolicy,
+} from './scoping';
 
 const fsPromises = fs.promises;
 
@@ -90,6 +108,67 @@ function readAllowWrites(ctx: ToolContext, env: NodeJS.ProcessEnv): boolean {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Per-tool authorization (BP3 polish — Sprint 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the per-tool authorization policy from `.autoclaw/mcp/config.json`.
+ * A missing or unparseable file yields an empty policy — every tool then
+ * inherits the coarse `allowWrites` gate (deny-by-default still applies to
+ * the coarse gate; an empty policy never *widens* access).
+ */
+function readToolAuthPolicy(ctx: ToolContext): ToolAuthPolicy {
+  try {
+    const raw = fs.readFileSync(path.join(ctx.autoclawDir, 'mcp', 'config.json'), 'utf8');
+    return parseToolAuthPolicy(JSON.parse(raw.replace(/^﻿/, '')));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Authorize one named write tool for this context — the per-invocation gate
+ * each tool calls before mutating. Combines scope, the coarse `allowWrites`
+ * flag, and the per-tool policy (see {@link authorizeWriteTool}).
+ */
+function authorizeTool(ctx: ToolContext, env: NodeJS.ProcessEnv, toolName: string): ScopingDecision {
+  return authorizeWriteTool(ctx, readAllowWrites(ctx, env), toolName, readToolAuthPolicy(ctx));
+}
+
+/**
+ * Wrap a write tool's `run` so it (a) authorizes per-tool first and (b)
+ * appends a {@link writeToolAudit} row for every attempt — allowed or denied.
+ *
+ * A denied attempt returns `{ ok: false, reason: 'permission_denied' }` and
+ * never reaches the tool body. The env used for the `allowWrites` override is
+ * `process.env`; `server.ts` resolves the same value when it builds the gated
+ * tool set, so the two stay consistent.
+ */
+function gated(toolName: string, body: ToolHandler['run']): ToolHandler['run'] {
+  return async (ctx, args): Promise<ToolResult> => {
+    const decision = authorizeTool(ctx, process.env, toolName);
+    if (!decision.allowed) {
+      await writeToolAudit(ctx, {
+        tool: toolName,
+        authorized: false,
+        auth_code: decision.code,
+        ...callerOf(ctx),
+      });
+      return { ok: false, reason: 'permission_denied', detail: decision.detail };
+    }
+    const result = await body(ctx, args);
+    await writeToolAudit(ctx, {
+      tool: toolName,
+      authorized: true,
+      auth_code: decision.code,
+      result_ok: result.ok,
+      ...callerOf(ctx),
+    });
+    return result;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +249,73 @@ async function appendLedgerEntry(
 /** Caller identity for ledger attribution — host plus session when known. */
 function callerOf(ctx: ToolContext): { from: string; session?: string } {
   return { from: ctx.host, ...(ctx.sessionId ? { session: ctx.sessionId } : {}) };
+}
+
+// ---------------------------------------------------------------------------
+// Write-tool audit trail (BP3 polish — Sprint 3)
+// ---------------------------------------------------------------------------
+
+/** One immutable row in the `state.json` → `write_tool_audit` array. */
+interface WriteToolAuditRow {
+  /** Tool name, e.g. `inbox.send`. */
+  tool: string;
+  /** Whether the per-tool authorization gate allowed the call. */
+  authorized: boolean;
+  /** The scoping decision code (`ok` | `global_scope` | `writes_disabled` | `tool_denied`). */
+  auth_code: string;
+  /** For an authorized call, whether the tool body itself reported `ok`. */
+  result_ok?: boolean;
+  /** Calling host. */
+  from: string;
+  /** Calling session, when known. */
+  session?: string;
+  /** ISO timestamp the audit row was written. */
+  audited_at: string;
+}
+
+/**
+ * Append an audit row to `state.json` → `write_tool_audit`.
+ *
+ * Distinct from {@link appendLedgerEntry}: the `message_ledger` only indexes
+ * *successful, message-shaped* writes (a note, a message file, a claim). The
+ * `write_tool_audit` array records **every write-tool attempt**, including
+ * ones the per-tool gate *denied* — so `doctor` and the panel can answer
+ * "who tried to invoke which write tool, and was it permitted?".
+ *
+ * Best-effort and bounded: the array is capped at the most recent 500 rows so
+ * a long-lived workspace's state.json does not grow without limit. A failure
+ * here never affects the tool's own result.
+ */
+async function writeToolAudit(
+  ctx: ToolContext,
+  row: Omit<WriteToolAuditRow, 'audited_at'>,
+): Promise<void> {
+  const file = statePath(ctx);
+  let doc: Record<string, unknown> = {};
+  try {
+    const raw = await fsPromises.readFile(file, 'utf8');
+    const parsed = JSON.parse(raw.replace(/^﻿/, ''));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      doc = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Missing/corrupt — recreate a minimal shell so the audit still lands.
+  }
+
+  const existing = Array.isArray(doc.write_tool_audit)
+    ? (doc.write_tool_audit as unknown[])
+    : [];
+  const auditRow: WriteToolAuditRow = { ...row, audited_at: new Date().toISOString() };
+  const capped = [...existing, auditRow].slice(-500);
+  doc.write_tool_audit = capped;
+  doc.last_updated = new Date().toISOString();
+
+  try {
+    await fsPromises.mkdir(path.dirname(file), { recursive: true });
+    await fsPromises.writeFile(file, JSON.stringify(doc, null, 2) + '\n', 'utf8');
+  } catch {
+    // Audit is best-effort — never fail the tool over it.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -742,8 +888,36 @@ const dreamRunTool: ToolHandler = {
 // Registry
 // ---------------------------------------------------------------------------
 
-/** All write tools shipped in BP3 (RFC §3.2). Gated — see {@link checkWriteGate}. */
+/**
+ * Wrap a bare write-tool handler so every invocation passes the per-tool
+ * authorization gate ({@link authorizeTool}) and appends a
+ * {@link writeToolAudit} row. The `definition` is preserved unchanged.
+ */
+function withGate(handler: ToolHandler): ToolHandler {
+  return {
+    definition: handler.definition,
+    run: gated(handler.definition.name, handler.run.bind(handler)),
+  };
+}
+
+/**
+ * All write tools shipped in BP3 (RFC §3.2), each wrapped with the BP3-polish
+ * per-tool authorization gate + audit trail (Sprint 3). The coarse
+ * workspace-scope + `allowWrites` gate is still applied at the tool-set level
+ * by `server.ts` ({@link checkWriteGate}); `withGate` adds the *per-tool*
+ * policy and the {@link writeToolAudit} row on top.
+ */
 export const WRITE_TOOLS: ToolHandler[] = [
+  noteAddTool,
+  inboxSendTool,
+  inboxArchiveTool,
+  claimTaskTool,
+  dreamRunTool,
+  consensusVoteTool,
+].map(withGate);
+
+/** The un-gated write-tool handlers, exposed for unit tests of tool bodies. */
+export const RAW_WRITE_TOOLS: ToolHandler[] = [
   noteAddTool,
   inboxSendTool,
   inboxArchiveTool,
