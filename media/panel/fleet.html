@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="%%CSP%%" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="%%CSS_URI%%" />
+  <title>AutoClaw Fleet</title>
+</head>
+<body>
+  <div id="fleet-root" role="main">
+
+    <!-- Status-bar presence line -->
+    <div id="presence-bar" class="presence-bar" role="status" aria-live="polite">
+      <span id="presence-text">Loading fleet…</span>
+      <button id="btn-refresh" type="button" class="ghost" aria-label="Refresh">&#8635;</button>
+    </div>
+
+    <!-- Awaiting You -->
+    <section class="panel-section" id="sec-awaiting" aria-labelledby="hdr-awaiting">
+      <h2 id="hdr-awaiting" class="section-header">
+        Awaiting You <span class="badge" id="awaiting-badge">0</span>
+      </h2>
+      <div class="section-body" id="awaiting-body">
+        <p class="empty">Nothing awaiting your response.</p>
+      </div>
+    </section>
+
+    <!-- LMD health grid -->
+    <section class="panel-section" id="sec-health" aria-labelledby="hdr-health">
+      <h2 id="hdr-health" class="section-header">Health Grid</h2>
+      <div class="section-body">
+        <table class="health-grid" id="health-grid">
+          <thead>
+            <tr><th>Agent</th><th>State</th><th>Last seen</th><th>Queue</th></tr>
+          </thead>
+          <tbody id="health-grid-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Agent identity cards -->
+    <section class="panel-section" id="sec-cards" aria-labelledby="hdr-cards">
+      <h2 id="hdr-cards" class="section-header">
+        Agents <span class="badge" id="cards-badge">0</span>
+      </h2>
+      <div class="section-body card-grid" id="card-grid"></div>
+    </section>
+
+    <!-- Parent -> subagent tree -->
+    <section class="panel-section" id="sec-tree" aria-labelledby="hdr-tree">
+      <h2 id="hdr-tree" class="section-header">Agent Tree</h2>
+      <div class="section-body" id="agent-tree"></div>
+    </section>
+
+    <!-- Cost ledger -->
+    <section class="panel-section" id="sec-cost" aria-labelledby="hdr-cost">
+      <h2 id="hdr-cost" class="section-header">Cost Ledger</h2>
+      <div class="section-body">
+        <table class="cost-table" id="cost-table">
+          <thead>
+            <tr><th>Agent</th><th>Tokens</th><th>Wall</th><th>Actions</th></tr>
+          </thead>
+          <tbody id="cost-table-body"></tbody>
+        </table>
+        <div class="rationale-rail" id="rationale-rail" aria-label="Recent rationale"></div>
+      </div>
+    </section>
+
+    <!-- Activity feed -->
+    <section class="panel-section" id="sec-activity" aria-labelledby="hdr-activity">
+      <h2 id="hdr-activity" class="section-header">Activity Feed</h2>
+      <div class="section-body activity-feed" id="activity-feed"></div>
+    </section>
+
+  </div>
+  <script nonce="%%NONCE%%" src="%%JS_URI%%"></script>
+</body>
+</html>

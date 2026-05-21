@@ -1,0 +1,242 @@
+/* fleet.css — AutoClaw Fleet dashboard webview styles.
+ * Theme-aware: uses VS Code CSS variables so the panel matches the editor.
+ * Sprint 3 — C5 (WA-2). */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background, transparent);
+}
+
+#fleet-root { padding: 8px 10px 16px; }
+
+/* --- Presence bar --------------------------------------------------------- */
+.presence-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, rgba(127,127,127,0.08));
+  font-weight: 600;
+}
+#presence-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+button.ghost {
+  background: transparent;
+  border: 1px solid var(--vscode-button-border, transparent);
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 13px;
+}
+button.ghost:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.2)); }
+
+/* --- Sections ------------------------------------------------------------- */
+.panel-section { margin-bottom: 14px; }
+
+.section-header {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--vscode-descriptionForeground);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.badge {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 5px;
+  text-align: center;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+}
+
+.empty {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
+  margin: 4px 0;
+}
+
+/* --- Health dot ----------------------------------------------------------- */
+.dot {
+  display: inline-block;
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.dot.green { background: var(--vscode-testing-iconPassed, #3fb950); }
+.dot.amber { background: var(--vscode-testing-iconQueued, #d29922); }
+.dot.red   { background: var(--vscode-testing-iconFailed, #f85149); }
+
+/* --- Health grid ---------------------------------------------------------- */
+table.health-grid, table.cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.health-grid th, .cost-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.3));
+  padding: 3px 6px;
+}
+.health-grid td, .cost-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.12));
+}
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* --- Agent cards ---------------------------------------------------------- */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.agent-card {
+  border: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.25));
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--vscode-editorWidget-background, rgba(127,127,127,0.05));
+  cursor: pointer;
+}
+.agent-card:hover { border-color: var(--vscode-focusBorder); }
+.agent-card .card-top { display: flex; align-items: center; gap: 8px; }
+.avatar {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 11px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  flex-shrink: 0;
+}
+.card-name { font-weight: 600; }
+.card-role, .card-meta {
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 2px;
+}
+.card-task {
+  margin-top: 5px;
+  font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.caps { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 3px; }
+.cap-tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+.card-detail {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.2));
+  font-size: 11px;
+}
+.card-detail.hidden { display: none; }
+.card-detail h4 {
+  margin: 6px 0 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+.card-detail ul { margin: 0; padding-left: 16px; }
+.btn-ping {
+  margin-top: 6px;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 3px;
+  cursor: pointer;
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+  border: none;
+}
+
+/* --- Agent tree ----------------------------------------------------------- */
+.tree-node { margin: 2px 0; }
+.tree-node .tree-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 0;
+}
+.tree-children {
+  margin-left: 14px;
+  padding-left: 8px;
+  border-left: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.3));
+}
+.tree-task { color: var(--vscode-descriptionForeground); font-size: 11px; }
+
+/* --- Awaiting You --------------------------------------------------------- */
+.awaiting-item {
+  border-left: 3px solid var(--vscode-focusBorder);
+  padding: 5px 8px;
+  margin-bottom: 5px;
+  background: var(--vscode-editorWidget-background, rgba(127,127,127,0.06));
+  border-radius: 0 4px 4px 0;
+}
+.awaiting-item.overdue { border-left-color: var(--vscode-testing-iconFailed, #f85149); }
+.awaiting-meta { font-size: 10px; color: var(--vscode-descriptionForeground); }
+.awaiting-preview { font-size: 12px; margin-top: 2px; }
+.overdue-tag {
+  color: var(--vscode-testing-iconFailed, #f85149);
+  font-weight: 700;
+  font-size: 10px;
+}
+
+/* --- Activity feed -------------------------------------------------------- */
+.activity-feed { max-height: 240px; overflow-y: auto; }
+.activity-row {
+  display: flex; gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.1));
+  font-size: 12px;
+}
+.activity-row .act-time {
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 56px;
+}
+.act-kind {
+  width: 8px; height: 8px; border-radius: 2px;
+  margin-top: 4px; flex-shrink: 0;
+}
+.act-kind.task_started    { background: #58a6ff; }
+.act-kind.task_complete   { background: #3fb950; }
+.act-kind.finding_raised  { background: #d29922; }
+.act-kind.consensus_passed,
+.act-kind.consensus_failed { background: #a371f7; }
+.act-kind.agent_died      { background: #f85149; }
+.act-kind.review_requested{ background: #f0883e; }
+.act-kind.message         { background: var(--vscode-descriptionForeground); }
+
+/* --- Cost rationale rail -------------------------------------------------- */
+.rationale-rail { margin-top: 6px; }
+.rationale-item {
+  font-size: 11px;
+  padding: 2px 0;
+  color: var(--vscode-descriptionForeground);
+}
+.rationale-item .because {
+  color: var(--vscode-foreground);
+  font-style: italic;
+}
