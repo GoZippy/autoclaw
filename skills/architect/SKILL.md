@@ -48,7 +48,7 @@ that's the refactor-specialist's job.
 - The RFC opens with "Read first" — explicit cross-references to existing
   decisions, like the v3.1 LLM-provider and personas RFCs do.
 - Acceptance criteria in Given/When/Then frontmatter with a `status:` field
-  (`draft | review | dogfood | implement | verify | done`).
+  (`draft | review | pilot | implement | verify | done`).
 - A "Don't-do" section listing the anti-patterns specifically avoided.
 - A "Sequencing" table showing ship order, smallest-viable first.
 - Cross-links to sibling RFCs and to the `bibliography.md` entry that
@@ -75,4 +75,4 @@ store under subject `persona.architect.lesson.<slug>` (Phase C).
 - The persona model: [docs/rfc/specialized-agents.md](../../docs/rfc/specialized-agents.md).
 - The provider choice (`ollama:llama3.1:70b` default): [docs/rfc/llm-provider-abstraction.md](../../docs/rfc/llm-provider-abstraction.md).
 - The protocol it operates on: [docs/AGENT_SESSION_PROTOCOL.md](../../docs/AGENT_SESSION_PROTOCOL.md).
-- Ralph's six tenets it follows for loop discipline: [skills/ralph-tenets/SKILL.md](../ralph-tenets/SKILL.md).
+- The loop-discipline rules it follows: [skills/loop-discipline/SKILL.md](../loop-discipline/SKILL.md).

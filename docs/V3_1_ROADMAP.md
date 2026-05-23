@@ -112,10 +112,13 @@ memory at `~/.autoclaw/personas/<id>/` with privacy rules.
 
 20+ adjacent repos catalogued. Headline borrowings:
 
-- **Ralph's six tenets** (`ralph-orchestrator`) — short loop-discipline
-  overlay. Becomes `skills/ralph-tenets/SKILL.md`.
-- **Spec-as-contract workflow** (`Spec → Review → Dogfood → Implement →
-  Verify → Done`) — adopt under `docs/specs/<feature>/`.
+- **Loop-discipline rules** — six short rules for running an autonomous
+  loop well (re-read state each cycle, plans expire, signals over scripts,
+  trust the loop once signals are good, etc.). Adapted from prior art
+  catalogued in the survey; written in our own words at
+  `skills/loop-discipline/SKILL.md`.
+- **Spec-as-contract workflow** (`draft → review → pilot → implement →
+  verify → done`) — adopt under `docs/specs/<feature>/`.
 - **Sub-agent role files** (`AgentWise`'s `.claude/agents/*.md` with
   `tools:` frontmatter) — exactly the format §2.2 personas use.
 - **Plugin architecture** (`KiroAutomation`) — for AutoClaw's runner/skill
@@ -143,10 +146,10 @@ a re-read per session) and the personas RFC's #1 pick.
 |---|---|
 | `PersonaProfile` loader + `/persona <id>` slash command | `src/personas/`, `skills/architect/` |
 | `skills/architect/SKILL.md` + seeded `bibliography.md` (the 14 existing RFCs/plans) + 3 exemplars | `skills/architect/`, `.autoclaw/memory/personas/architect/` |
-| `skills/ralph-tenets/SKILL.md` — one-page overlay | `skills/ralph-tenets/` |
+| `skills/loop-discipline/SKILL.md` — one-page rules overlay | `skills/loop-discipline/` |
 | `docs/specs/_template.spec.md` — Given/When/Then frontmatter + `status:` | `docs/specs/` |
 | RFC index cleanup — single `docs/INDEX.md`, deprecate the contradicting plans noted in survey §5 | `docs/INDEX.md`, header notes |
-| Adopt `.claude/agents/<id>.md` format (from AgentWise) for personas | `.claude/agents/` |
+| Adopt a `.claude/agents/<id>.md`-style persona-file format | `.claude/agents/` |
 
 **Exit gate.** Running `/persona architect "draft RFC for X"` produces a
 real `docs/rfc/X.md` with the spec-as-contract frontmatter, using only

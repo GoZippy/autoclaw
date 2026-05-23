@@ -28,10 +28,14 @@ superseded. Latest entries on top within each section._
 
 ## External anchors (cited often)
 
-- `ralph-orchestrator/CLAUDE.md` — six tenets of loop discipline. Vendored as [skills/ralph-tenets/SKILL.md](../ralph-tenets/SKILL.md).
-- `AgentWise/.claude/agents/*.md` — sub-agent role file format (`tools:` frontmatter). Adopted as the persona file shape.
-- `Factory-Registry-v1` mateam scratchpad layout. Canonicalised at `skills/mateam/_templates/`.
-- `KiroAutomation/.kiro/plugins/` — plugin architecture pattern (read-only reference for v3.2+).
+These are patterns we've adopted in our own words. Do not borrow their
+vocabulary in user-facing docs — see
+[memory/feedback_zippytech_voice](../../memory/feedback_zippytech_voice.md).
+
+- Loop-discipline rules in [skills/loop-discipline/SKILL.md](../loop-discipline/SKILL.md) — distilled from several autonomous-loop projects (see [research §2.1](../../docs/research/2026-05-22-cross-project-survey.md)).
+- The persona file shape (with `tools:` frontmatter) — adapted from prior art catalogued in the survey.
+- The `skills/mateam/_templates/` scratchpad layout — adapted from a real artifact catalogued in the survey.
+- Plugin-architecture ideas referenced in the survey are kept as read-only references for v3.2+.
 
 ---
 

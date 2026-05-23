@@ -60,5 +60,5 @@ they merge.
 1. [V3_1_ROADMAP.md §0-1](V3_1_ROADMAP.md) — where we are.
 2. [AGENT_SESSION_PROTOCOL.md §1-3](AGENT_SESSION_PROTOCOL.md) — how the bus works.
 3. The RFC matching your task — see the table above.
-4. [skills/ralph-tenets/SKILL.md](../skills/ralph-tenets/SKILL.md) before opening any loop.
+4. [skills/loop-discipline/SKILL.md](../skills/loop-discipline/SKILL.md) before opening any loop.
 5. Your persona's `SKILL.md` under `skills/<persona>/`.

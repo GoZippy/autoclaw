@@ -1,7 +1,7 @@
 ---
 spec_id: <slug-here>
 title: <one-line title>
-status: draft  # draft | review | dogfood | implement | verify | done
+status: draft  # draft | review | pilot | implement | verify | done
 owner: <persona-id or agent_id>
 created: 2026-MM-DD
 updated: 2026-MM-DD
@@ -59,10 +59,15 @@ or from a persona's `anti-patterns.md` when applicable.
 
 ---
 
-> **Lifecycle.** A spec moves `draft → review` after the architect
-> persona signs off, `review → dogfood` after a peer persona uses it to
-> implement a vertical slice, `dogfood → implement` after that slice
-> passes its Verifier, `implement → verify` when the full feature lands,
-> `verify → done` after the security-auditor signs off (when applicable)
-> and tests pass. Status is updated **in place** — never delete a done
-> spec; mark it `superseded_by:` if replaced.
+> **Lifecycle.**
+> - `draft → review` — the architect persona signs off on the spec.
+> - `review → pilot` — a peer persona uses the spec to build one small
+>   slice. The pilot proves the spec is actually buildable; if it's
+>   painful here, fix the spec before broader work starts.
+> - `pilot → implement` — the slice passes its Verifier.
+> - `implement → verify` — the full feature lands.
+> - `verify → done` — the security-auditor signs off (when applicable)
+>   and tests pass.
+>
+> Status is updated **in place** — never delete a done spec; mark it
+> `superseded_by:` if replaced.
