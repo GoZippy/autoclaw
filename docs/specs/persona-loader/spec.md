@@ -1,10 +1,12 @@
 ---
 spec_id: persona-loader
 title: Persona loader, `/persona` slash command, and dispatch wiring (Phase A finish)
-status: draft
+status: verify
 owner: architect
 created: 2026-05-23
 updated: 2026-05-23
+implemented_in: src/personas/{loader,provider-stub,frontmatter,command}.ts
+tests_in: src/test/personas-loader.test.ts (12 passing)
 supersedes: []
 superseded_by: null
 references:
