@@ -258,18 +258,33 @@ The architect persona writes Phase B/C/D's per-task spec files as
 
 ---
 
-## 7. Open questions for the user
+## 7. Decisions log (2026-05-23)
 
-1. **Branch policy.** `feat/v3-sprint-1-2-coordination` is 12 commits
-   ahead of `master`. Merge to `master` before starting v3.1, or layer
-   v3.1 on the same branch? Recommend: merge first.
-2. **OpenClaw role split.** Survey §2.7 proposes OpenClaw as the
-   approvals/audit layer *over* AutoClaw. Confirm or adjust.
-3. **Local-first default for personas.** Should the architect persona
-   default to a local Ollama model (preserving privacy and saving cloud
-   budget) once Phase B lands? Personas RFC §7.1 leaves this open.
-4. **Persona ownership of MEMORY.md.** Should `/dream` continue writing
-   to a single workspace `MEMORY.md` or shard by persona? Recommend the
-   latter; closes the survey's anti-pattern #10.
-5. **Cloud relay gating.** Phase C audits the cloud relay before GA — is
-   GA still planned for v3.0, or does it slide to v3.1?
+User confirmed (recommended option in each case):
+
+| Fork | Decision |
+|---|---|
+| **Branch policy** | Merge `feat/v3-sprint-1-2-coordination` to `master`, then v3.1 lands on a fresh `feat/v3.1` branch. **Done** — master at `4b79682`. |
+| **Persona LLM default** | **Local-first** — `preferredProvider: "ollama:llama3.1:70b"`, cloud fallback to the workspace's configured runner. Baked into [`src/personas/types.ts`](../src/personas/types.ts) as `DEFAULT_PROVIDER_CHAIN`. |
+| **Cloud relay GA** | **Slides to v3.1**, gated on Phase C security-auditor pass. v3.0 ships with the relay inert (Sprint-4 D-series is in the tree but unconfigured — no endpoint wired). |
+| **Memory shape** | **Sharded per persona** under `.autoclaw/memory/personas/<id>/` (+ `~/.autoclaw/personas/<id>/` global mirror with privacy rules). `MEMORY.md` becomes a digest/index pointing into the persona trees. |
+
+**OpenClaw role** is per §1 (governance/audit layer, not a dispatcher) —
+slot reserved; onboarding waits until OpenClaw registers via
+`capability_offer`.
+
+## 8. Open questions (still)
+
+These didn't have a single right answer:
+
+1. **`/dream` digest writer.** Now that memory shards by persona, what
+   exactly does the workspace-level `MEMORY.md` digest contain? Recommend:
+   one section per persona with last-5 lessons + a global "active
+   findings" tail. Confirm in Phase C.
+2. **Ollama model floor.** `llama3.1:70b` is heavy. Is there a fallback
+   to `llama3.1:8b` when the host can't run 70b? Recommend: persona
+   loader probes available models on first dispatch and downgrades with
+   a warning.
+3. **Persona spin-up budget.** Spawning 5 personas in parallel × local
+   model = unbounded RAM. Cap at `min(host_cores/2, 4)` concurrent
+   personas? Confirm in Phase A.
