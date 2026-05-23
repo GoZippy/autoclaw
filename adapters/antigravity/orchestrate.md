@@ -17,10 +17,11 @@ Determine the sub-command from the user's message:
 - `init` → **Initialize orchestrator config and manifest**
 - `plan` / `plan --manifest <path>` → **Generate sprint plans from manifest**
 - `assign` / `assign <sprint>` → **Assign a sprint to agents**
-- `status` → **Show orchestration progress**
+- `status` → **Show orchestration progress** (surfaces stalled agents)
 - `review <sprint>` → **Trigger review for a completed sprint**
 - `merge <sprint>` → **Merge an approved sprint branch**
 - `next` → **Assign the next available sprint**
+- `revive <agent-id>` → **Render the keepalive prompt for a stalled agent**
 - No sub-command + task description → **Quick plan: infer manifest from description**
 
 ---
@@ -165,6 +166,64 @@ Sprint 3: ░░░░░░░░░░ pending (blocked by Sprint 2)
 Progress: 12/75 tasks complete (16%)
 Critical path: Sprint 5 of 9
 ```
+
+**Then, append a Stalled-agents section.** Read every file under
+`.autoclaw/orchestrator/comms/heartbeats/` and compare its `timestamp`
+to the registry's `agents.heartbeat_stall_seconds` (default `300`):
+
+```
+Stalled agents:
+  kiro                — last heartbeat 3d 14h ago (2026-05-20T19:36Z) — REMOVED from rotation
+  claude-code-desktop — last heartbeat 19h    ago (2026-05-22T14:10Z) — run `/orchestrate revive claude-code-desktop`
+```
+
+Threshold for "REMOVED from rotation" is `agents.heartbeat_stall_seconds × 100`
+(i.e. ~8h with the default 300s). Below that, recommend `/orchestrate revive`.
+No stalls → omit the section.
+
+---
+
+## revive — Wake a Stalled Agent
+
+1. Look up the agent in `.autoclaw/orchestrator/comms/registry.json`:
+   - Read `loop_mechanism` (e.g. `slash-loop`, `plain-message`,
+     `cli-headless`, `bridge-relayed`).
+   - Read `keepalive_template` (relative path like
+     `templates/keepalive/<agent-id>.md`).
+2. Resolve the template path in this order (first hit wins):
+   a. `<workspace>/.autoclaw/orchestrator/<keepalive_template>` — per-project override.
+   b. `<extension-root>/skills/orchestrate/<keepalive_template>` — shipped default.
+   If neither exists, error with "no template registered for <agent-id>".
+3. Read the latest heartbeat at
+   `.autoclaw/orchestrator/comms/heartbeats/{agent-id}.json`. Compute
+   stall duration vs `now`.
+4. Read the template file. Substitute these tokens (see the template
+   directory's `README.md` for the full list):
+   - `{{agent_id}}`, `{{project_root}}`, `{{branch}}` (from `git`),
+     `{{last_task_id}}` (from `state.json.agents.<wa>.tasks` last entry),
+     `{{next_iter}}` (from `state.json.loop.<agent>.cycles_run + 1`,
+     defaulting to `1`), `{{stalled_for}}` (human-readable), and
+     `{{open_findings}}` (count of `findings[]` where `status === 'open'`
+     and addressed to this agent).
+5. **Print the rendered template verbatim** as the command output. The
+   user pastes it into the target agent's chat (or, when a bridge
+   exists, the bridge auto-submits it).
+6. If `loop_mechanism === 'cli-headless'`, also write an outbox message
+   to `.autoclaw/orchestrator/agents/{agent-id}/outboxes/<msg-id>.json`
+   carrying the rendered prompt, and touch
+   `.autoclaw/orchestrator/agents/{agent-id}/ready` so a runner picks it up.
+7. Append a line to `comms/comms-log.jsonl`: `{ type: "revive", agent,
+   stalled_for, template, rendered_at, by }`.
+
+Confirm: "Revive prompt rendered for {agent-id} (stalled {duration}).
+Paste into the agent's chat; or wait for the bridge/runner to deliver
+it."
+
+**Why this exists.** Per-agent revival knowledge (Kilo loops via plain
+message, Claude Code via `/loop`, Cursor via headless re-dispatch) used
+to live in the human's head. It now lives in the registry +
+`templates/keepalive/`, so every project has the same one-command
+answer to "wake my stalled peer."
 
 ---
 
