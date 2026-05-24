@@ -1,10 +1,14 @@
 ---
 spec_id: llm-provider-s1
 title: LLM provider abstraction — S1 foundation (types + registry + ZippyMesh + Ollama + Oracle)
-status: draft
+status: pilot
 owner: architect
 created: 2026-05-23
 updated: 2026-05-24
+pilot_evidence:
+  - "693 passing tests (44 new for S1, 0 failing) — 2026-05-24"
+  - "Persona loader's 12 existing tests still green after provider-stub rewire"
+  - "Compile clean (tsc -p ./), adapters:check green"
 supersedes: []
 superseded_by: null
 references:

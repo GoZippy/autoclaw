@@ -21,3 +21,6 @@ tsconfig.tsbuildinfo
 .kilo/
 .claude/
 .clinerules/
+
+# Local research / scratch — referenced from specs but not in the repo
+tmp/

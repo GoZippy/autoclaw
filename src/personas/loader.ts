@@ -137,7 +137,7 @@ export class PersonaLoader {
     let lastError: { errorClass: ErrorClass; errorMessage: string } | undefined;
     for (let i = 0; i < chain.length; i++) {
       const ref = chain[i];
-      const provider = resolveProvider(ref, profile);
+      const provider = resolveProvider(ref, profile, this.opts.workspaceRoot);
       const result = await provider.chat({
         prompt: opts.prompt,
         toolAllowList: profile.toolAllowList,

@@ -31,6 +31,8 @@ export {
   resolveProvider,
   setInlineOverride,
   clearInlineOverride,
+  _resetRegistryForTests,
+  _setRegistryForTests,
   type StubProvider,
   type ProviderChatOptions,
   type ProviderChatResult,
