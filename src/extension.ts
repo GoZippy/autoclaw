@@ -72,7 +72,9 @@ import {
 } from './comms';
 import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
-  renderFabricHealth, type FabricHealth, type InboxSummary, type AwaitingYouRow,
+  renderFabricHealth, renderPanelFooter,
+  readExtensionVersionFromDisk, readGitBranchFromDisk,
+  type FabricHealth, type InboxSummary, type AwaitingYouRow,
 } from './webview-render';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
@@ -1494,10 +1496,16 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const cssPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'kdream-dashboard.css');
     const jsPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'kdream-dashboard.js');
-    
+
     const cssUri = webview.asWebviewUri(cssPath);
     const jsUri = webview.asWebviewUri(jsPath);
-    
+
+    // UI-2: version footer (pure FS reads — no spawn).
+    const version = readExtensionVersionFromDisk(this._extensionUri.fsPath);
+    const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const branch = wsRoot ? readGitBranchFromDisk(wsRoot) : null;
+    const footerHtml = renderPanelFooter(version, branch);
+
     // Generate a nonce for CSP
     const nonce = this._generateNonce();
     
@@ -1616,6 +1624,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             </div>
         </div>
     </div>
+    ${footerHtml}
     <script nonce="${nonce}" src="${jsUri}"></script>
 </body>
 </html>`;

@@ -364,6 +364,94 @@ suite('webview-render — fabric health', () => {
 });
 
 // ---------------------------------------------------------------------------
+// UI-2: panel version footer
+// ---------------------------------------------------------------------------
+
+import { readExtensionVersionFromDisk, readGitBranchFromDisk, renderPanelFooter } from '../webview-render';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as nodePath from 'path';
+
+suite('webview-render — UI-2 panel footer', () => {
+  test('renderPanelFooter renders version + branch when both present', () => {
+    const html = renderPanelFooter('3.1.0-dev', 'feat/v3.1');
+    assert.match(html, /class="panel-footer"/);
+    assert.match(html, /AutoClaw v3\.1\.0-dev/);
+    assert.match(html, /branch: feat\/v3\.1/);
+    assert.match(html, /role="contentinfo"/);
+  });
+
+  test('renderPanelFooter omits branch when null', () => {
+    const html = renderPanelFooter('3.1.0', null);
+    assert.match(html, /AutoClaw v3\.1\.0/);
+    assert.ok(!html.includes('branch:'), 'branch should be omitted when null');
+  });
+
+  test('renderPanelFooter falls back to v? when version is null', () => {
+    const html = renderPanelFooter(null, 'master');
+    assert.match(html, /AutoClaw v\?/);
+    assert.match(html, /branch: master/);
+  });
+
+  test('renderPanelFooter HTML-escapes version and branch', () => {
+    const html = renderPanelFooter('1.0.0"<script>', 'feat/<x>');
+    assert.ok(!/<script>/.test(html), 'raw <script> must not appear in output');
+    assert.match(html, /&lt;script&gt;/);
+    assert.match(html, /&lt;x&gt;/);
+  });
+
+  test('readExtensionVersionFromDisk returns null on missing package.json', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      assert.strictEqual(readExtensionVersionFromDisk(tmp), null);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readExtensionVersionFromDisk reads version from package.json', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      fs.writeFileSync(nodePath.join(tmp, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+      assert.strictEqual(readExtensionVersionFromDisk(tmp), '9.9.9');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readGitBranchFromDisk returns null when .git/HEAD is missing', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      assert.strictEqual(readGitBranchFromDisk(tmp), null);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readGitBranchFromDisk parses ref form of .git/HEAD', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      fs.mkdirSync(nodePath.join(tmp, '.git'));
+      fs.writeFileSync(nodePath.join(tmp, '.git', 'HEAD'), 'ref: refs/heads/feat/v3.1\n');
+      assert.strictEqual(readGitBranchFromDisk(tmp), 'feat/v3.1');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readGitBranchFromDisk returns null on detached HEAD', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      fs.mkdirSync(nodePath.join(tmp, '.git'));
+      fs.writeFileSync(nodePath.join(tmp, '.git', 'HEAD'), 'abc1234567890def\n');
+      assert.strictEqual(readGitBranchFromDisk(tmp), null);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Smoke: agent missing in registry doesn't break renderer
 // ---------------------------------------------------------------------------
 

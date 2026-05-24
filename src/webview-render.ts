@@ -9,6 +9,8 @@
  * unit-tested without booting the Electron host (see
  * `src/test/webview-rendering.test.ts`).
  */
+import * as fs from 'fs';
+import * as path from 'path';
 import type {
   RegisteredAgent, Heartbeat, AgentStatus, Message,
 } from './comms';
@@ -380,4 +382,38 @@ export function renderFabricHealth(h: FabricHealth | null): string {
       `data-fabric-action="${esc(kgCmd)}" ` +
       `title="${esc(kgTip)}" aria-label="${esc(kgTip)}">${esc(kgLabel)}</button>`
   );
+}
+
+// ---------------------------------------------------------------------------
+// UI-2: Panel version footer
+// ---------------------------------------------------------------------------
+
+/** Read extension version from package.json. Null if missing/malformed. */
+export function readExtensionVersionFromDisk(extensionFsPath: string): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(extensionFsPath, 'package.json'), 'utf8');
+    const pkg = JSON.parse(raw) as { version?: unknown };
+    return typeof pkg.version === 'string' && pkg.version.length > 0 ? pkg.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read current git branch from .git/HEAD. Null on detached HEAD / no repo. */
+export function readGitBranchFromDisk(workspaceRoot: string): string | null {
+  try {
+    const head = fs.readFileSync(path.join(workspaceRoot, '.git', 'HEAD'), 'utf8').trim();
+    const m = head.match(/^ref:\s+refs\/heads\/(.+)$/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Render the panel footer. Missing pieces are omitted, not filled. */
+export function renderPanelFooter(version: string | null, branch: string | null): string {
+  const verLabel = version ? `v${esc(version)}` : 'v?';
+  const parts = [`AutoClaw ${verLabel}`];
+  if (branch) { parts.push(`branch: ${esc(branch)}`); }
+  return `<footer class="panel-footer" role="contentinfo" aria-label="AutoClaw version">${parts.join(' · ')}</footer>`;
 }
