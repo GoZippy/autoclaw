@@ -4,7 +4,7 @@ import {
   statusBadgeClass, trustBadgeClass,
   renderChips, renderDetailRow, renderAgentCard, renderAgentList,
   extractPlatform, payloadExcerpt, filterAwaitingYou, renderAwaitingYou,
-  renderFabricHealth,
+  renderFabricHealth, bridgeTooltip, kgTooltip, kgClickCommand,
   type AgentWithLive, type InboxSummary, type AwaitingYouRow, type FabricHealth,
 } from '../webview-render';
 import type { Message, RegisteredAgent, Heartbeat } from '../comms';
@@ -312,6 +312,54 @@ suite('webview-render — fabric health', () => {
   test('kg unreachable shows red', () => {
     const html = renderFabricHealth({ bridge: 'poll', kg: 'unreachable' });
     assert.match(html, /kg-unreachable/);
+  });
+
+  // ── UI-1: tooltips + click actions ──────────────────────────────────────
+  test('UI-1: bridge tooltip explains each transport', () => {
+    assert.match(bridgeTooltip('poll'), /filesystem polling/i);
+    assert.match(bridgeTooltip('sse'),  /Server-Sent Events/);
+    assert.match(bridgeTooltip('ws'),   /WebSocket/);
+    assert.match(bridgeTooltip('off'),  /disabled/i);
+  });
+
+  test('UI-1: bridge tooltip includes client counts when present', () => {
+    const tip = bridgeTooltip('sse', { bridge: 'sse', kg: 'off', sse_clients: 3, ws_clients: 0, bridge_port: 7141 });
+    assert.match(tip, /SSE=3/);
+    assert.match(tip, /WS=0/);
+    assert.match(tip, /Port 7141/);
+  });
+
+  test('UI-1: kg tooltip explains each state', () => {
+    assert.match(kgTooltip('off'),         /not running/i);
+    assert.match(kgTooltip('running'),     /active/i);
+    assert.match(kgTooltip('unreachable'), /not responding/i);
+  });
+
+  test('UI-1: kg click command depends on state', () => {
+    assert.strictEqual(kgClickCommand('off'),         'startKgDaemon');
+    assert.strictEqual(kgClickCommand('running'),     'openKgDashboard');
+    assert.strictEqual(kgClickCommand('unreachable'), 'restartKgDaemon');
+  });
+
+  test('UI-1: rendered chips are buttons with data-fabric-action + title + aria-label', () => {
+    const html = renderFabricHealth({ bridge: 'poll', kg: 'off' });
+    // Both chips must be <button> with explicit action + a11y attrs.
+    assert.match(html, /<button[^>]+data-fabric-action="openBridgeDoc"[^>]+title="[^"]+"[^>]+aria-label="[^"]+"/);
+    assert.match(html, /<button[^>]+data-fabric-action="startKgDaemon"[^>]+title="[^"]+"[^>]+aria-label="[^"]+"/);
+  });
+
+  test('UI-1: tooltips render for every (bridge,kg) state combination', () => {
+    const bridges: FabricHealth['bridge'][] = ['poll', 'sse', 'ws', 'off'];
+    const kgs:     FabricHealth['kg'][]     = ['off', 'running', 'unreachable'];
+    for (const bridge of bridges) {
+      for (const kg of kgs) {
+        const html = renderFabricHealth({ bridge, kg });
+        assert.match(html, /title="[^"]+bridge[^"]*"/i, `bridge=${bridge} kg=${kg}: bridge title missing`);
+        assert.match(html, /title="[^"]+(daemon|graph)[^"]*"/i, `bridge=${bridge} kg=${kg}: kg title missing`);
+        assert.match(html, new RegExp(`bridge-${bridge}`), `bridge=${bridge}: class missing`);
+        assert.match(html, new RegExp(`kg-${kg}`), `kg=${kg}: class missing`);
+      }
+    }
   });
 });
 

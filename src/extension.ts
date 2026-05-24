@@ -1331,6 +1331,20 @@ export async function checkAndOfferGitignoreUpdate(): Promise<void> {
   }
 }
 
+async function openLocalDoc(relPath: string): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showWarningMessage(`AutoClaw: open a workspace before viewing ${relPath}.`);
+    return;
+  }
+  const target = vscode.Uri.file(path.join(workspaceRoot, relPath));
+  try {
+    await vscode.window.showTextDocument(target, { preview: true });
+  } catch {
+    vscode.window.showWarningMessage(`AutoClaw: could not open ${relPath}.`);
+  }
+}
+
 export class KDreamViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'kdreamDashboard';
   
@@ -1419,6 +1433,33 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             from: message.from,
             type: message.type,
           });
+          break;
+        }
+        case 'openBridgeDoc': {
+          await openLocalDoc('docs/rfc/runner-bridge-contract.md');
+          break;
+        }
+        case 'startKgDaemon':
+        case 'restartKgDaemon':
+        case 'openKgDashboard': {
+          const cmdMap: Record<string, string> = {
+            startKgDaemon: 'autoclaw.kg.start',
+            restartKgDaemon: 'autoclaw.kg.restart',
+            openKgDashboard: 'autoclaw.kg.openDashboard',
+          };
+          const cmd = cmdMap[message.command];
+          const all = await vscode.commands.getCommands(true);
+          if (all.includes(cmd)) {
+            await vscode.commands.executeCommand(cmd);
+          } else {
+            const pick = await vscode.window.showInformationMessage(
+              `Knowledge Graph daemon control ('${cmd}') is not registered in this build. Open the kg-daemon docs?`,
+              'Open docs', 'Dismiss'
+            );
+            if (pick === 'Open docs') {
+              await openLocalDoc('docs/V3_1_ROADMAP.md');
+            }
+          }
           break;
         }
       }

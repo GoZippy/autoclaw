@@ -157,6 +157,13 @@
     const el = document.getElementById('fabric-health-bar');
     if (!el) return;
     el.innerHTML = (payload && typeof payload.html === 'string') ? payload.html : '';
+    // UI-1: every chip is a <button data-fabric-action="..."> — wire it.
+    el.querySelectorAll('[data-fabric-action]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const action = btn.getAttribute('data-fabric-action');
+        if (action) vscode.postMessage({ command: action });
+      });
+    });
   }
 
   // ── Sprints section ───────────────────────────────────────────────
