@@ -1333,20 +1333,6 @@ export async function checkAndOfferGitignoreUpdate(): Promise<void> {
   }
 }
 
-async function openLocalDoc(relPath: string): Promise<void> {
-  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!workspaceRoot) {
-    vscode.window.showWarningMessage(`AutoClaw: open a workspace before viewing ${relPath}.`);
-    return;
-  }
-  const target = vscode.Uri.file(path.join(workspaceRoot, relPath));
-  try {
-    await vscode.window.showTextDocument(target, { preview: true });
-  } catch {
-    vscode.window.showWarningMessage(`AutoClaw: could not open ${relPath}.`);
-  }
-}
-
 export class KDreamViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'kdreamDashboard';
   
@@ -1468,7 +1454,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'openBridgeDoc': {
-          await openLocalDoc('docs/rfc/runner-bridge-contract.md');
+          await vscode.env.openExternal(vscode.Uri.parse('https://github.com/GoZippy/autoclaw/blob/master/docs/rfc/runner-bridge-contract.md'));
           break;
         }
         case 'startKgDaemon':
@@ -1489,7 +1475,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
               'Open docs', 'Dismiss'
             );
             if (pick === 'Open docs') {
-              await openLocalDoc('docs/V3_1_ROADMAP.md');
+              await vscode.env.openExternal(vscode.Uri.parse('https://github.com/GoZippy/autoclaw/blob/master/docs/V3_1_ROADMAP.md'));
             }
           }
           break;

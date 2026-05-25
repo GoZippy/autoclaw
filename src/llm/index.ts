@@ -4,7 +4,7 @@
  * Public surface:
  *   - `LlmProvider` interface + supporting types.
  *   - `OpenAiCompatibleProvider` base + `ZippyMeshProvider`, `OllamaProvider`.
- *   - `Oracle` — client-side fallback ladder (TS port of the upstream model-oracle host model-oracle).
+ *   - `Oracle` — client-side fallback ladder (TS port of an upstream model-oracle script).
  *   - `CostLedger` — ZICO-aligned append-only ledger.
  *   - `LlmRegistry` — provider registry + three-branch `getPreferred()`.
  *   - `installFailsafe()` — idempotent `qwen3:0.6b@:11435` installer.

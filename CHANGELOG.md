@@ -1,5 +1,28 @@
 # Changelog
 
+## [3.1.1] - 2026-05-25
+
+Hot-patch over 3.1.0. The 3.1.0 VSIX inadvertently shipped JSDoc header
+comments in `out/llm/oracle.js` and `out/llm/index.js` that referenced
+an internal-only host codename. No credentials, customer data, or tokens
+were exposed — but the comments named internal infrastructure that
+should never have left the repo. 3.1.1 removes those references from
+source, regenerates the compiled output, and rewrites local git history
+so the strings are not present in any commit reachable from the pushed
+branch. Functionally identical to 3.1.0; users on 3.1.0 should update.
+
+### Fixed
+
+- Replace internal-host references in `src/llm/oracle.ts`,
+  `src/llm/index.ts`, and `src/llm/zippymesh.ts` JSDoc with neutral
+  language ("upstream model-oracle", "ZMLR project") so the compiled
+  `out/llm/*.js` no longer carries internal infra names.
+- Sanitize internal `ssh://` URLs and local-only filesystem paths in
+  `docs/rfc/llm-provider-abstraction.md`, `docs/specs/llm-provider-s1/spec.md`,
+  `docs/specs/llm-provider-s2-zmlr-mcp-route/spec.md`, and
+  `docs/V3_1_ROADMAP.md` (none of which ship in the VSIX, but were
+  about to be pushed to GitHub).
+
 ## [3.1.0] - 2026-05-24
 
 This release ("v3.1.0 — hands-off peer review + the agendaboard") closes

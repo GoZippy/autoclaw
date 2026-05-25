@@ -1,6 +1,6 @@
 /**
- * Client-side fallback Oracle — TypeScript port of the upstream model-oracle host's
- * `~/.openclaw/scripts/model-oracle.mjs` (Bun original).
+ * Client-side fallback Oracle — TypeScript port of an upstream
+ * model-oracle script (Bun original).
  *
  * Discovers reachable LLM endpoints (ZMLR, Ollama, LM Studio, failsafe),
  * scores models per task class, tracks rate limits with persistent TTL
@@ -8,7 +8,7 @@
  * `LlmRegistry.getPreferred()` can't reach ZMLR's `recommend_model`, the
  * oracle picks.
  *
- * Diverges from the Bun original in two ways:
+ * Diverges from the upstream original in two ways:
  *   1. ZMLR is included as a ladder rung (not just a routing decider) so
  *      a 429 on ZMLR's selected backend can fall through the same
  *      ladder while a different backend cools off.
