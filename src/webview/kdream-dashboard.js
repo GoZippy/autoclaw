@@ -535,4 +535,80 @@
 
   // ── Request initial data ──────────────────────────────────────────
   vscode.postMessage({ command: 'getInitialData' });
+
+  // ── Section search wiring (UI-5/UI-6/UI-7) ─────────────────────────
+  // Config per section: sort options, filter chips, auto-hide threshold.
+  // Only sections with >5 items get a search toggle (set in section-search.js).
+  const sectionSearchConfigs = {
+    'agents': {
+      label: 'Agents',
+      sort: [
+        { value: 'default', label: 'Default' },
+        { value: 'alpha', label: 'A–Z' },
+        { value: 'active-first', label: 'Active first' }
+      ],
+      chips: [
+        { id: 'active', label: 'Active' },
+        { id: 'idle', label: 'Idle' },
+        { id: 'stalled', label: 'Stalled' }
+      ]
+    },
+    'messages': {
+      label: 'Messages',
+      sort: [
+        { value: 'default', label: 'Default' },
+        { value: 'recency', label: 'Newest' },
+        { value: 'alpha', label: 'A–Z' }
+      ],
+      chips: [
+        { id: 'task_assign', label: 'Assign' },
+        { id: 'review_request', label: 'Review' },
+        { id: 'task_complete', label: 'Complete' },
+        { id: 'finding_report', label: 'Finding' }
+      ]
+    },
+    'tasks': {
+      label: 'Tasks',
+      sort: [
+        { value: 'default', label: 'Default' },
+        { value: 'recency', label: 'Newest' },
+        { value: 'alpha', label: 'A–Z' }
+      ],
+      chips: [
+        { id: 'pending', label: 'Pending' },
+        { id: 'complete', label: 'Done' }
+      ]
+    }
+  };
+
+  // Wire sections after DOM is ready
+  function wireSectionSearch() {
+    if (!window.SectionSearch) return;
+    window.SectionSearch.ensureWired();
+    for (const [sectionId, config] of Object.entries(sectionSearchConfigs)) {
+      window.SectionSearch.wire(sectionId, config);
+    }
+  }
+
+  // Wire on initial load and after each render cycle
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => wireSectionSearch());
+  } else {
+    wireSectionSearch();
+  }
+
+  // Re-wire after message updates (content may have changed)
+  const _origAddEventListener = window.addEventListener;
+  // Hook into the existing message handler to re-wire after renders
+  window.addEventListener('message', (event) => {
+    try {
+      const { command } = event.data;
+      // Re-wire after any content-updating command
+      if (['updateAgentCards', 'updateMessages', 'updateTasks', 'updateTodos',
+           'updateSprints', 'updateAwaitingYou', 'updateFabricHealth'].includes(command)) {
+        // Small delay to let DOM update complete
+        setTimeout(() => wireSectionSearch(), 0);
+      }
+    } catch (_) { /* ignore */ }
+  });
 })();

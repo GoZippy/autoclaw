@@ -335,6 +335,12 @@ Result: PR-ready. Jitter note saved to MEMORY.md follow-ups.
 
 Orchestrate turns a task manifest into a parallelised sprint plan, assigns work to multiple agents with isolated file scopes, and coordinates a consensus review gate before any sprint branch is merged. It is designed for large projects that benefit from multiple AI agents working simultaneously on non-overlapping parts of a codebase.
 
+> **Coordinating a build across several AI agents?** Read
+> [`docs/AGENT_WORKFLOW.md`](docs/AGENT_WORKFLOW.md) — three copy-paste
+> prompt templates (bootstrap, coordinator, worker) that work with any
+> AutoClaw-supported agent and replace the older "paste this giant blob"
+> approach.
+
 ### How it works
 
 ```

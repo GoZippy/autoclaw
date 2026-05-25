@@ -1,5 +1,16 @@
 # Keepalive templates (shipped defaults)
 
+> **Starter vs keepalive — pick the right one.**
+> - **Starter** templates ([`../starter/`](../starter/)) are for the
+>   *first* check-in of an agent on a project: bootstrap, coordinator,
+>   or worker role. The user pastes them directly.
+> - **Keepalive** templates (this directory) are for reviving a *known
+>   stalled* session — `/orchestrate revive <agent-id>` renders them
+>   automatically with the agent's last task, cycle counter, and stall
+>   duration substituted in.
+>
+> Full workflow guide: [`docs/AGENT_WORKFLOW.md`](../../../../docs/AGENT_WORKFLOW.md).
+
 These ship with the AutoClaw extension. The `/orchestrate revive
 <agent-id>` flow looks up `registry.json`'s `keepalive_template` field
 and reads, in order:

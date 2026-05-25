@@ -385,6 +385,41 @@ export function renderFabricHealth(h: FabricHealth | null): string {
 }
 
 // ---------------------------------------------------------------------------
+// UI-3: Status-dot legend popover
+// ---------------------------------------------------------------------------
+
+/** Plain-English explanation of each agent status, used in the legend popover. */
+export const STATUS_LEGEND: ReadonlyArray<{ status: string; label: string; meaning: string }> = [
+  { status: 'active',     label: 'Active',     meaning: 'Working a claim right now.' },
+  { status: 'idle',       label: 'Idle',       meaning: 'Heartbeat fresh; no claim in progress.' },
+  { status: 'overloaded', label: 'Overloaded', meaning: 'Queue depth ≥ 10 or token budget low.' },
+  { status: 'stalled',    label: 'Stalled',    meaning: 'No heartbeat for ≥5 cycles.' },
+  { status: 'offline',    label: 'Offline',    meaning: 'Heartbeat dead; excluded from quorum.' },
+  { status: 'detected',   label: 'Detected',   meaning: 'Registered but never checked in.' },
+];
+
+/**
+ * Render the (?) legend chip + collapsible popover that explains every status
+ * dot color. Click toggles `.open` on the wrapper; tests assert markup only.
+ */
+export function renderStatusLegend(): string {
+  const rows = STATUS_LEGEND.map(s =>
+    `<li class="legend-row"><span class="status-dot ${esc(statusBadgeClass(s.status))}" aria-hidden="true"></span>` +
+    `<span class="legend-label">${esc(s.label)}</span>` +
+    `<span class="legend-meaning">${esc(s.meaning)}</span></li>`
+  ).join('');
+  return (
+    `<span class="status-legend" role="group" aria-label="Status legend">` +
+      `<button type="button" class="legend-chip" aria-expanded="false" aria-controls="status-legend-popover" ` +
+        `title="Show status-dot legend">?</button>` +
+      `<div id="status-legend-popover" class="legend-popover" role="region" aria-label="Agent status meanings" hidden>` +
+        `<ul class="legend-list">${rows}</ul>` +
+      `</div>` +
+    `</span>`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // UI-2: Panel version footer
 // ---------------------------------------------------------------------------
 

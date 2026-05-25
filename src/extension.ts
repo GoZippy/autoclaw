@@ -72,7 +72,7 @@ import {
 } from './comms';
 import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
-  renderFabricHealth, renderPanelFooter,
+  renderFabricHealth, renderPanelFooter, renderStatusLegend,
   readExtensionVersionFromDisk, readGitBranchFromDisk,
   type FabricHealth, type InboxSummary, type AwaitingYouRow,
 } from './webview-render';
@@ -1437,6 +1437,36 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           });
           break;
         }
+        case 'persistFilterState': {
+          // UI-6: per-section filter state persistence (Memento)
+          if (message.sectionId && message.state) {
+            try {
+              const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+              if (ws) {
+                const filterDir = path.join(ws, '.autoclaw', 'orchestrator', 'filters');
+                await fsPromises.mkdir(filterDir, { recursive: true });
+                const filterFile = path.join(filterDir, message.sectionId + '.json');
+                await fsPromises.writeFile(filterFile, JSON.stringify(message.state, null, 2), 'utf8');
+              }
+            } catch (_) { /* best-effort */ }
+          }
+          break;
+        }
+        case 'getFilterState': {
+          // UI-6: restore persisted filter state
+          if (message.sectionId) {
+            try {
+              const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+              if (ws) {
+                const filterFile = path.join(ws, '.autoclaw', 'orchestrator', 'filters', message.sectionId + '.json');
+                const raw = await fsPromises.readFile(filterFile, 'utf8');
+                const state = JSON.parse(raw);
+                webviewView.webview.postMessage({ command: 'restoreFilterState', sectionId: message.sectionId, state });
+              }
+            } catch (_) { /* no persisted state — ignore */ }
+          }
+          break;
+        }
         case 'openBridgeDoc': {
           await openLocalDoc('docs/rfc/runner-bridge-contract.md');
           break;
@@ -1499,12 +1529,21 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
 
     const cssUri = webview.asWebviewUri(cssPath);
     const jsUri = webview.asWebviewUri(jsPath);
+    const sectionSearchCssUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'section-search.css')
+    );
+    const sectionSearchJsUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'section-search.js')
+    );
 
     // UI-2: version footer (pure FS reads — no spawn).
     const version = readExtensionVersionFromDisk(this._extensionUri.fsPath);
     const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const branch = wsRoot ? readGitBranchFromDisk(wsRoot) : null;
     const footerHtml = renderPanelFooter(version, branch);
+
+    // UI-3: status-dot legend popover, injected in the Agents section header.
+    const legendHtml = renderStatusLegend();
 
     // Generate a nonce for CSP
     const nonce = this._generateNonce();
@@ -1520,6 +1559,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AutoClaw</title>
     <link rel="stylesheet" href="${cssUri}">
+    <link rel="stylesheet" href="${sectionSearchCssUri}">
 </head>
 <body>
     <div id="panel-root" role="main">
@@ -1538,7 +1578,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
 
         <!-- Awaiting You section (per COORDINATION_IMPROVEMENTS §2.7) -->
         <div class="panel-section" id="awaiting-you-section">
-            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="awaiting-you-body">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="awaiting-you-body" data-section="awaiting-you">
                 <span class="section-chevron"></span>
                 Awaiting You
                 <span class="section-badge" id="awaiting-you-badge">0</span>
@@ -1550,7 +1590,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
 
         <!-- Agents section -->
         <div class="panel-section open" id="agents-section">
-            <div class="section-header" role="button" tabindex="0" aria-expanded="true" aria-controls="agents-body">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="true" aria-controls="agents-body" data-section="agents">
                 <span class="section-chevron"></span>
                 Agents
                 <span class="section-badge" id="agents-badge">0</span>
@@ -1563,7 +1603,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
 
         <!-- Sprints section -->
         <div class="panel-section" id="sprints-section" style="display:none">
-            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="sprints-body">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="sprints-body" data-section="sprints">
                 <span class="section-chevron"></span>
                 Sprints
                 <span class="section-badge" id="sprints-badge"></span>
@@ -1575,7 +1615,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
 
         <!-- Messages section -->
         <div class="panel-section" id="messages-section">
-            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="messages-body">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="messages-body" data-section="messages">
                 <span class="section-chevron"></span>
                 Messages
                 <span class="section-badge" id="messages-badge">0</span>
@@ -1587,7 +1627,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
 
         <!-- Tasks section -->
         <div class="panel-section" id="tasks-section">
-            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="tasks-body">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="tasks-body" data-section="tasks">
                 <span class="section-chevron"></span>
                 Tasks
                 <span class="section-badge" id="tasks-badge">0</span>
@@ -1626,6 +1666,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
     </div>
     ${footerHtml}
     <script nonce="${nonce}" src="${jsUri}"></script>
+    <script nonce="${nonce}" src="${sectionSearchJsUri}"></script>
 </body>
 </html>`;
   }
