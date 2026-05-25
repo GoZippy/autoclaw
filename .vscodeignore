@@ -4,6 +4,9 @@
 .gitignore
 .gitattributes
 .env
+.env.local
+.env.*.local
+.mcp.json
 .claude/**
 .clinerules/**
 .kilo/**
@@ -22,6 +25,9 @@ node_modules/**
 .github/**
 *.vsix
 
+# Local scratch / research — referenced from specs but not part of the extension.
+tmp/**
+
 # Internal documentation — keep README, CHANGELOG, LICENSE only.
 # Consumers of the published extension don't need the roadmap, research, or
 # forward-looking specs; they live in the GitHub repo for collaborators.
@@ -35,6 +41,16 @@ docs/otherProjects-catalog.md
 docs/plan.md
 docs/CROSS_AGENT_ARCHITECTURE.md
 ORCHESTRATION-IMPROVEMENTS.md
+
+# Forward-looking roadmap + internal critique — keep in repo for collaborators,
+# don't ship in the published extension (consumers don't need our plans).
+docs/V3_PLAN.md
+docs/V3_1_ROADMAP.md
+docs/AGENT_DAEMON_CRITIQUE.md
+
+# Internal RFCs that reference private infra (ssh URLs to internal hosts) —
+# safe to share in-repo but not in a public VSIX.
+docs/rfc/llm-provider-abstraction.md
 
 # Dev-only kg-daemon prototype — not part of the runtime extension.
 packages/**
