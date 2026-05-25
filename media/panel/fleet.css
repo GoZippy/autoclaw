@@ -240,3 +240,49 @@ table.health-grid, table.cost-table {
   color: var(--vscode-foreground);
   font-style: italic;
 }
+
+/* --- Agendaboard ---------------------------------------------------------- */
+.board-subsection { margin-bottom: 10px; }
+.board-subhead {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 6px 0 4px;
+  color: var(--vscode-descriptionForeground);
+}
+.board-subhead .badge {
+  background: var(--vscode-badge-background, rgba(127,127,127,0.18));
+  color: var(--vscode-badge-foreground, var(--vscode-foreground));
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 11px;
+  margin-left: 4px;
+}
+.board-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.board-table th,
+.board-table td {
+  text-align: left;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(127,127,127,0.18));
+  vertical-align: top;
+}
+.board-table th {
+  color: var(--vscode-descriptionForeground);
+  font-weight: 600;
+}
+.board-table code {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.12));
+}
+.board-warn {
+  color: var(--vscode-errorForeground, #f85149);
+  font-weight: 600;
+}

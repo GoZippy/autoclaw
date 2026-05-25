@@ -253,10 +253,135 @@
     });
   }
 
+  // ---- agendaboard --------------------------------------------------------
+  function formatAge(ms) {
+    if (!isFinite(ms) || ms < 0) { return '—'; }
+    if (ms < 60000) { return Math.round(ms / 1000) + 's'; }
+    if (ms < 3600000) { return Math.round(ms / 60000) + 'm'; }
+    return Math.round(ms / 3600000) + 'h';
+  }
+
+  function boardSubsection(title, count, body) {
+    const wrap = el('div', 'board-subsection');
+    const h = el('h3', 'board-subhead');
+    h.appendChild(document.createTextNode(title + ' '));
+    h.appendChild(el('span', 'badge', String(count)));
+    wrap.appendChild(h);
+    wrap.appendChild(body);
+    return wrap;
+  }
+
+  function boardEmpty(message) { return el('p', 'empty', message); }
+
+  function boardTable(headers, rows) {
+    const tbl = el('table', 'board-table');
+    const thead = el('thead');
+    const trh = el('tr');
+    headers.forEach(function (h) { trh.appendChild(el('th', null, h)); });
+    thead.appendChild(trh);
+    tbl.appendChild(thead);
+    const tb = el('tbody');
+    rows.forEach(function (cells) {
+      const tr = el('tr');
+      cells.forEach(function (c) {
+        const td = el('td');
+        if (c && typeof c === 'object' && c.code) {
+          td.appendChild(el('code', null, c.code));
+        } else if (c && typeof c === 'object' && c.warn) {
+          const span = el('span', 'board-warn', c.warn);
+          td.appendChild(span);
+        } else {
+          td.textContent = c == null ? '' : String(c);
+        }
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    return tbl;
+  }
+
+  function renderBoard(board) {
+    const body = byId('board-body');
+    if (!body) { return; }
+    clear(body);
+
+    const badge = byId('board-fleet-badge');
+    if (badge) {
+      const live = board && typeof board.live_count === 'number' ? board.live_count : 0;
+      const total = board && typeof board.fleet_size === 'number' ? board.fleet_size : 0;
+      badge.textContent = live + ' / ' + total;
+    }
+
+    if (!board) {
+      body.appendChild(boardEmpty('No board snapshot yet.'));
+      return;
+    }
+
+    // Claimable
+    var rows = (board.claimable || []).map(function (c) {
+      return [{ code: c.task_id }, c.priority || '—', c.sprint == null ? '—' : c.sprint, c.title || ''];
+    });
+    body.appendChild(boardSubsection(
+      'Claimable', rows.length,
+      rows.length === 0
+        ? boardEmpty('Every open task has an owner or is awaiting review.')
+        : boardTable(['Task', 'Priority', 'Sprint', 'Title'], rows),
+    ));
+
+    // In flight
+    rows = (board.in_flight || []).map(function (i) {
+      return [
+        { code: i.task_id },
+        i.claimed_by,
+        formatAge(i.age_ms),
+        i.owner_healthy ? 'yes' : { warn: 'no' },
+      ];
+    });
+    body.appendChild(boardSubsection(
+      'In flight', rows.length,
+      rows.length === 0
+        ? boardEmpty('No active claims.')
+        : boardTable(['Task', 'Owner', 'Age', 'Owner healthy'], rows),
+    ));
+
+    // Awaiting review
+    rows = (board.awaiting_review || []).map(function (r) {
+      var votes = (r.votes_received || 0) + '/' + (r.votes_required || 0);
+      if (r.approvals || r.request_changes) {
+        votes += ' (+' + (r.approvals || 0) + '/−' + (r.request_changes || 0) + ')';
+      }
+      return [
+        { code: r.task_id }, r.author, r.rule, votes,
+        (r.reviewers || []).join(', '), formatAge(r.age_ms),
+      ];
+    });
+    body.appendChild(boardSubsection(
+      'Awaiting review', rows.length,
+      rows.length === 0
+        ? boardEmpty('No reviews open.')
+        : boardTable(['Task', 'Author', 'Rule', 'Votes', 'Reviewers', 'Age'], rows),
+    ));
+
+    // Stuck
+    rows = (board.stuck || []).map(function (s) {
+      return [
+        { code: s.task_id }, { warn: s.reason }, formatAge(s.age_ms), s.detail || '',
+      ];
+    });
+    body.appendChild(boardSubsection(
+      'Stuck', rows.length,
+      rows.length === 0
+        ? boardEmpty('Nothing stuck — fleet is healthy.')
+        : boardTable(['Task', 'Reason', 'Age', 'Detail'], rows),
+    ));
+  }
+
   // ---- top-level render ---------------------------------------------------
   function render(model) {
     if (!model) { return; }
     renderPresence(model.presence);
+    renderBoard(model.board);
     renderAwaiting(model.awaitingYou);
     renderHealthGrid(model.healthGrid);
     renderCards(model.cards);

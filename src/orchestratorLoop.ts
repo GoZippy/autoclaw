@@ -27,6 +27,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { Heartbeat, Message } from './comms';
+import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
+import { writeBoard } from './orchestrator/boardWriter';
 
 const fsPromises = fs.promises;
 
@@ -488,6 +490,40 @@ export async function runTick(
         const sidecar = await dispatchWork(workspaceRoot, w.item);
         if (sidecar) { dispatched++; state.totalDispatches++; }
       } catch (e: any) { tickErrors++; state.totalErrors++; }
+    }
+  }
+
+  // Auto-promote any new task_complete in shared/ into peer review_requests.
+  if (workspaceRoot) {
+    try {
+      const promo = await promotePendingTaskCompletes({
+        workspaceRoot,
+        fromAgent: 'orchestrator-loop',
+      });
+      if (promo.promoted > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'dispatch',
+          action: 'peer_reviews_promoted',
+          detail: { promoted: promo.promoted, promotions: promo.promotions },
+        });
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'peer_review_promotion_failed', detail: { error: String(e) },
+      });
+    }
+
+    // Refresh the agendaboard (board.md + board.json).
+    try {
+      await writeBoard({ workspaceRoot, generator: 'orchestrator-loop' });
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'board_write_failed', detail: { error: String(e) },
+      });
     }
   }
 

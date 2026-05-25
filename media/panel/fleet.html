@@ -16,6 +16,17 @@
       <button id="btn-refresh" type="button" class="ghost" aria-label="Refresh">&#8635;</button>
     </div>
 
+    <!-- Agendaboard (claimable / in-flight / awaiting review / stuck) -->
+    <section class="panel-section" id="sec-board" aria-labelledby="hdr-board">
+      <h2 id="hdr-board" class="section-header">
+        Agendaboard
+        <span class="badge" id="board-fleet-badge" title="live agents / fleet size">0 / 0</span>
+      </h2>
+      <div class="section-body" id="board-body">
+        <p class="empty">No board snapshot yet — orchestrator loop will write one shortly.</p>
+      </div>
+    </section>
+
     <!-- Awaiting You -->
     <section class="panel-section" id="sec-awaiting" aria-labelledby="hdr-awaiting">
       <h2 id="hdr-awaiting" class="section-header">

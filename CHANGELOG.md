@@ -1,5 +1,83 @@
 # Changelog
 
+## [3.1.0] - 2026-05-24
+
+This release ("v3.1.0 — hands-off peer review + the agendaboard") closes
+the loop the DRK-style "Claude said X, do you concur?" workflow exposed:
+agents no longer need a human to broker `task_complete → review_request →
+consensus` between them, and a single live board surfaces what's
+claimable, in flight, awaiting review, or stuck. Also bundles the v3.1
+panel UI work (status-dot legend, section search/filter/sort) and the
+three canonical agent-coordination prompts. Net: +1100 LOC across 8
+new/changed files, +34 tests (742 total passing).
+
+### Added
+
+- **Auto peer-review on `task_complete`** (`src/orchestrator/peerReview.ts`,
+  `peerReviewWatcher.ts`) — the orchestrator loop now scans `shared/` for
+  every `task_complete`, picks eligible peers (filters author, halted,
+  offline, stale-heartbeat; caps at 3; deterministic sort), emits a
+  per-peer `review_request`, and opens a `consensus/active/<task>.json`
+  vote stub. Idempotent via an atomic `consensus/_promoted/<msg-id>.json`
+  ledger (`wx` create): a second tick — or a second orchestrator process
+  — never double-fires the same review. When no peer is live the ledger
+  is released so a future tick retries. Reduces the manual copy-paste
+  consensus dance to zero.
+- **Agendaboard** (`src/orchestrator/board.ts`, `boardWriter.ts`) — each
+  tick the loop writes `.autoclaw/orchestrator/board.json` (machine
+  view) + `board.md` (human view) with four sections: **Claimable**
+  (open + dependency-satisfied + unclaimed), **In flight** (active
+  claim + owner health), **Awaiting review** (consensus stub + vote
+  tally), **Stuck** (claim expired, owner offline, review overdue, no
+  eligible reviewers). New agents read `board.json` first to pick the
+  highest-priority unclaimed item; humans read `board.md` in any editor.
+- **Agendaboard panel section** (`media/panel/fleet.html/js/css`,
+  `src/panel/fleetPanel.ts`) — the Fleet view now renders the same four
+  buckets at the top of the panel with a `live / fleet-size` badge.
+  Auto-refreshes on the existing 5-second poll.
+- **Status-dot legend** (`renderStatusLegend()` in `src/webview-render.ts`)
+  — the `(?)` chip in the Agents section header opens a popover
+  explaining every status colour (active / idle / overloaded / stalled
+  / offline / detected) in plain English.
+- **Section search / filter / sort** (`src/webview/section-search.{css,js}`,
+  wiring in `src/extension.ts` + `kdream-dashboard.js`) — sections with
+  >5 items get a search toggle, sort dropdown (default / newest / A–Z /
+  active-first), filter chips per section (agents: active/idle/stalled;
+  messages: assign/review/complete/finding; tasks: pending/done), and
+  per-section filter state persisted to `.autoclaw/orchestrator/filters/`
+  via Memento-style round-trip messages.
+- **Three canonical starter prompts** for coordinating multi-agent builds
+  ([`skills/orchestrate/templates/starter/`](skills/orchestrate/templates/starter/)) —
+  `bootstrap.md` (one-time `/orchestrate init && /orchestrate plan`),
+  `coordinator.md` (one window per fleet, runs review/merge/revive, never
+  claims tasks), and `worker.md` (host-agnostic `/loop`-style cycle for
+  any agent that checks in for work). Replaces the older "paste a giant
+  blob with `.clinerules/` paths" pattern that mixed bootstrap into the
+  loop body, hardcoded a single host's rules path, and shipped without a
+  HALT clause. Per-project overrides go in
+  `.autoclaw/orchestrator/templates/starter/`.
+- **`docs/AGENT_WORKFLOW.md`** — the user-facing guide that wraps the
+  three templates: which prompt for which role, when to use each, why
+  the three-template split fixes the failure modes of the single-blob
+  approach, and a troubleshooting section for the common stuck states
+  (duplicate claims, scope violations, stale plan).
+- **Starter ↔ keepalive cross-link** in
+  [`templates/keepalive/README.md`](.autoclaw/orchestrator/templates/keepalive/README.md) —
+  clarifies that starter templates seed first check-ins (user pastes)
+  while keepalive templates revive known stalled sessions (rendered by
+  `/orchestrate revive`).
+
+### Why
+
+Field reports showed users defaulting to a long, manually-assembled
+worker prompt that worked worse than the terse `/loop orchestrate all
+agents — … Run forever.` coordinator prompt. Root causes: bootstrap
+steps (`init`, `plan`) re-running every cycle; host-specific rules paths
+breaking portability across Claude Code / Kilo / Cursor / Kiro; missing
+HALT conditions causing infinite spin after all sprints merged. The
+three-template split makes the right shape the path of least
+resistance.
+
 ## [3.0.0] - 2026-05-17
 
 This release ("v3.0.0 — Cross-pollination harvest: criticality tiers, multi-strategy recall, fleet metrics") completes the `docs/DISTRIBUTED_AGENT_FABRIC.md` §4 cross-pollination roadmap. All Phase 3 and Phase 4 items from the spec are now shipped. Net: +420 LOC across 5 new/changed files, +19 tests (424 total passing).
