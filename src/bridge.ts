@@ -20,7 +20,7 @@ import { verifySvid } from './svid';
 
 const fsPromises = fs.promises;
 
-export interface BridgeConfig { port: number; host: string; commsDir: string; tokensPath: string; }
+export interface BridgeConfig { port: number; host: string; commsDir: string; tokensPath: string; portBlockBase?: number; }
 export interface RemoteAgentToken {
   agent_id: string;
   token: string;
@@ -459,10 +459,13 @@ function tryListen(server: http.Server, host: string, port: number): Promise<voi
 }
 
 export async function startBridge(config: BridgeConfig): Promise<BridgeState> {
+  const blockBase = config.portBlockBase ?? config.port;
+  const maxPort = blockBase + BRIDGE_PORT_FALLBACK_COUNT;
   const startPort = config.port;
   let lastErr: NodeJS.ErrnoException | undefined;
-  for (let i = 0; i <= BRIDGE_PORT_FALLBACK_COUNT; i++) {
-    const port = startPort + i;
+  let currentPort = startPort;
+  while (currentPort <= maxPort) {
+    const port = currentPort;
     const bus = new BridgeEventBus();
     const sseClients = new Set<http.ServerResponse>();
     const wsClients = new Set<unknown>();
@@ -470,8 +473,6 @@ export async function startBridge(config: BridgeConfig): Promise<BridgeState> {
     try {
       await tryListen(server, config.host, port);
       const effectiveConfig: BridgeConfig = { ...config, port };
-      // Lazy-load the WS module so SSE can run on its own if `ws` is missing
-      // (and so VS Code unit tests that don't touch WS don't pay the cost).
       try { await import('./bridge-ws'); } catch (e) {
         console.warn('Bridge: WebSocket support unavailable:', (e as Error).message);
       }
@@ -480,15 +481,15 @@ export async function startBridge(config: BridgeConfig): Promise<BridgeState> {
       return { server, config: effectiveConfig, running: true, bus, sseClients, wsClients };
     } catch (e) {
       lastErr = e as NodeJS.ErrnoException;
-      // Close and try next port only on EADDRINUSE; bubble up any other error.
       try { server.close(); } catch { /* ignore */ }
       if (lastErr.code !== 'EADDRINUSE') {
         throw lastErr;
       }
     }
+    currentPort++;
   }
   throw lastErr ?? new Error(
-    `Bridge could not bind to any port in range ${startPort}-${startPort + BRIDGE_PORT_FALLBACK_COUNT}`
+    `Bridge could not bind to any port in range ${startPort}-${maxPort}`
   );
 }
 
@@ -514,3 +515,12 @@ export function stopBridge(state: BridgeState): Promise<void> {
 }
 
 export const DEFAULT_BRIDGE_CONFIG: Omit<BridgeConfig, 'commsDir' | 'tokensPath'> = { port: 9876, host: '127.0.0.1' };
+
+export const IDE_BRIDGE_PORT_RANGES: Record<string, { base: number; count: number }> = {
+  vscode:      { base: 9876,  count: 4 },
+  cursor:      { base: 10876, count: 4 },
+  kiro:        { base: 11876, count: 4 },
+  windsurf:    { base: 12876, count: 4 },
+  antigravity: { base: 13876, count: 4 },
+  other:       { base: 14876, count: 4 },
+};

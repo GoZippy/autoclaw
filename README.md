@@ -85,6 +85,14 @@ All adapter files are generated from a single source of truth (`skills/*/SKILL.m
 
 **Note on Kiro:** All AutoClaw adapters use `inclusion: auto` in Kiro — they activate immediately without manual opt-in in the steering rules UI.
 
+### Multi-IDE Support
+
+AutoClaw can run simultaneously in multiple IDEs on the same machine without port conflicts. Each IDE (VS Code, Cursor, Kiro, Windsurf, Antigravity) gets a dedicated port block, and different workspaces within the same IDE get deterministic offsets via workspace-path hashing.
+
+When the bridge starts, the IDE and workspace are registered in `~/.autoclaw/.port-registry.json`. On stop or deactivation, the entry is released. The cross-IDE agent registry (`~/.autoclaw/.agent-registry.json`) tracks all live bridge endpoints on the machine, enabling agents like Codex, Claude Code, OpenClaw, and Hermes to discover and connect to any running AutoClaw instance.
+
+To disable the agent registry, set `autoclaw.workspaceRegistry.enabled` to `false`.
+
 ---
 
 ## Keyboard Shortcuts
@@ -529,8 +537,10 @@ REST endpoints: `POST /api/v1/messages`, `GET /api/v1/messages`, `POST /api/v1/h
 | `autoclaw.orchestrate.branchPrefix` | `"feat/"` | Git branch prefix for sprint branches |
 | `autoclaw.orchestrate.migrationRangeSize` | `4` | DB migration slots reserved per agent |
 | `autoclaw.bridge.enabled` | `false` | Enable HTTP bridge for remote agents |
-| `autoclaw.bridge.port` | `9876` | Bridge server port |
+| `autoclaw.bridge.port` | `0` | Bridge server port. `0` = auto-allocate per IDE and workspace (conflict-free across VS Code, Kiro, Cursor, Windsurf, Antigravity). Set an explicit value to override. |
 | `autoclaw.bridge.host` | `"127.0.0.1"` | Bridge server host (use `0.0.0.0` for external) |
+| `autoclaw.kg.port` | `0` | KG daemon port. `0` = auto-allocate per IDE and workspace. Set an explicit value to override. |
+| `autoclaw.workspaceRegistry.enabled` | `true` | Enable cross-IDE agent orchestration registry (`~/.autoclaw/.agent-registry.json`). When enabled, each IDE instance registers its bridge endpoint so other agents can discover it. |
 
 ---
 

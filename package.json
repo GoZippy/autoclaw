@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Background agents, parallel sprint orchestration, and multi-agent teams. Type @autoclaw in any chat. Works with Claude, Copilot, Kiro, KiloCode, Cline, Cursor, Windsurf, and Continue. Zero setup.",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.95.0"
@@ -440,8 +440,8 @@
         },
         "autoclaw.bridge.port": {
           "type": "number",
-          "default": 9876,
-          "description": "Port for the OpenClaw bridge server"
+          "default": 0,
+          "description": "Port for the OpenClaw bridge server. 0 (default) auto-assigns a conflict-free port based on IDE and workspace."
         },
         "autoclaw.bridge.host": {
           "type": "string",
@@ -455,8 +455,8 @@
         },
         "autoclaw.kg.port": {
           "type": "number",
-          "default": 9877,
-          "description": "Port for the AutoClaw Knowledge Graph daemon HTTP server (loopback only)."
+          "default": 0,
+          "description": "Port for the AutoClaw Knowledge Graph daemon HTTP server. 0 (default) auto-assigns a conflict-free port based on IDE and workspace."
         },
         "autoclaw.kg.dbPath": {
           "type": "string",
@@ -477,6 +477,11 @@
           "type": "string",
           "default": "nats://127.0.0.1:4222",
           "description": "URL of the NATS server used when autoclaw.fabric.busDriver = 'nats'. Ignored for fs/ws drivers."
+        },
+        "autoclaw.workspaceRegistry.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable machine-wide workspace registry for cross-IDE agent orchestration. When enabled, each IDE instance registers its bridge endpoint in ~/.autoclaw/.agent-registry.json so other agents can discover it."
         }
       }
     }
