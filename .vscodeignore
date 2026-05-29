@@ -1,44 +1,61 @@
-.vscode/**
-.vscode-test/**
-.vscode-test.mjs
+# Secrets - never ship credentials
+.env
+.env.local
+.env.*.local
+
+# Dev source, tests, docs, scripts - ship compiled out/ only (minus tests/maps)
+src/
+test/
+tests/
+docs/
+scripts/
+packages/
+*.vsix
+tsconfig.tsbuildinfo
+
+# Compiled test and script artifacts
+out/test/
+out/scripts/
+
+# Source maps
+*.js.map
+
+# Dev tooling
+.vscode/
+.vscode-test/
+.yarn/
+
+# Runtime workspace data - not for distribution
+.autoclaw/
+.kilocodemodes
+.kilo/
+.voidspec/
+.claude/
+.clinerules/
+
+# CI/CD internals
+.github/
+node_modules/.package-lock.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Root dotfiles not needed by extension consumers
 .gitignore
 .gitattributes
-.env
-.claude/**
-.clinerules/**
-.kilo/**
-.kilocodemodes
-.voidspec/**
-src/**
-scripts/**
-out/test/**
-out/scripts/**
-out/**/*.map
-out/**/*.ts
-tsconfig.json
-tsconfig.tsbuildinfo
-node_modules/**
-.autoclaw/**
-.github/**
-*.vsix
-
-# Internal documentation — keep README, CHANGELOG, LICENSE only.
-# Consumers of the published extension don't need the roadmap, research, or
-# forward-looking specs; they live in the GitHub repo for collaborators.
-docs/research/**
-docs/specs/**
-docs/IDEAS_LOG.md
-docs/COORDINATION_IMPROVEMENTS.md
-docs/DISTRIBUTED_AGENT_FABRIC.md
-docs/otherProjects.md
-docs/otherProjects-catalog.md
-docs/plan.md
-docs/CROSS_AGENT_ARCHITECTURE.md
-ORCHESTRATION-IMPROVEMENTS.md
-
-# Dev-only kg-daemon prototype — not part of the runtime extension.
-packages/**
-
-# Misc workspace markers that shouldn't ship.
-.cursor/**
-.cursorignore
+.npmrc
+.husky/
+lint-staged*
+.prettier*
+.eslint*
+.editorconfig
+.babelrc
+.travis.yml
+.circleci/
+dangerfile*
+rollup.config*
+webpack.config*
+jest.config*
+babel.config*
+commitlint*
