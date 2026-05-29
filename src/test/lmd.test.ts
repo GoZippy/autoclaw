@@ -209,9 +209,19 @@ suite('LMD — HeartbeatReader: file-based polling', () => {
     // (We confirm by checking that the node module loader never loaded any AI SDK.
     // Since HeartbeatReader only imports 'fs', 'path', and 'events', this is
     // structurally guaranteed — but we also assert the contract explicitly.)
+    //
+    // Scoped to node_modules/* so that our own `src/llm/openai-compatible.ts`
+    // adapter (a pure fetch wrapper, NOT the OpenAI SDK) does not falsely
+    // trip the guard. The guard is about not pulling in the OpenAI/Anthropic
+    // SDK packages, not about banning any file whose name contains 'openai'.
     const loadedModules = Object.keys(require.cache);
     const llmModules = loadedModules.filter(m =>
-      m.includes('anthropic') || m.includes('openai') || m.includes('@google/generative')
+      m.includes('node_modules\\openai') ||
+      m.includes('node_modules/openai') ||
+      m.includes('node_modules\\@anthropic-ai') ||
+      m.includes('node_modules/@anthropic-ai') ||
+      m.includes('node_modules\\@google\\generative') ||
+      m.includes('node_modules/@google/generative')
     );
     assert.deepStrictEqual(
       llmModules,

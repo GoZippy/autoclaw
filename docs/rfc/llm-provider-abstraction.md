@@ -1,7 +1,46 @@
 # RFC: LLM Provider Abstraction
 
-_Status: draft, 2026-05-22. Companion to
+_Status: revised draft, 2026-05-23. Companion to
 [runner-bridge-contract.md](runner-bridge-contract.md) — distinct concern._
+
+## 0. Revision note — 2026-05-23 (Option C: ZMLR-first + oracle fallback)
+
+The first draft of this RFC (2026-05-22) planned an in-process router:
+`LlmRegistry` with a six-criterion preference engine, three adapters
+(ollama/lmstudio/zippymesh), a workspace policy file, MCP `llm.chat`
+write-tools, and a cost-ledger split.
+
+That plan **duplicates work already shipped in
+[ZippyMesh LLM Router (ZMLR)](ZMLR)** — smart
+routing by `X-Intent`, multi-provider with format translation, combo +
+account fallback, rate-limit cooldowns, prompt cache, virtual keys, cost
+ledger, an `externalRouterUrl` peer hook, and MCP tool handlers for
+`list_models`/`recommend_model`/`validate_model`/`execute_with_routing`.
+This revision pivots to **Option C**: ZMLR is the source of truth for
+routing; AutoClaw is a client that adds **client-side resilience** when
+ZMLR is unreachable (the `src/llm/oracle.ts` fallback ladder, ported
+from the upstream model-oracle host's battle-tested
+[model-oracle](<internal>/model-oracle/SKILL.md)
+skill).
+
+**What stays the same.** The narrow `LlmProvider` interface (§2). The
+OpenAI-compatible adapter base (§3.1). The Ollama adapter (§3.2). The
+optional `provider?: LlmProvider` field on `LoopServiceAdapter` (§4).
+
+**What changes.** Sections 3.3–7, 9 are rewritten:
+- §3.3 LM Studio adapter — **deferred indefinitely** (ZMLR proxies it server-side).
+- §3.4 ZippyMesh adapter — **promoted to primary**; absorbs intent + recommend_model routing.
+- §5 In-process preference scoring engine — **deleted**; `LlmRegistry.getPreferred()` calls ZMLR's `recommend_model` MCP tool. When ZMLR is unreachable, the oracle ladder picks.
+- §6 Config surface — **slimmed**; one provider list, no preference-criterion file.
+- §7 MCP `llm.chat`/`llm.models`/`llm.health` write-tools — **replaced** by a small Next.js PR to ZMLR that exposes the existing `src/mcp/zmlr-server.js` handlers at `:20128/mcp`, plus an `autoclaw mcp install` flow that registers ZMLR's MCP in workspace config.
+- New §5a — `src/llm/oracle.ts` fallback selector (TS port of `model-oracle.mjs`).
+- New §6a — `externalRouterUrl` peer wiring (the "AutoClaw teaches ZMLR" loop).
+- §9 sequencing — re-sequenced for the new scope.
+
+**Tradeoff accepted.** AutoClaw becomes entangled with ZMLR's product
+roadmap. Mitigation: only `ZippyMeshProvider` knows ZMLR specifics; the
+rest of AutoClaw sees the narrow `LlmProvider` interface. If ZMLR
+changes a contract, one adapter file changes.
 
 ## 1. Problem & scope
 
@@ -313,52 +352,43 @@ OpenAI-compat docs at `ollama/ollama/blob/main/docs/openai.md`.
 **Assumption:** tool-use varies per model — call may 400 even when
 `capabilities.toolUse === true`; surfaced as `errorClass: 'internal'`.
 
-### 3.3 `lmstudio.ts`
+### 3.3 `lmstudio.ts` — DEFERRED INDEFINITELY
 
-LM Studio's local server is **OpenAI-compatible only** — no native API.
-Listens on `:1234/v1` by default, no auth.
+LM Studio is OpenAI-compatible at `:1234/v1` and was originally planned
+as a one-line subclass. **2026-05-23 revision:** deferred indefinitely.
+Rationale:
 
-```ts
-export class LmStudioProvider extends OpenAiCompatProvider {
-  constructor(endpoint = process.env.LMSTUDIO_HOST ?? 'http://localhost:1234') {
-    super({
-      id: 'lmstudio',
-      endpoint,
-      v1Prefix: '/v1',
-      auth: { kind: 'none' },
-      capabilities: {
-        streaming: true,
-        toolUse: true,
-        jsonMode: true,
-        embeddings: true,
-        contextWindow: 8192,
-        locality: 'local',
-        reportsCost: false,
-        modelFamilies: [],
-      },
-    });
-  }
-}
-```
+- ZMLR already lists LM Studio as a backend
+  ([routing/engine.js scoring](ZMLR\src\lib\routing\engine.js)
+  treats it as a candidate). Users who want LM Studio configure it once
+  in ZMLR and AutoClaw inherits.
+- The oracle ladder (§5a) probes LM Studio at `:1234` directly when ZMLR
+  is unreachable, but only as one rung — the ladder itself does the work,
+  not a standalone `LmStudioProvider` class.
+- Reviving this adapter is a one-file change if a future code path needs
+  raw direct access (mirror §3.2 with the LM Studio endpoint). Not now.
 
-**Verified (LM Studio docs, 2026-05):** server at
-`http://localhost:1234/v1` exposes `/chat/completions`, `/completions`,
-`/embeddings`, `/models`. **Assumption:** `tools` support varies by
-loaded model (same caveat as Ollama).
+### 3.4 `zippymesh.ts` — PROMOTED TO PRIMARY
 
-### 3.4 `zippymesh.ts`
+ZMLR ([ZMLR](ZMLR))
+is now AutoClaw's **primary** routing path. Documented surfaces:
+[adapters/zippymesh/README.md](../../adapters/zippymesh/README.md),
+[adapters/claude-code/mcp-zippymesh.md](../../adapters/claude-code/mcp-zippymesh.md).
 
-The user's local LLM router on `:20128/v1`, already documented in
-`adapters/zippymesh/README.md` and `adapters/claude-code/mcp-zippymesh.md`.
-OpenAI-compatible surface plus extra header conventions:
+**Verified contracts** (code survey 2026-05-23, against
+[ZMLR src/ at the same date](ZMLR\src)):
 
-- `X-Intent: code | review | plan | summarize | chat` — drives playbook
-  selection in the router.
-- `X-Session-Parallel: true` — used during MAteam fan-out.
-- Special model id `"auto"` — the router picks a backend itself.
-
-The adapter sets `X-Intent` from `LlmChatRequest.hints.intent` and
-defaults the model to `"auto"`.
+- **OpenAI-compat surface** at `:20128/v1/chat/completions` —
+  request entry [`src/sse/handlers/chat.js:131`](ZMLR\src\sse\handlers\chat.js) reads `x-zippy-intent`
+  and [`src/lib/routing/smartRouter.js:269`](ZMLR\src\lib\routing\smartRouter.js)
+  reads `x-intent`. Both flow into the routing engine. **Send both;
+  prefer `x-intent` as canonical** (matches the README and the
+  `routing/intentDetector.js` consumer).
+- `x-session-parallel: true` + `x-session-id: <id>` — both honored at
+  `smartRouter.js:53-54`; required when AutoClaw fans out a `/mateam`
+  session so ZMLR picks distinct backends per parallel agent.
+- Model id `"auto"` — special, lets ZMLR pick from the playbook.
+- Auth — locally optional; bearer via `ZIPPYMESH_TOKEN` env when configured.
 
 ```ts
 export class ZippyMeshProvider extends OpenAiCompatProvider {
@@ -384,17 +414,38 @@ export class ZippyMeshProvider extends OpenAiCompatProvider {
       },
     });
   }
-  /** Override: thread `hints.intent` through as `X-Intent`. */
-  protected augmentHeaders(req: LlmChatRequest): Record<string, string>;
-  /** Override: `servedBy: 'zippymesh'` but expose `routedTo` in finishReason. */
+
+  /** Override: emit BOTH `x-intent` and `x-zippy-intent`, plus session headers. */
+  protected augmentHeaders(req: LlmChatRequest): Record<string, string> {
+    const h: Record<string, string> = { 'X-Client': 'autoclaw' };
+    if (req.hints?.intent) {
+      h['x-intent'] = req.hints.intent;
+      h['x-zippy-intent'] = req.hints.intent;
+    }
+    if (req.hints?.sessionParallel) {
+      h['x-session-parallel'] = 'true';
+      if (req.hints.sessionId) h['x-session-id'] = req.hints.sessionId;
+    }
+    return h;
+  }
+
+  /** Override: `servedBy: 'zippymesh'` but expose ZMLR-routed backend in finishReason. */
   protected parseResponse(json: unknown, req: LlmChatRequest): LlmChatResponse;
+
+  /**
+   * MCP-side: call ZMLR's `recommend_model` handler. Used by `LlmRegistry.getPreferred()`.
+   * Requires the ZMLR HTTP MCP route to be wired (see §7); if absent, returns null
+   * and the oracle ladder takes over.
+   */
+  async recommendModel(intent: string, constraints?: {
+    maxLatencyMs?: number;
+    maxCostPerMTokens?: number;
+    minContextWindow?: number;
+    preferFree?: boolean;
+    preferLocal?: boolean;
+  }): Promise<{ model: string; fallbackChain: string[] } | null>;
 }
 ```
-
-**Assumption:** `X-Intent` and `X-Session-Parallel` are honored over
-the OpenAI-compat surface (the README shows them verbatim in human-IDE
-configs). Verify by curling `:20128/v1/chat/completions` with and
-without the header before defaulting to `on`.
 
 ### 3.5 (Future) `openai.ts`, `anthropic.ts`, `groq.ts`
 
@@ -499,222 +550,385 @@ if (provider) {
 }
 ```
 
-## 5. Routing / preference
+## 5. Routing — delegate to ZMLR
 
-`PreferenceCriterion` in `src/runners/types.ts` is currently
-`'explicit' | 'workspace' | 'cost' | 'latency'`. The LLM registry needs
-a **parallel** criterion set — not a modification of the runner one —
-because the meanings differ:
+The original draft built a six-criterion in-process preference engine
+(`'explicit' | 'workspace' | 'cost' | 'latency' | 'local' | 'private' |
+'model_family'`). **Deleted in this revision.** Reason: ZMLR already
+implements this work in
+[`src/lib/routing/engine.js`](ZMLR\src\lib\routing\engine.js)
+— playbook selection by intent/group/pool/client/device, candidate
+gathering across equivalent models + connections, rate-limit filtering,
+trust/cost/latency/country/IP filters, scoring and sorting, with
+optional routing-memory bias and vision-boost. AutoClaw running its own
+parallel engine would only introduce drift.
 
 ```ts
-// src/llm/types.ts
-export type LlmPreferenceCriterion =
-  | 'explicit'        // caller named the provider
-  | 'workspace'       // workspace's primary llm provider
-  | 'cost'            // lowest $/token from recent ledger
-  | 'latency'         // lowest p50 ms
-  | 'local'           // capabilities.locality === 'local'
-  | 'private'         // 'local' or 'lan' (i.e. NOT 'cloud')
-  | 'model_family';   // matches request.hints.preferFamily
+// src/llm/registry.ts — slimmed
+export class LlmRegistry {
+  register(p: LlmProvider): void;
+  detect(): Promise<{ provider: LlmProvider; detection: LlmDetection }[]>;
+  list(): LlmProvider[];
+  listActive(): LlmProvider[];
+  get(id: LlmProviderId): LlmProvider | undefined;
 
-export interface LlmPreferenceOptions {
-  explicitProviderId?: LlmProviderId;
-  workspacePrimaryProviderId?: LlmProviderId;
-  preferenceOrder?: LlmPreferenceCriterion[];
-  costByProviderId?: Record<LlmProviderId, number>;
-  p50LatencyMsByProviderId?: Record<LlmProviderId, number>;
-  hints?: LlmChatRequest['hints'];
+  /**
+   * Resolve a provider for a request. Algorithm:
+   *   1. If caller named a provider explicitly, return it.
+   *   2. Otherwise, prefer 'zippymesh'. If it's healthy, ask its
+   *      `recommend_model` MCP tool for a routing decision and return
+   *      a thin wrapper that pins the request to that backend.
+   *   3. If ZMLR is unreachable or returns no decision, delegate to
+   *      `oracle.pick()` (see §5a) for client-side fallback.
+   */
+  getPreferred(opts: {
+    explicitProviderId?: LlmProviderId;
+    hints?: LlmChatRequest['hints'];
+  }): Promise<LlmProvider | null>;
+}
+```
+
+The criterion-list and per-intent preference YAML are deleted. Per-intent
+preference lives **inside ZMLR** as routing playbooks — configured in
+ZMLR's dashboard, exported as `adapters/zippymesh/mateam-playbook.json`
+and `kdream-playbook.json` already in this repo. One source of truth.
+
+A `requireLocality` hint, if set on the request, is still honored — it
+is forwarded to ZMLR as a constraint header (when supported) and the
+oracle ladder filters on `capabilities.locality` before validating
+candidates.
+
+## 5a. `src/llm/oracle.ts` — the fallback ladder
+
+When `LlmRegistry.getPreferred()` can't reach ZMLR, the oracle takes
+over. This is a TypeScript port of the upstream model-oracle host's
+[`model-oracle`](<internal>/model-oracle/SKILL.md)
+skill — same fallback ladder, same rate-limit tracking, same `qwen3:0.6b`
+failsafe.
+
+```ts
+// src/llm/oracle.ts
+export type OracleTask = 'agent' | 'tool' | 'thinking' | 'fast' | 'vision' | 'free';
+
+export interface OracleEndpoint {
+  id: string;                            // 'ollama-local', 'lmstudio-local', 'zippymesh', 'ollama-failsafe'
+  baseUrl: string;                       // e.g. 'http://127.0.0.1:11434'
+  online: boolean;
+  latencyMs?: number;
+  modelCount: number;
 }
 
-const DEFAULT_LLM_PREFERENCE_ORDER: readonly LlmPreferenceCriterion[] = [
-  'explicit', 'workspace', 'private', 'cost', 'latency',
-];
+export interface OracleModel {
+  id: string;                            // 'llama3.1:8b', 'qwen3:0.6b', ...
+  endpointId: string;
+  score: number;                         // 0-100 by task fit
+  capabilities: { tools: boolean; thinking: boolean; vision: boolean };
+  /** Set when a recent 429 was recorded; oracle excludes until resetsAt. */
+  rateLimitedUntil?: string;
+}
+
+export interface OracleDecision {
+  task: OracleTask;
+  recommended: OracleModel | null;       // null only if every rung failed (incl. failsafe)
+  alternatives: OracleModel[];
+  /** True when the recommendation came from the `qwen3:0.6b@:11435` failsafe. */
+  failsafe: boolean;
+}
+
+export class Oracle {
+  /** Discover endpoints (ZMLR :20128, Ollama :11434, LM Studio :1234, failsafe :11435). */
+  refresh(): Promise<OracleEndpoint[]>;
+  /** Pick the best model for a task. Re-queries fresh each call — no cross-turn cache. */
+  pick(task: OracleTask): Promise<OracleDecision>;
+  /** Probe a model end-to-end (cheap completion) to confirm it's truly serving. */
+  validate(modelId: string, endpointId: string): Promise<{ ok: boolean; rateLimited: boolean }>;
+  /** Record a 429 so subsequent `pick()` calls exclude this model until `resetsAt`. */
+  recordRateLimit(modelId: string, endpointId: string, resetsAfterSec: number): void;
+  /** Status snapshot for the fleet panel / `/recall`. */
+  status(): Promise<{ endpoints: OracleEndpoint[]; rateLimited: { modelId: string; until: string }[] }>;
+}
 ```
 
-A `requireLocality` hint is a **hard filter** applied before any
-criterion — providers whose `capabilities.locality` doesn't match are
-removed from the candidate set entirely.
+**Ladder (matches the SKILL.md verbatim):**
+1. `pick('agent')` — best model with tools + thinking.
+2. `pick('tool')` — any model with tools.
+3. `pick('free')` — any free/local model.
+4. `pick('fast')` — smallest/fastest model.
+5. If all return null: `refresh()`, wait 10s, retry from rung 1.
+6. **Failsafe:** `qwen3:0.6b` on `http://127.0.0.1:11435` — always-on,
+   `decision.failsafe = true`. AutoClaw warns the user via the fleet
+   panel when the failsafe fires more than twice per minute.
 
-**Workspace policy.** `.autoclaw/orchestrator/config.yaml` gains:
+**Rate-limit posture.** Oracle never retries a 429 model without
+checking `resetsAt` first. `recordRateLimit()` writes to a per-process
+in-memory map AND appends to `.autoclaw/llm/oracle-state.json` (TTL-keyed,
+truncated when entries expire) so a fresh process started within `resetsAt`
+reads it back. (This diverges intentionally from the Bun original —
+long autonomous AutoClaw loops restart often and re-firing paid 429s is
+the failure mode to prevent. The on-disk store is local-only; no
+cross-machine sync.) The persona loader and any `chat()` caller invokes
+`recordRateLimit()` on 429.
 
-```yaml
-llm:
-  # Per-intent provider preference. Each key is a hint.intent value; each
-  # value is an ordered preference list of provider ids (or 'auto').
-  preference:
-    code:      ['ollama', 'zippymesh']         # cheap local for routine code
-    review:    ['zippymesh', 'ollama']         # ZM picks a strong reviewer
-    plan:      ['zippymesh']                   # always route through ZM
-    summarize: ['ollama']
-    chat:      ['ollama', 'lmstudio', 'zippymesh']
-  # Criteria ordering when preference lookup falls through.
-  preferenceOrder: ['explicit', 'workspace', 'private', 'cost', 'latency']
-  # Hard locality constraint for any provider used by background KDream ticks.
-  kdream:
-    requireLocality: 'local'
-```
+**ZMLR-as-rung.** When `ZippyMeshProvider.chat()` returns 429, the
+caller records the rate limit against `endpointId: 'zippymesh'` and the
+resolved upstream model. `LlmRegistry.getPreferred()` then skips step 2
+(the `recommend_model` delegation) until the TTL expires — ZMLR is
+treated as a ladder rung, not a routing decider, while the upstream
+cools off. Oracle's `pick()` may still choose ZMLR with a *different*
+backend (via `validateModel`) if one is available; the rate limit is
+keyed to `(endpointId, modelId)`, not endpoint alone.
 
-The user-stated requirement — _"prefer local for routine tasks; cloud
-for review"_ — collapses to `code: [ollama]`, `review: [zippymesh]`.
+**Validation posture.** Every `pick()` returns a model + endpoint pair;
+the caller validates with a cheap completion before committing to a long
+job. This is the trick that makes the ladder reliable in the wild — a
+model can be advertised but not actually loaded.
 
-## 6. Config surface
+## 6. Config surface — slimmed
 
 ```
 .autoclaw/
   llm/
-    config.yaml          # provider list + preference (mirrors mcp/config.json)
+    config.yaml          # provider endpoints only (no preference engine)
     cost-ledger.jsonl    # per-call cost roll-up; one append per chat()
-    health-cache.json    # last health() result, TTL 60s
+    health-cache.json    # last detect()/health() result, TTL 60s
+    oracle-state.json    # rate-limit memory written by Oracle.recordRateLimit (S1: persisted, TTL-keyed)
 ```
 
 `config.yaml` shape:
 
 ```yaml
 providers:
-  - id: ollama
-    endpoint: http://localhost:11434
-  - id: lmstudio
-    endpoint: http://localhost:1234
   - id: zippymesh
     endpoint: http://localhost:20128
     auth: { kind: bearer, tokenEnv: ZIPPYMESH_TOKEN }
     extraHeaders: { X-Client: autoclaw }
+  - id: ollama
+    endpoint: http://localhost:11434
+  # LM Studio not listed; ZMLR proxies it server-side. Oracle probes
+  # :1234 directly only as a ladder rung when ZMLR is unreachable.
 
-preference:                            # see §5 above
-  code:    [ollama, zippymesh]
-  review:  [zippymesh]
-preferenceOrder: [explicit, workspace, private, cost, latency]
-
-# Optional: declare a default-model alias per provider for callers that
-# don't know what's loaded locally.
+# Optional: pin a model when caller doesn't say what's loaded locally.
 defaultModel:
   ollama:    llama3.1:8b
-  lmstudio:  local-default
   zippymesh: auto
+
+# Oracle failsafe endpoint (override only if you've moved it).
+oracle:
+  failsafe:
+    baseUrl: http://127.0.0.1:11435
+    model: qwen3:0.6b
 ```
 
-`package.json` extension manifest gets a settings stanza for the
-"primary" provider only (mirrors `autoclaw.runner.preferenceOrder`):
+**No per-intent preference YAML.** Per-intent routing lives inside ZMLR
+as playbooks. AutoClaw exports the two we ship today
+([`adapters/zippymesh/mateam-playbook.json`](../../adapters/zippymesh/mateam-playbook.json),
+[`adapters/zippymesh/kdream-playbook.json`](../../adapters/zippymesh/kdream-playbook.json))
+and `autoclaw llm install` (below) imports them into the user's ZMLR
+dashboard via ZMLR's existing `POST /api/playbooks` endpoint.
+
+`package.json` extension manifest stays single-knob:
 
 ```jsonc
 "autoclaw.llm.primaryProviderId": {
   "type": "string",
   "default": "zippymesh",
-  "description": "Workspace primary LLM provider. Falls back to preferenceOrder when absent."
+  "description": "Workspace primary LLM provider. Defaults to zippymesh; falls back to oracle ladder when unreachable."
 }
 ```
 
-**Idempotent install command.** Add a new entry point to the existing
-`autoclaw mcp install` CLI surface — same idempotency pattern as that
-command:
+**Idempotent install command.** Same surface, slimmer behavior:
 
 ```
-autoclaw llm install [--ollama] [--lmstudio] [--zippymesh] [--scope workspace|user]
+autoclaw llm install [--zippymesh] [--ollama] [--scope workspace|user]
 ```
 
 - Runs each requested provider's `detect()`.
 - For every reachable provider, ensures a matching entry exists in
   `.autoclaw/llm/config.yaml` (workspace scope) or `~/.autoclaw/llm.yaml`
-  (user scope). Re-running is a no-op when entries are unchanged
-  (`mergeRegistryFile`-style diff, like `src/mcp/install.ts`).
-- Reports a summary table (`OK`, `SKIPPED — unreachable`, `ADDED`, …) per
-  provider, identical in shape to `mcp install`'s `formatReport`.
-- No mutation outside `.autoclaw/llm/` and (when `--scope user`) the
-  user-scoped config file.
+  (user scope). Re-running is a no-op when entries are unchanged.
+- **If `--zippymesh` and ZMLR is reachable:** import the two shipped
+  playbooks via ZMLR's dashboard API (idempotent — checks for matching
+  playbook id first). Register the ZMLR MCP route (§7) in the workspace's
+  MCP config if not already present.
+- Reports a summary table (`OK`, `SKIPPED — unreachable`, `ADDED`,
+  `PLAYBOOK_IMPORTED`, …) per provider.
+- No mutation outside `.autoclaw/llm/`, (when `--scope user`) the
+  user-scoped config file, and ZMLR's playbook list.
 
-## 7. MCP angle — `llm.chat`
+## 6a. `externalRouterUrl` peer wiring
 
-**Recommendation: yes — add `llm.chat`, `llm.models`, `llm.health` as
-gated write tools in `src/mcp/writeTools.ts`.** Rationale:
+ZMLR's routing engine supports an external peer via
+[`src/lib/routing/engine.js:223-284`](ZMLR\src\lib\routing\engine.js)
+— when `settings.externalRouterUrl` is set, ZMLR POSTs candidate-routing
+context and merges any `suggestedModelIds` the peer returns. AutoClaw
+wires itself as that peer so ZMLR can learn from AutoClaw's task
+context (which persona is asking, which sprint, which subcontract, etc.).
 
-1. The MCP server is workspace-scoped and already gates writes behind
-   `autoclaw.mcp.allowWrites` (`writeTools.ts:73`). The LLM-call gate is
-   strictly *narrower* than that (provider mediates) so it inherits the
-   existing audit + per-tool authorization plumbing for free.
-2. KDream `recommend_model` and `list_models` already exist as
-   ZippyMesh-specific MCP tools (`adapters/claude-code/mcp-zippymesh.md`).
-   `llm.chat` generalizes them across providers.
-3. Cross-host fan-out — Cursor or Kiro asking AutoClaw to run a quick
-   local completion without re-implementing the routing layer per host.
+**Exact contract** (from the code survey, not the docs):
 
-Tool surface:
+- **Method:** `POST`, `Content-Type: application/json`.
+- **URL:** whatever the user pastes into ZMLR's `settings.externalRouterUrl`
+  (no schema imposed by ZMLR). AutoClaw exposes the endpoint at
+  `http://127.0.0.1:<AUTOCLAW_LLM_PEER_PORT>/llm/peer/route` (default
+  port `20129` — one above ZMLR — overridable via env).
+- **Request body:** `{ model: string, intent: string | null, hasImage:
+  boolean, estimatedTokens: number, clientId: string | null }`.
+- **Body size cap:** 10 KB enforced by ZMLR.
+- **Timeout:** ZMLR cancels after 3 s. AutoClaw's handler MUST return
+  within that window — recommended budget: ≤200 ms.
+- **Response body:** `{ suggestedModelIds: string[] }` — strings shaped
+  as ZMLR's `provider/model` (e.g. `"openai/gpt-4o"`,
+  `"ollama/llama3.1:70b"`). AutoClaw computes the order from the active
+  persona's `providerFallback` plus session context.
+- **Failure mode:** ZMLR continues without reordering on any error or
+  timeout. AutoClaw's handler MUST therefore be best-effort, not blocking.
 
-```ts
-// Inserted into the WRITE_TOOLS array in src/mcp/writeTools.ts.
-// All three go through the existing checkWriteGate + authorizeWriteTool.
-{
-  name: 'llm.chat',
-  description: 'Run one chat completion through the AutoClaw LLM router.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      provider: { type: 'string', description: 'Provider id, or "auto" for routed.' },
-      model: { type: 'string' },
-      messages: { type: 'array', items: { /* LlmMessage shape */ } },
-      hints: { type: 'object' },
-      jsonMode: { type: 'boolean' },
-      maxTokens: { type: 'number' },
-    },
-    required: ['messages'],
-  },
-}
-{ name: 'llm.models', /* lists models per provider */ }
-{ name: 'llm.health', /* per-provider HealthReport */ }
-```
+AutoClaw's handler is **read-only** — it never mutates ZMLR state or
+the workspace; it just informs the routing decision. Lives at
+[`src/llm/peer-server.ts`](../../src/llm/peer-server.ts) (new) and
+starts when the extension activates if `autoclaw.llm.peerEnabled` is
+true (default off — opt-in for now, until we've measured the latency
+impact).
 
-**Audit:** every `llm.chat` invocation appends to
-`.autoclaw/llm/cost-ledger.jsonl` (the chat call does this anyway) **and**
-the existing `write_tool_audit` row in `state.json` — so denied calls,
-allowed calls, and cost together land in one fleet-visible record.
+## 7. MCP angle — don't duplicate ZMLR; close the MCP route gap
 
-**Streaming:** `llm.chat` is a one-shot tool; for now it always sets
-`stream: false` on the underlying request. A streaming variant
-(`llm.chat.stream`) can be added when an MCP client demands it; defer
-because the protocol's streaming story for tool results is still moving.
+**Original recommendation** (now reversed): add `llm.chat`/`llm.models`/
+`llm.health` as gated write tools in `src/mcp/writeTools.ts`.
+
+**2026-05-23 revision.** Don't. ZMLR ships an MCP server object at
+[`src/mcp/zmlr-server.js`](ZMLR\src\mcp\zmlr-server.js)
+already exposing `list_models`, `recommend_model`, `validate_model`,
+`get_models_by_capability`, `get_routing_metadata`, and
+`execute_with_routing`. Duplicating that surface in AutoClaw forks the
+tool definitions and creates the parallel-router problem one level up.
+
+**The actual gap** (found by the code survey): ZMLR's MCP server object
+is **not wired to an HTTP route**. The README says clients can hit
+`http://localhost:20128/mcp` but no Next.js route handler exists. The
+handlers are pure JS functions awaiting a route.
+
+**Phase B includes a small PR to ZMLR** that adds the missing HTTP
+route — a single `src/app/api/mcp/route.js` (or `/mcp/[tool]/route.js`)
+file that dispatches POST bodies to the existing handlers. Once landed,
+`autoclaw llm install` (§6) registers `http://localhost:20128/mcp` in
+the workspace's MCP server config and AutoClaw consumers (persona
+loader, KDream, future MCP-aware clients) call ZMLR's tools directly.
+
+**Why a PR to ZMLR vs. building it in AutoClaw:**
+- The handlers already exist in ZMLR; adding the route is one file.
+- Other ZMLR clients (Cursor, Continue, Claude Code via MCP) benefit too.
+- AutoClaw's MCP surface stays focused on workspace-level tools
+  (state.json, comms inboxes, runners) — not LLM dispatch, which is
+  ZMLR's job.
+
+**If the PR is rejected or stalls** (ZMLR is the user's own project, so
+this is unlikely): AutoClaw's `ZippyMeshProvider.recommendModel()` calls
+the MCP handler functions directly via a Node-side import when running
+in the same workspace tree (`require('zippymesh-router/src/mcp/zmlr-server.js')`),
+falling back to the oracle when the import path isn't available.
+
+**AutoClaw's own MCP write-tools** (`writeTools.ts`) — unchanged by this
+RFC. No `llm.*` tools added. Existing workspace tools stay.
+
+**Streaming over MCP** — deferred. No consumer yet; ZMLR's own MCP route
+can deal with streaming later if a client asks.
 
 ## 8. Open questions
 
+Several first-draft questions were closed by the 2026-05-23 code surveys.
+Resolved ones folded into the design above. Still open:
+
 1. **Ollama tool-use stability per model.** Adapter advertises
    `toolUse: true` but the loaded model may not support it. Should the
-   adapter probe (load a tiny model, call `/api/show` for `capabilities`)
-   on first use, or accept the per-call 400 and surface it?
-2. **ZippyMesh extra headers** — are `X-Intent` and `X-Session-Parallel`
-   honored over the OpenAI-compatible surface, or only over a ZM-native
-   endpoint we haven't found yet? `adapters/zippymesh/README.md` shows
-   them in human-IDE config; this RFC assumes the same headers work over
-   `:20128/v1` — needs a one-off curl confirmation against a running ZM
-   instance.
-3. **Cost ledger scope.** AutoClaw already has a runner-level
-   `costByRunnerId`. Should `llm/cost-ledger.jsonl` roll up into the same
-   ledger via `src/mcp/costLedger.ts`, or stay separate? Recommend
-   separate at first (different units: $/token vs $/dispatch) with a
-   `/recall`-visible join later.
-4. **Embeddings provider.** `docs/V3_PLAN.md` Phase 3 declares
+   adapter probe (`/api/show` for `capabilities`) on first use, or
+   accept the per-call 400 and surface it? Recommend: probe on
+   `OllamaProvider.models()`, cache the capability, surface 400 as
+   `errorClass: 'internal'`. Confirm in S1.
+2. **Cost ledger format alignment with ZICO.**
+   [ZICO's `BudgetTracker`](k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts)
+   has a clean schema (`{ provider, model, operation, tokens, costCents,
+   runId }`) with a per-provider `ProviderPricing` table. Should
+   AutoClaw's `llm/cost-ledger.jsonl` adopt that schema verbatim so a
+   future merge into a shared `@gozippy/billing` package is cheap?
+   Recommend: yes — adopt the field names and units (`costCents` over
+   `costUsd`, same `provider/model/runId` tuple). Confirm in S1.
+3. **Embeddings provider.** `docs/V3_PLAN.md` Phase 3 declares
    "Embedding via ZippyMesh on :20128" but `kg-daemon` currently embeds
-   in-process. Once `LlmProvider.embed()` lands, should `kg-daemon` adopt
-   it (dependency injection of an `LlmProvider`) or keep its own path for
-   isolation? Out of scope for this RFC; flag for the KG owner.
-5. **Resilience.** What happens when the preferred provider goes
-   unreachable mid-loop? Current proposal: `detect()` runs lazily before
-   each `chat()` if the last health probe is older than 60s; on failure,
-   the registry transparently retries with the next provider in the
-   preference list **only when `hints.allowFallback === true`** —
-   otherwise surface the error. Confirm with implementation.
-6. **Streaming over MCP.** As above — punt until a real consumer asks.
+   in-process. Once ZMLR exposes `/v1/embeddings` via the OpenAI-compat
+   surface (it already does — backend-dependent), should `kg-daemon`
+   adopt it (DI of an `LlmProvider`) or keep its own path for isolation?
+   Out of scope for this RFC; flag for the KG owner.
+4. **Oracle rate-limit persistence.** ~~Defer to S2.~~ **Resolved
+   2026-05-24:** persist from S1. SKILL.md says "do not cache across
+   turns" for the *recommendation* (so model selection stays fresh), but
+   the *rate-limit map* is exactly the kind of state worth persisting —
+   long autonomous AutoClaw loops restart often and re-firing paid 429s
+   is the failure mode to prevent. Write to `.autoclaw/llm/oracle-state.json`
+   with TTL; local-only (no cross-machine sync). Locked into S1 (see
+   spec acceptance criterion #5).
+5. **`externalRouterUrl` enablement default.** Phase B ships the peer
+   server (§6a) **off by default**. Should it default on once the latency
+   has been measured? Decision deferred to first user feedback.
+6. **Failsafe install timing.** ~~Wait for `autoclaw llm install` (S2).~~
+   **Resolved 2026-05-24:** install at S1 first run. The bottom rung
+   must exist from day one or the ladder is theatre — `S1` runs
+   `ollama pull qwen3:0.6b` and starts a `:11435` instance (or detects
+   one already running) on the first registry initialization. Failure to
+   install is non-blocking — the oracle reports `failsafe: null` and the
+   persona loader surfaces a fleet-panel notice.
 
-## 9. Sequencing
+## 8a. Reference — cross-project landscape (2026-05-23)
 
-Adapter-ship order, smallest viable first:
+This RFC was revised after a survey of related GoZippy repos. Findings
+not absorbed inline:
 
-| Sprint | Deliverable | Why first |
+- **ZICO ([`k:\Projects\ZippyAI_IDE_Tools`](k:\Projects\ZippyAI_IDE_Tools))**
+  has no `LlmProvider` abstraction to reuse; its `AgentAdapter` is at
+  the agent-orchestration layer (Cursor/Copilot/local-LLM) and its
+  `LocalLLMAdapter` hardcodes Ollama/LM Studio. ZICO's
+  `BudgetTracker` + `ProviderPricing` is worth adopting for cost
+  ledger (open question 2).
+- **ZippyMeshEcosystem ([`k:\Projects\ZippyMeshEcosystem`](k:\Projects\ZippyMeshEcosystem))**
+  is stale Rust quantum-crypto work (last activity Oct 2025); ignore
+  for LLM routing.
+- **zippycoin-apps ([`s:\Projects\zippycoin-apps`](s:\Projects\zippycoin-apps))**
+  is active blockchain (wallet/governance/DeFi); no LLM code. Future
+  consumer of `@gozippy/llm-router-client` (below) at most.
+- **Future extract: `@gozippy/llm-router-client`** — once
+  `src/llm/oracle.ts` and the `LlmProvider` interface are stable in
+  AutoClaw, extract them plus `ZippyMeshProvider` and `OllamaProvider`
+  into a tiny NPM package. Consumers:
+  1. AutoClaw (consumer #1, this RFC).
+  2. the upstream model-oracle host's openclaw `model-oracle` skill collapses to a 30-line
+     wrapper, retiring the duplicated Bun script.
+  3. the upstream model-oracle host's `free-models-router` skill folds in as a "free-tier"
+     preset.
+  4. ZippyAI_IDE_Tools' `LocalLLMAdapter` drops its hardcoded endpoints.
+  5. Eventually ZippyGPT_MCP_Server, Zippy-Archon, AgentEnsemble.
+
+  **Don't extract prematurely.** Wait until consumer #2 is real
+  (porting the upstream model-oracle host `model-oracle` to TS is the trigger).
+
+## 9. Sequencing — re-sequenced for Option C
+
+Smaller scope, ZMLR-first, oracle-fallback:
+
+| Sprint | Deliverable | Why this slot |
 |---|---|---|
-| **S1** | `src/llm/types.ts` + `src/llm/registry.ts` + `openai-compatible.ts` base | Types-only landing; same pattern as `src/runners/types.ts`. Zero behavior change. |
-| **S1** | `ollama.ts` | Most users have Ollama; no auth; verifies the base. |
-| **S2** | `lmstudio.ts` | One-line subclass; expands the local matrix. |
-| **S2** | `zippymesh.ts` + `X-Intent` thread-through | The headline integration — first time AutoClaw code talks to ZMLR directly. |
-| **S2** | `.autoclaw/llm/config.yaml` parser + `autoclaw llm install` | Idempotent install + workspace policy expressible. |
-| **S3** | MCP `llm.chat` / `llm.models` / `llm.health` tools | Cross-host surface; depends on §7 + audit plumbing. |
-| **S3** | Optional `LlmProvider` field on `LoopServiceAdapter` + worked `LocalCoderRunner` | Demonstrates the "thin runner + local LLM" pattern. |
-| **S4** | Cost-ledger roll-up + `recommend_model` rewritten on top of the registry | Closes the loop with KDream. |
-| **Defer** | `openai.ts`, `anthropic.ts`, `groq.ts` (direct cloud) | ZippyMesh already proxies them; only add when a non-runner code path needs raw cloud access. |
-| **Defer** | Streaming over MCP | No consumer yet. |
+| **S1** | `src/llm/types.ts` + `src/llm/registry.ts` + `openai-compatible.ts` base | Types-only landing; the seam every later piece depends on. Zero behavior change. |
+| **S1** | `src/llm/zippymesh.ts` (primary) + `src/llm/ollama.ts` (fallback) | Two adapters cover the entire local matrix via ZMLR's server-side routing; one direct local provider for when ZMLR is down. |
+| **S1** | `src/llm/oracle.ts` (TS port of the upstream model-oracle host `model-oracle.mjs`) — includes ZMLR as a ladder rung (not just a routing decider) and persists rate-limit map to `.autoclaw/llm/oracle-state.json` | Client-side fallback ladder + persistent rate-limit map + `qwen3:0.6b@:11435` failsafe. The headline new capability. |
+| **S1** | `src/llm/failsafe-install.ts` — first-run `ollama pull qwen3:0.6b` + `:11435` instance start | Bottom rung exists from day one; non-blocking on failure. Moved up from S2 (resolved open question 6). |
+| **S1** | `src/llm/costLedger.ts` adopting ZICO's `{ provider, model, operation, tokens, costCents, runId }` schema | Aligns with [k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts](k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts) so future merge is cheap. |
+| **S1** | Persona loader's `provider-stub.ts` swapped for the real registry | First consumer; the persona loader's Phase B integration test is the exit gate. |
+| **S2** | **PR to ZMLR**: `src/app/api/mcp/route.js` exposes the existing `src/mcp/zmlr-server.js` handlers at `:20128/mcp` (§7) | Closes the documented-but-unwired gap. Small. Benefits Cursor/Continue too. |
+| **S2** | `.autoclaw/llm/config.yaml` parser + `autoclaw llm install` (slim — providers only, no preference engine) | Idempotent install; imports the two shipped playbooks into ZMLR; registers ZMLR's MCP in workspace config. |
+| **S2** | `LlmRegistry.getPreferred()` calls ZMLR's `recommend_model` via MCP when reachable; oracle when not | The actual routing decision lands. |
+| **S3** | `src/llm/peer-server.ts` — `externalRouterUrl` peer (§6a) | "AutoClaw teaches ZMLR" loop. Off by default until latency is measured. |
+| **S3** | Optional `provider?: LlmProvider` field on `LoopServiceAdapter` + worked `LocalCoderRunner` | Demonstrates the "thin runner + local LLM" pattern; unchanged from original. |
+| **S4** | `recommend_model` (the AutoClaw side) rewritten on top of the registry; cost-ledger join with runner ledger | Closes the loop with KDream. |
+| **S4** | Extract `@gozippy/llm-router-client` once the upstream model-oracle host `model-oracle` is the second real consumer (§8a) | Premature before; deliberate then. |
+| **Deferred** | `lmstudio.ts` standalone adapter | ZMLR proxies; oracle probes :1234 directly as a ladder rung. Revive only if a code path needs raw direct access. |
+| **Deferred** | `openai.ts`, `anthropic.ts`, `groq.ts` (direct cloud) | ZMLR proxies them; only add when a non-runner code path needs raw cloud access. |
+| **Deferred** | MCP `llm.chat` / `llm.models` / `llm.health` in AutoClaw's writeTools.ts | ZMLR's MCP is the canonical surface; AutoClaw consumes, doesn't re-export. |
+| **Deferred** | Streaming over MCP | No consumer yet. |

@@ -4,7 +4,7 @@ import {
   statusBadgeClass, trustBadgeClass,
   renderChips, renderDetailRow, renderAgentCard, renderAgentList,
   extractPlatform, payloadExcerpt, filterAwaitingYou, renderAwaitingYou,
-  renderFabricHealth,
+  renderFabricHealth, bridgeTooltip, kgTooltip, kgClickCommand,
   type AgentWithLive, type InboxSummary, type AwaitingYouRow, type FabricHealth,
 } from '../webview-render';
 import type { Message, RegisteredAgent, Heartbeat } from '../comms';
@@ -312,6 +312,142 @@ suite('webview-render — fabric health', () => {
   test('kg unreachable shows red', () => {
     const html = renderFabricHealth({ bridge: 'poll', kg: 'unreachable' });
     assert.match(html, /kg-unreachable/);
+  });
+
+  // ── UI-1: tooltips + click actions ──────────────────────────────────────
+  test('UI-1: bridge tooltip explains each transport', () => {
+    assert.match(bridgeTooltip('poll'), /filesystem polling/i);
+    assert.match(bridgeTooltip('sse'),  /Server-Sent Events/);
+    assert.match(bridgeTooltip('ws'),   /WebSocket/);
+    assert.match(bridgeTooltip('off'),  /disabled/i);
+  });
+
+  test('UI-1: bridge tooltip includes client counts when present', () => {
+    const tip = bridgeTooltip('sse', { bridge: 'sse', kg: 'off', sse_clients: 3, ws_clients: 0, bridge_port: 7141 });
+    assert.match(tip, /SSE=3/);
+    assert.match(tip, /WS=0/);
+    assert.match(tip, /Port 7141/);
+  });
+
+  test('UI-1: kg tooltip explains each state', () => {
+    assert.match(kgTooltip('off'),         /not running/i);
+    assert.match(kgTooltip('running'),     /active/i);
+    assert.match(kgTooltip('unreachable'), /not responding/i);
+  });
+
+  test('UI-1: kg click command depends on state', () => {
+    assert.strictEqual(kgClickCommand('off'),         'startKgDaemon');
+    assert.strictEqual(kgClickCommand('running'),     'openKgDashboard');
+    assert.strictEqual(kgClickCommand('unreachable'), 'restartKgDaemon');
+  });
+
+  test('UI-1: rendered chips are buttons with data-fabric-action + title + aria-label', () => {
+    const html = renderFabricHealth({ bridge: 'poll', kg: 'off' });
+    // Both chips must be <button> with explicit action + a11y attrs.
+    assert.match(html, /<button[^>]+data-fabric-action="openBridgeDoc"[^>]+title="[^"]+"[^>]+aria-label="[^"]+"/);
+    assert.match(html, /<button[^>]+data-fabric-action="startKgDaemon"[^>]+title="[^"]+"[^>]+aria-label="[^"]+"/);
+  });
+
+  test('UI-1: tooltips render for every (bridge,kg) state combination', () => {
+    const bridges: FabricHealth['bridge'][] = ['poll', 'sse', 'ws', 'off'];
+    const kgs:     FabricHealth['kg'][]     = ['off', 'running', 'unreachable'];
+    for (const bridge of bridges) {
+      for (const kg of kgs) {
+        const html = renderFabricHealth({ bridge, kg });
+        assert.match(html, /title="[^"]+bridge[^"]*"/i, `bridge=${bridge} kg=${kg}: bridge title missing`);
+        assert.match(html, /title="[^"]+(daemon|graph)[^"]*"/i, `bridge=${bridge} kg=${kg}: kg title missing`);
+        assert.match(html, new RegExp(`bridge-${bridge}`), `bridge=${bridge}: class missing`);
+        assert.match(html, new RegExp(`kg-${kg}`), `kg=${kg}: class missing`);
+      }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// UI-2: panel version footer
+// ---------------------------------------------------------------------------
+
+import { readExtensionVersionFromDisk, readGitBranchFromDisk, renderPanelFooter } from '../webview-render';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as nodePath from 'path';
+
+suite('webview-render — UI-2 panel footer', () => {
+  test('renderPanelFooter renders version + branch when both present', () => {
+    const html = renderPanelFooter('3.1.0-dev', 'feat/v3.1');
+    assert.match(html, /class="panel-footer"/);
+    assert.match(html, /AutoClaw v3\.1\.0-dev/);
+    assert.match(html, /branch: feat\/v3\.1/);
+    assert.match(html, /role="contentinfo"/);
+  });
+
+  test('renderPanelFooter omits branch when null', () => {
+    const html = renderPanelFooter('3.1.0', null);
+    assert.match(html, /AutoClaw v3\.1\.0/);
+    assert.ok(!html.includes('branch:'), 'branch should be omitted when null');
+  });
+
+  test('renderPanelFooter falls back to v? when version is null', () => {
+    const html = renderPanelFooter(null, 'master');
+    assert.match(html, /AutoClaw v\?/);
+    assert.match(html, /branch: master/);
+  });
+
+  test('renderPanelFooter HTML-escapes version and branch', () => {
+    const html = renderPanelFooter('1.0.0"<script>', 'feat/<x>');
+    assert.ok(!/<script>/.test(html), 'raw <script> must not appear in output');
+    assert.match(html, /&lt;script&gt;/);
+    assert.match(html, /&lt;x&gt;/);
+  });
+
+  test('readExtensionVersionFromDisk returns null on missing package.json', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      assert.strictEqual(readExtensionVersionFromDisk(tmp), null);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readExtensionVersionFromDisk reads version from package.json', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      fs.writeFileSync(nodePath.join(tmp, 'package.json'), JSON.stringify({ version: '9.9.9' }));
+      assert.strictEqual(readExtensionVersionFromDisk(tmp), '9.9.9');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readGitBranchFromDisk returns null when .git/HEAD is missing', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      assert.strictEqual(readGitBranchFromDisk(tmp), null);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readGitBranchFromDisk parses ref form of .git/HEAD', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      fs.mkdirSync(nodePath.join(tmp, '.git'));
+      fs.writeFileSync(nodePath.join(tmp, '.git', 'HEAD'), 'ref: refs/heads/feat/v3.1\n');
+      assert.strictEqual(readGitBranchFromDisk(tmp), 'feat/v3.1');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  test('readGitBranchFromDisk returns null on detached HEAD', () => {
+    const tmp = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'autoclaw-ui2-'));
+    try {
+      fs.mkdirSync(nodePath.join(tmp, '.git'));
+      fs.writeFileSync(nodePath.join(tmp, '.git', 'HEAD'), 'abc1234567890def\n');
+      assert.strictEqual(readGitBranchFromDisk(tmp), null);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

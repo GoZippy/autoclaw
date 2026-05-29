@@ -35,6 +35,22 @@ import type { FleetDashboardModel } from '../views/fleetViewModel';
 // Nonce helper (CSP-safe inline script gating)
 // ---------------------------------------------------------------------------
 
+/**
+ * Read `.autoclaw/orchestrator/board.json` if the orchestrator loop has
+ * written one. Returns `null` when the file is missing or unparseable — the
+ * panel renders without a board section in that case.
+ */
+async function readBoardJsonIfExists(workspaceRoot: string): Promise<unknown | null> {
+  const fsp = (await import('fs')).promises;
+  const p = (await import('path')).join(
+    workspaceRoot, '.autoclaw', 'orchestrator', 'board.json',
+  );
+  try {
+    const raw = await fsp.readFile(p, 'utf8');
+    return JSON.parse(raw.replace(/^﻿/, ''));
+  } catch { return null; }
+}
+
 /** Generate a 32-char alphanumeric nonce for the Content-Security-Policy. */
 function makeNonce(): string {
   const chars =
@@ -176,7 +192,12 @@ export class FleetPanelProvider implements vscode.WebviewViewProvider {
         selfAgentId: this.selfAgentId,
         health: this.healthSupplier?.(),
       });
-      this.view.webview.postMessage({ type: 'model', model });
+      // Attach the agendaboard snapshot if the orchestrator loop has written one.
+      // Best-effort: an unreadable / missing board does not block the rest of
+      // the dashboard from rendering.
+      const board = await readBoardJsonIfExists(workspaceRoot);
+      const enriched = board ? { ...model, board } : model;
+      this.view.webview.postMessage({ type: 'model', model: enriched });
       return model;
     } catch (err) {
       this.view.webview.postMessage({

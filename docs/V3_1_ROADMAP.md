@@ -90,11 +90,28 @@ work itself; it gates merges and signs off on security-tier findings.
 
 ### 2.1 LLM-provider abstraction — [`rfc/llm-provider-abstraction.md`](rfc/llm-provider-abstraction.md)
 
-A new `src/llm/` module with one `LlmProvider` interface and adapters for
-**OpenAI-compatible** (the base), **Ollama**, **LM Studio**, and
-**ZippyMesh** (the user's router at `:20128/v1`). Routes per workspace
-policy (`local | private | cost | latency`) and exposes
-`llm.chat`/`llm.models`/`llm.health` as MCP tools. Sequencing in §6.
+_Revised 2026-05-23 — Option C: ZMLR-first + oracle fallback. See RFC §0._
+
+A new `src/llm/` module with one `LlmProvider` interface, two adapters
+(**ZippyMesh** as primary at `:20128/v1`; **Ollama** as fallback), and a
+client-side **Oracle** ladder ported from the upstream model-oracle host's `model-oracle` skill.
+**Routing decisions are delegated to ZMLR's existing `recommend_model`
+MCP handler** — AutoClaw does not build a parallel in-process router.
+When ZMLR is unreachable, the oracle picks (best agent → best tool →
+best free → best fast → `qwen3:0.6b@:11435` failsafe).
+
+S1 sprint scope: types + registry + ZippyMeshProvider + OllamaProvider +
+oracle.ts + ZICO-aligned cost ledger + persona-loader rewire. S2: a small
+PR to ZMLR adding the missing HTTP MCP route at `:20128/mcp` (see
+[specs/llm-provider-s2-zmlr-mcp-route/spec.md](specs/llm-provider-s2-zmlr-mcp-route/spec.md))
++ `autoclaw llm install`. S3: `externalRouterUrl` peer wiring +
+LoopServiceAdapter optional provider. S4: cost-ledger join + extract
+`@gozippy/llm-router-client` NPM package (consumers: AutoClaw,
+the upstream model-oracle host's openclaw `model-oracle` skill, future ZICO/ZippyGPT/etc.).
+
+LM Studio standalone adapter, in-process preference scoring, and MCP
+`llm.chat`/`llm.models`/`llm.health` write-tools in AutoClaw are
+**dropped, not deferred** — see RFC §0 revision note.
 
 ### 2.2 Specialized agent personas — [`rfc/specialized-agents.md`](rfc/specialized-agents.md)
 
@@ -112,10 +129,13 @@ memory at `~/.autoclaw/personas/<id>/` with privacy rules.
 
 20+ adjacent repos catalogued. Headline borrowings:
 
-- **Ralph's six tenets** (`ralph-orchestrator`) — short loop-discipline
-  overlay. Becomes `skills/ralph-tenets/SKILL.md`.
-- **Spec-as-contract workflow** (`Spec → Review → Dogfood → Implement →
-  Verify → Done`) — adopt under `docs/specs/<feature>/`.
+- **Loop-discipline rules** — six short rules for running an autonomous
+  loop well (re-read state each cycle, plans expire, signals over scripts,
+  trust the loop once signals are good, etc.). Adapted from prior art
+  catalogued in the survey; written in our own words at
+  `skills/loop-discipline/SKILL.md`.
+- **Spec-as-contract workflow** (`draft → review → pilot → implement →
+  verify → done`) — adopt under `docs/specs/<feature>/`.
 - **Sub-agent role files** (`AgentWise`'s `.claude/agents/*.md` with
   `tools:` frontmatter) — exactly the format §2.2 personas use.
 - **Plugin architecture** (`KiroAutomation`) — for AutoClaw's runner/skill
@@ -143,30 +163,36 @@ a re-read per session) and the personas RFC's #1 pick.
 |---|---|
 | `PersonaProfile` loader + `/persona <id>` slash command | `src/personas/`, `skills/architect/` |
 | `skills/architect/SKILL.md` + seeded `bibliography.md` (the 14 existing RFCs/plans) + 3 exemplars | `skills/architect/`, `.autoclaw/memory/personas/architect/` |
-| `skills/ralph-tenets/SKILL.md` — one-page overlay | `skills/ralph-tenets/` |
+| `skills/loop-discipline/SKILL.md` — one-page rules overlay | `skills/loop-discipline/` |
 | `docs/specs/_template.spec.md` — Given/When/Then frontmatter + `status:` | `docs/specs/` |
 | RFC index cleanup — single `docs/INDEX.md`, deprecate the contradicting plans noted in survey §5 | `docs/INDEX.md`, header notes |
-| Adopt `.claude/agents/<id>.md` format (from AgentWise) for personas | `.claude/agents/` |
+| Adopt a `.claude/agents/<id>.md`-style persona-file format | `.claude/agents/` |
 
 **Exit gate.** Running `/persona architect "draft RFC for X"` produces a
 real `docs/rfc/X.md` with the spec-as-contract frontmatter, using only
 context loaded from `skills/architect/`.
 
-### Phase B — LLM provider layer (S1+S2 from the RFC)
+### Phase B — LLM provider layer (S1+S2 — revised 2026-05-23 to Option C)
 
 | Tasks | Scope |
 |---|---|
-| `src/llm/types.ts`, `registry.ts`, `openai-compatible.ts` base | `src/llm/` |
-| `ollama.ts` adapter (no auth, local first) | `src/llm/` |
-| `lmstudio.ts` adapter (one-line subclass) | `src/llm/` |
-| `zippymesh.ts` adapter — `:20128/v1`, `X-Intent` header thread-through | `src/llm/`, `adapters/zippymesh/` |
-| `.autoclaw/llm/config.yaml` parser + `autoclaw llm install` | `src/llm/install.ts` |
-| Extend `LoopServiceAdapter` with an optional `provider?: LlmProvider` | `src/runners/loop-service-adapter.ts` |
-| `LocalCoderRunner` — worked example: a runner that is *just* a local model + the AutoClaw tool surface | `src/runners/local-coder.ts` |
+| **S1** `src/llm/types.ts`, `registry.ts`, `openai-compatible.ts` base | `src/llm/` |
+| **S1** `zippymesh.ts` adapter — `:20128/v1`, BOTH `x-intent` and `x-zippy-intent` header thread-through, in-process `recommendModel()` stopgap | `src/llm/`, `adapters/zippymesh/` |
+| **S1** `ollama.ts` adapter (no auth, local first) | `src/llm/` |
+| **S1** `oracle.ts` — TS port of the upstream model-oracle host's `model-oracle.mjs` (fallback ladder + rate-limit map + `qwen3:0.6b@:11435` failsafe) | `src/llm/` |
+| **S1** `costLedger.ts` — ZICO-aligned schema (`provider`, `model`, `operation`, `tokens`, `costCents`, `runId`) | `src/llm/` |
+| **S1** Persona loader: replace `provider-stub.ts` with the registry — Phase A regression test must pass | `src/personas/` (cross-spec) |
+| **S2** PR to ZMLR: `src/app/api/mcp/route.js` exposing the existing `zmlr-server.js` handlers at `:20128/mcp` | external (ZMLR repo) — [spec](specs/llm-provider-s2-zmlr-mcp-route/spec.md) |
+| **S2** `.autoclaw/llm/config.yaml` parser + slim `autoclaw llm install` (providers only; no preference engine; imports the two shipped playbooks into ZMLR; registers ZMLR's MCP in workspace config) | `src/llm/install.ts` |
+| **S2** Switch `ZippyMeshProvider.recommendModel()` from in-process require to `POST /mcp` over HTTP | `src/llm/zippymesh.ts` |
+| **S3** `src/llm/peer-server.ts` — `externalRouterUrl` peer (RFC §6a) | `src/llm/` |
+| **S3** Extend `LoopServiceAdapter` with an optional `provider?: LlmProvider` | `src/runners/loop-service-adapter.ts` |
+| **S3** `LocalCoderRunner` — worked example | `src/runners/local-coder.ts` |
+| **Deferred indefinitely** | LM Studio standalone adapter; in-process preference scoring engine; MCP `llm.chat`/`llm.models`/`llm.health` write-tools in AutoClaw |
 
-**Exit gate.** `autoclaw llm install` writes a working config; a
-`LocalCoderRunner` can complete a no-op task via Ollama on the user's
-machine; ZippyMesh routing verified with one curl against a live ZM.
+**Exit gate (S1).** Persona loader's `dispatch()` routes through ZMLR when reachable, OllamaProvider when ZMLR is down, oracle failsafe when both are down. All 12 existing persona-loader tests still pass; 18+ new LLM tests pass; compile + adapters:check stay green.
+
+**Exit gate (S2).** ZMLR PR merged + released; `autoclaw llm install --zippymesh` is idempotent; `ZippyMeshProvider.recommendModel()` works over HTTP.
 
 ### Phase C — Security-auditor persona + persona memory engine
 
@@ -258,18 +284,34 @@ The architect persona writes Phase B/C/D's per-task spec files as
 
 ---
 
-## 7. Open questions for the user
+## 7. Decisions log (2026-05-23)
 
-1. **Branch policy.** `feat/v3-sprint-1-2-coordination` is 12 commits
-   ahead of `master`. Merge to `master` before starting v3.1, or layer
-   v3.1 on the same branch? Recommend: merge first.
-2. **OpenClaw role split.** Survey §2.7 proposes OpenClaw as the
-   approvals/audit layer *over* AutoClaw. Confirm or adjust.
-3. **Local-first default for personas.** Should the architect persona
-   default to a local Ollama model (preserving privacy and saving cloud
-   budget) once Phase B lands? Personas RFC §7.1 leaves this open.
-4. **Persona ownership of MEMORY.md.** Should `/dream` continue writing
-   to a single workspace `MEMORY.md` or shard by persona? Recommend the
-   latter; closes the survey's anti-pattern #10.
-5. **Cloud relay gating.** Phase C audits the cloud relay before GA — is
-   GA still planned for v3.0, or does it slide to v3.1?
+User confirmed (recommended option in each case):
+
+| Fork | Decision |
+|---|---|
+| **Branch policy** | Merge `feat/v3-sprint-1-2-coordination` to `master`, then v3.1 lands on a fresh `feat/v3.1` branch. **Done** — master at `4b79682`. |
+| **Persona LLM default** | **Local-first** — `preferredProvider: "ollama:llama3.1:70b"`, cloud fallback to the workspace's configured runner. Baked into [`src/personas/types.ts`](../src/personas/types.ts) as `DEFAULT_PROVIDER_CHAIN`. |
+| **Cloud relay GA** | **Slides to v3.1**, gated on Phase C security-auditor pass. v3.0 ships with the relay inert (Sprint-4 D-series is in the tree but unconfigured — no endpoint wired). |
+| **Memory shape** | **Sharded per persona** under `.autoclaw/memory/personas/<id>/` (+ `~/.autoclaw/personas/<id>/` global mirror with privacy rules). `MEMORY.md` becomes a digest/index pointing into the persona trees. |
+| **LLM provider shape (Phase B)** | **Option C — ZMLR-first + oracle fallback** instead of an in-process parallel router. ZMLR ([ZMLR](ZMLR)) already does ~80% of what the first draft RFC planned. AutoClaw delegates routing to ZMLR's `recommend_model` MCP handler; the oracle ladder (TS port of the upstream model-oracle host's `model-oracle.mjs`) handles client-side resilience when ZMLR is unreachable. See [RFC §0](rfc/llm-provider-abstraction.md) and [llm-provider-s1/spec.md](specs/llm-provider-s1/spec.md). |
+
+**OpenClaw role** is per §1 (governance/audit layer, not a dispatcher) —
+slot reserved; onboarding waits until OpenClaw registers via
+`capability_offer`.
+
+## 8. Open questions (still)
+
+These didn't have a single right answer:
+
+1. **`/dream` digest writer.** Now that memory shards by persona, what
+   exactly does the workspace-level `MEMORY.md` digest contain? Recommend:
+   one section per persona with last-5 lessons + a global "active
+   findings" tail. Confirm in Phase C.
+2. **Ollama model floor.** `llama3.1:70b` is heavy. Is there a fallback
+   to `llama3.1:8b` when the host can't run 70b? Recommend: persona
+   loader probes available models on first dispatch and downgrades with
+   a warning.
+3. **Persona spin-up budget.** Spawning 5 personas in parallel × local
+   model = unbounded RAM. Cap at `min(host_cores/2, 4)` concurrent
+   personas? Confirm in Phase A.

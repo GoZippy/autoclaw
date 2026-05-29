@@ -1,30 +1,72 @@
-.vscode/**
-.vscode-test/**
-.vscode-test.mjs
-.gitignore
-.gitattributes
+# Secrets - never ship credentials
 .env
+.env.local
+.env.*.local
+.mcp.json
+
+# Dev source, tests, docs, scripts - ship compiled out/ only
+src/**
+test/
+tests/
+scripts/**
+packages/**
+*.vsix
+tsconfig.tsbuildinfo
+
+# Compiled test and script artifacts
+out/test/**
+out/scripts/**
+
+# Source maps and TS artifacts in out/
+out/**/*.map
+out/**/*.ts
+
+# Dev tooling
+.vscode/
+.vscode-test/
+.yarn/
+
+# Runtime workspace data - not for distribution
+.autoclaw/
 .claude/**
 .clinerules/**
 .kilo/**
 .kilocodemodes
 .voidspec/**
-src/**
-scripts/**
-out/test/**
-out/scripts/**
-out/**/*.map
-out/**/*.ts
-tsconfig.json
-tsconfig.tsbuildinfo
-node_modules/**
-.autoclaw/**
-.github/**
-*.vsix
+.cursor/**
+.cursorignore
 
-# Internal documentation — keep README, CHANGELOG, LICENSE only.
-# Consumers of the published extension don't need the roadmap, research, or
-# forward-looking specs; they live in the GitHub repo for collaborators.
+# CI/CD internals
+.github/**
+node_modules/.package-lock.json
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Root dotfiles not needed by extension consumers
+.gitignore
+.gitattributes
+.npmrc
+.husky/
+lint-staged*
+.prettier*
+.eslint*
+.editorconfig
+.babelrc
+.travis.yml
+.circleci/
+dangerfile*
+rollup.config*
+webpack.config*
+jest.config*
+babel.config*
+commitlint*
+
+# Local scratch / research
+tmp/**
+
+# Internal documentation - keep README, CHANGELOG, LICENSE only
 docs/research/**
 docs/specs/**
 docs/IDEAS_LOG.md
@@ -35,10 +77,7 @@ docs/otherProjects-catalog.md
 docs/plan.md
 docs/CROSS_AGENT_ARCHITECTURE.md
 ORCHESTRATION-IMPROVEMENTS.md
-
-# Dev-only kg-daemon prototype — not part of the runtime extension.
-packages/**
-
-# Misc workspace markers that shouldn't ship.
-.cursor/**
-.cursorignore
+docs/V3_PLAN.md
+docs/V3_1_ROADMAP.md
+docs/AGENT_DAEMON_CRITIQUE.md
+docs/rfc/llm-provider-abstraction.md

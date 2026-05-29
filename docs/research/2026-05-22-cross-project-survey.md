@@ -58,26 +58,30 @@ Repos listed in `gh` output but **not opened** (skipped — not orchestration-re
 
 Each item: **(a)** where it comes from · **(b)** why it helps AutoClaw · **(c)** integration shape.
 
-### 2.1  Ralph's six tenets as a SKILL-level overlay
+### 2.1  Loop-discipline rules as a short overlay
 
-* **From** `ralph-orchestrator/CLAUDE.md` — "Fresh Context Is Reliability /
-  Backpressure Over Prescription / Plan Is Disposable / Disk Is State, Git Is
-  Memory / Steer With Signals Not Scripts / Let Ralph Ralph".
+* **Seen in** `ralph-orchestrator/CLAUDE.md` and adjacent autonomous-loop
+  projects. The common themes: re-read state each cycle; plans go stale;
+  prefer typed signals over scripted branches; trust the loop once the
+  signals are good.
 * **Why** AutoClaw's perpetual-loop work (see commit `1653976`) re-invents
-  loop discipline ad hoc. These six rules are battle-tested as a *short* prompt
-  overlay that fits in any agent's context.
-* **Shape** Add `skills/ralph-tenets/SKILL.md` (one-page) and reference it
-  from `docs/AGENT_SESSION_PROTOCOL.md §7 "Per-host bootstrap"`. Do **not**
-  embed in the protocol body — keep it as a recallable skill.
+  loop discipline ad hoc. A short rules-overlay that fits in any agent's
+  context catches the common pitfalls cheaply.
+* **Shape** Add `skills/loop-discipline/SKILL.md` (one-page, our own words)
+  and reference it from `docs/AGENT_SESSION_PROTOCOL.md §7 "Per-host
+  bootstrap"`. Do **not** embed in the protocol body — keep it as a
+  recallable skill. **Do not borrow the source project's vocabulary in the
+  user-facing skill name or rule wording** (per the ZippyTech voice rule).
 
-### 2.2  Spec-as-contract workflow (`Spec → Review → Dogfood → Implement → Verify → Done`)
+### 2.2  Spec-as-contract workflow (`draft → review → pilot → implement → verify → done`)
 
-* **From** `ralph-orchestrator/DEVELOPMENT.md` and `.ralph/specs/*.spec.md`
+* **Seen in** `ralph-orchestrator/DEVELOPMENT.md` and `.ralph/specs/*.spec.md`
   (acceptance criteria in Given/When/Then frontmatter with `status:`).
 * **Why** AutoClaw's `docs/rfc/` and `docs/specs/` directories are
   inconsistently formatted; VoidSpec sync already produces spec-shaped data.
-  Standardising on Ralph's spec frontmatter would let `sprintMarkdownGenerator`
-  consume specs directly.
+  Standardising on a single spec frontmatter would let `sprintMarkdownGenerator`
+  consume specs directly. (Our own template at `docs/specs/_template.spec.md`
+  uses our own field names — we adopt the idea, not the borrowed vocabulary.)
 * **Shape** Add `docs/specs/_template.spec.md` with the frontmatter
   (`status: draft | review | implemented`, `gap_analysis`, `related:`), and
   teach `orchestrator/sprintMarkdownGenerator.ts` to read it.
@@ -323,7 +327,7 @@ Each item: **(a)** where it comes from · **(b)** why it helps AutoClaw · **(c)
 
 1. Add `docs/specs/voidspec-tasks-yaml.md` documenting the `tasks.yaml`
    contract AutoClaw parses today. (Pure documentation — no code change.)
-2. Add `docs/specs/_template.spec.md` with Ralph-style frontmatter.
+2. Add `docs/specs/_template.spec.md` with spec-as-contract frontmatter.
 3. Add `skills/mateam/_templates/{plan,context,output}.md` matching the
    Factory-Registry layout in §2.4.
 4. Externalise mateam sub-agent roles to

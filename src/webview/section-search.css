@@ -1,0 +1,118 @@
+/* ── Section search / filter bar ─────────────────────────────────────── */
+.section-filter-bar {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 6px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.section-filter-bar.active {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.section-filter-input {
+  flex: 1;
+  min-width: 80px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 2px;
+  padding: 2px 5px;
+  font-size: 0.8em;
+  outline: none;
+}
+
+.section-filter-input:focus {
+  border-color: var(--vscode-focusBorder);
+}
+
+.section-filter-input::placeholder {
+  color: var(--vscode-input-placeholderForeground);
+  font-style: italic;
+}
+
+.section-filter-sort {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border);
+  border-radius: 2px;
+  padding: 2px 4px;
+  font-size: 0.8em;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.section-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-size: 0.72em;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  border: 1px solid transparent;
+}
+
+.section-filter-chip[data-active="true"] {
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.section-filter-chip:active {
+  opacity: 0.8;
+}
+
+/* ── Search toggle icon in section header ────────────────────────────── */
+.section-search-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0.5;
+  transition: opacity 0.15s ease;
+  font-size: 0.85em;
+  line-height: 1;
+}
+
+.section-search-toggle:hover {
+  opacity: 1;
+  background: var(--vscode-list-hoverBackground);
+}
+
+.section-search-toggle[data-active="true"] {
+  opacity: 1;
+  color: var(--vscode-textLink-foreground);
+}
+
+/* ── Filtered-hidden rows ────────────────────────────────────────────── */
+.section-body .filter-hidden {
+  display: none !important;
+}
+
+/* ── Empty-state when filter matches nothing ─────────────────────────── */
+.section-filter-empty {
+  display: none;
+  padding: 8px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.85em;
+  font-style: italic;
+}
+
+.section-filter-empty.visible {
+  display: block;
+}
+
+/* ── Spacing: auto-hide threshold ────────────────────────────────────── */
+/* When section has ≤N items, the search toggle is hidden via JS, not CSS. */

@@ -9,6 +9,8 @@
  * unit-tested without booting the Electron host (see
  * `src/test/webview-rendering.test.ts`).
  */
+import * as fs from 'fs';
+import * as path from 'path';
 import type {
   RegisteredAgent, Heartbeat, AgentStatus, Message,
 } from './comms';
@@ -326,16 +328,127 @@ export function renderAwaitingYou(rows: readonly AwaitingYouRow[]): string {
 // Fabric health badges
 // ---------------------------------------------------------------------------
 
-export function renderFabricHealth(h: FabricHealth | null): string {
-  if (!h) {
-    return '<span class="health-badge bridge-poll">bridge: poll</span><span class="health-badge kg-off">kg: off</span>';
+/** Plain-English explanation of each bridge state, used in tooltips. */
+export function bridgeTooltip(state: FabricHealth['bridge'], h?: FabricHealth | null): string {
+  const base = (() => {
+    switch (state) {
+      case 'poll': return 'Bridge transport: filesystem polling (default — no daemon required).';
+      case 'sse':  return 'Bridge transport: Server-Sent Events stream.';
+      case 'ws':   return 'Bridge transport: WebSocket stream.';
+      case 'off':  return 'Bridge transport: disabled. Inter-agent messages will not be relayed.';
+    }
+  })();
+  const clients = h ? ` Connected clients: SSE=${h.sse_clients ?? 0} WS=${h.ws_clients ?? 0}.` : '';
+  const port = h?.bridge_port ? ` Port ${h.bridge_port}.` : '';
+  return `${base}${clients}${port} Click to open the bridge docs.`;
+}
+
+/** Plain-English explanation of each kg-daemon state, used in tooltips. */
+export function kgTooltip(state: FabricHealth['kg']): string {
+  switch (state) {
+    case 'off':         return 'Knowledge Graph daemon: not running. Memory recall + bi-temporal facts disabled. Click to start.';
+    case 'running':     return 'Knowledge Graph daemon: running. Memory recall + bi-temporal facts active. Click to open dashboard.';
+    case 'unreachable': return 'Knowledge Graph daemon: process running but not responding. Click to restart.';
   }
-  const bridgeCls = `bridge-${h.bridge}`;
-  const kgCls = `kg-${h.kg}`;
-  const bridgeLabel = `bridge: ${h.bridge}`;
-  const kgLabel = `kg: ${h.kg}`;
+}
+
+/** Webview command emitted when a fabric chip is clicked. */
+type FabricChipCommand = 'openBridgeDoc' | 'startKgDaemon' | 'openKgDashboard' | 'restartKgDaemon';
+
+/** Which command a click on a kg chip should dispatch, given the state. */
+export function kgClickCommand(state: FabricHealth['kg']): FabricChipCommand {
+  switch (state) {
+    case 'off':         return 'startKgDaemon';
+    case 'running':     return 'openKgDashboard';
+    case 'unreachable': return 'restartKgDaemon';
+  }
+}
+
+export function renderFabricHealth(h: FabricHealth | null): string {
+  const bridgeState: FabricHealth['bridge'] = h?.bridge ?? 'poll';
+  const kgState: FabricHealth['kg'] = h?.kg ?? 'off';
+  const bridgeCls = `bridge-${bridgeState}`;
+  const kgCls = `kg-${kgState}`;
+  const bridgeLabel = `bridge: ${bridgeState}`;
+  const kgLabel = `kg: ${kgState}`;
+  const bridgeTip = bridgeTooltip(bridgeState, h);
+  const kgTip = kgTooltip(kgState);
+  const kgCmd = kgClickCommand(kgState);
   return (
-    `<span class="health-badge ${esc(bridgeCls)}" title="${esc(`SSE=${h.sse_clients ?? 0} WS=${h.ws_clients ?? 0}`)}">${esc(bridgeLabel)}</span>` +
-    `<span class="health-badge ${esc(kgCls)}">${esc(kgLabel)}</span>`
+    `<button type="button" class="health-badge ${esc(bridgeCls)}" ` +
+      `data-fabric-action="openBridgeDoc" ` +
+      `title="${esc(bridgeTip)}" aria-label="${esc(bridgeTip)}">${esc(bridgeLabel)}</button>` +
+    `<button type="button" class="health-badge ${esc(kgCls)}" ` +
+      `data-fabric-action="${esc(kgCmd)}" ` +
+      `title="${esc(kgTip)}" aria-label="${esc(kgTip)}">${esc(kgLabel)}</button>`
   );
+}
+
+// ---------------------------------------------------------------------------
+// UI-3: Status-dot legend popover
+// ---------------------------------------------------------------------------
+
+/** Plain-English explanation of each agent status, used in the legend popover. */
+export const STATUS_LEGEND: ReadonlyArray<{ status: string; label: string; meaning: string }> = [
+  { status: 'active',     label: 'Active',     meaning: 'Working a claim right now.' },
+  { status: 'idle',       label: 'Idle',       meaning: 'Heartbeat fresh; no claim in progress.' },
+  { status: 'overloaded', label: 'Overloaded', meaning: 'Queue depth ≥ 10 or token budget low.' },
+  { status: 'stalled',    label: 'Stalled',    meaning: 'No heartbeat for ≥5 cycles.' },
+  { status: 'offline',    label: 'Offline',    meaning: 'Heartbeat dead; excluded from quorum.' },
+  { status: 'detected',   label: 'Detected',   meaning: 'Registered but never checked in.' },
+];
+
+/**
+ * Render the (?) legend chip + collapsible popover that explains every status
+ * dot color. Click toggles `.open` on the wrapper; tests assert markup only.
+ */
+export function renderStatusLegend(): string {
+  const rows = STATUS_LEGEND.map(s =>
+    `<li class="legend-row"><span class="status-dot ${esc(statusBadgeClass(s.status))}" aria-hidden="true"></span>` +
+    `<span class="legend-label">${esc(s.label)}</span>` +
+    `<span class="legend-meaning">${esc(s.meaning)}</span></li>`
+  ).join('');
+  return (
+    `<span class="status-legend" role="group" aria-label="Status legend">` +
+      `<button type="button" class="legend-chip" aria-expanded="false" aria-controls="status-legend-popover" ` +
+        `title="Show status-dot legend">?</button>` +
+      `<div id="status-legend-popover" class="legend-popover" role="region" aria-label="Agent status meanings" hidden>` +
+        `<ul class="legend-list">${rows}</ul>` +
+      `</div>` +
+    `</span>`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// UI-2: Panel version footer
+// ---------------------------------------------------------------------------
+
+/** Read extension version from package.json. Null if missing/malformed. */
+export function readExtensionVersionFromDisk(extensionFsPath: string): string | null {
+  try {
+    const raw = fs.readFileSync(path.join(extensionFsPath, 'package.json'), 'utf8');
+    const pkg = JSON.parse(raw) as { version?: unknown };
+    return typeof pkg.version === 'string' && pkg.version.length > 0 ? pkg.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read current git branch from .git/HEAD. Null on detached HEAD / no repo. */
+export function readGitBranchFromDisk(workspaceRoot: string): string | null {
+  try {
+    const head = fs.readFileSync(path.join(workspaceRoot, '.git', 'HEAD'), 'utf8').trim();
+    const m = head.match(/^ref:\s+refs\/heads\/(.+)$/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Render the panel footer. Missing pieces are omitted, not filled. */
+export function renderPanelFooter(version: string | null, branch: string | null): string {
+  const verLabel = version ? `v${esc(version)}` : 'v?';
+  const parts = [`AutoClaw ${verLabel}`];
+  if (branch) { parts.push(`branch: ${esc(branch)}`); }
+  return `<footer class="panel-footer" role="contentinfo" aria-label="AutoClaw version">${parts.join(' · ')}</footer>`;
 }
