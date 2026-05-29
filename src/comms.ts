@@ -24,6 +24,21 @@ export const OVERLOAD_QUEUE_DEPTH = 10;
 /** Heartbeat error_rate_1m at or above which a fresh agent is treated as overloaded. */
 export const OVERLOAD_ERROR_RATE = 0.5;
 
+/**
+ * Identify which agent (if any) corresponds to the host VS Code variant.
+ * Used by the heartbeat daemon to decide whose heartbeat may carry the host's
+ * sessionId — peer agents own their own session_id and the host must NOT
+ * stamp them. Pure (no vscode import) so tests can call it directly.
+ */
+export function detectAutoclawHostAgent(appName: string): string {
+  if (/antigravity/i.test(appName)) { return 'antigravity'; }
+  if (/kiro/i.test(appName))        { return 'kiro'; }
+  if (/cursor/i.test(appName))      { return 'cursor'; }
+  if (/windsurf/i.test(appName))    { return 'windsurf'; }
+  // VS Code stock + Claude Code variants → claude-code is the canonical host agent.
+  return 'claude-code';
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------

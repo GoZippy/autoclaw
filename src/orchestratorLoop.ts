@@ -352,13 +352,72 @@ async function countUnread(workspaceRoot: string, agentId: string): Promise<numb
 // Work discovery
 // ---------------------------------------------------------------------------
 
+/**
+ * Return the set of agent ids that already own at least one active (non-expired)
+ * claim under `comms/claims/`. An agent with a live claim is NOT idle and must
+ * not be re-dispatched a `next-<agent>` placeholder.
+ */
+export async function readClaimedAgentIds(workspaceRoot: string): Promise<Set<string>> {
+  const claimsDir = path.join(workspaceRoot, COMMS_DIR_REL, 'claims');
+  const out = new Set<string>();
+  let entries: string[];
+  try { entries = await fsPromises.readdir(claimsDir); } catch { return out; }
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const raw = await fsPromises.readFile(path.join(claimsDir, name), 'utf8');
+      const claim = JSON.parse(raw) as { claimed_by?: string; expires_at?: string };
+      if (typeof claim.claimed_by !== 'string') continue;
+      if (claim.expires_at && Date.parse(claim.expires_at) < Date.now()) continue;
+      out.add(claim.claimed_by);
+    } catch { /* skip malformed claim */ }
+  }
+  return out;
+}
+
+/**
+ * Return the set of agent ids that already received a `next-<agent>` dispatch
+ * in the last `withinMs` window. The orchestrator-loop must not re-broadcast
+ * the same placeholder every tick — once is enough until either the agent
+ * claims real work or the cooldown elapses.
+ */
+export async function readRecentNextDispatches(
+  workspaceRoot: string,
+  withinMs: number = 5 * 60 * 1000
+): Promise<Set<string>> {
+  const sharedInbox = path.join(workspaceRoot, SHARED_INBOX_REL);
+  const out = new Set<string>();
+  const cutoff = Date.now() - withinMs;
+  let names: string[];
+  try { names = await fsPromises.readdir(sharedInbox); } catch { return out; }
+  for (const name of names) {
+    if (!name.includes('task_claim-next-')) continue;
+    const m = name.match(/task_claim-next-(.+?)\.json$/);
+    if (!m) continue;
+    try {
+      const stat = await fsPromises.stat(path.join(sharedInbox, name));
+      if (stat.mtimeMs >= cutoff) { out.add(m[1]); }
+    } catch { /* skip */ }
+  }
+  return out;
+}
+
 export async function discoverWork(
   workspaceRoot: string,
   health: HealthCheckResult
 ): Promise<DiscoveredWork[]> {
+  // Two-layer dedup: skip agents that ALREADY own an active claim, and skip
+  // agents that received a `next-<agent>` placeholder in the last 5 minutes.
+  // Both checks were missing before; the result was 15+ duplicate broadcasts
+  // in 7 minutes — observed in production on 2026-05-29.
+  const claimedAgents     = await readClaimedAgentIds(workspaceRoot);
+  const recentlyNotified  = await readRecentNextDispatches(workspaceRoot);
+
   const work: DiscoveredWork[] = [];
   for (const agent of health.entries) {
     if (agent.state !== 'alive') continue;
+    if (claimedAgents.has(agent.agentId)) continue;
+    if (recentlyNotified.has(agent.agentId)) continue;
     work.push({
       item: {
         type: 'work_package',
@@ -375,7 +434,7 @@ export async function discoverWork(
         priority: 'low',
         timeBudgetMs: 0,
       },
-      why: `agent=${agent.agentId} idle`,
+      why: `agent=${agent.agentId} idle, no claim, no recent next-dispatch`,
     });
   }
   return work;
