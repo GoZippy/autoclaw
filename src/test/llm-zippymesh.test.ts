@@ -152,11 +152,120 @@ suite('ZippyMeshProvider — error mapping', () => {
   });
 });
 
-suite('ZippyMeshProvider — recommendModel (S1 stopgap)', () => {
-  test('recommendModel returns null in S1 (HTTP MCP route not yet wired in ZMLR)', async () => {
-    const p = new ZippyMeshProvider({ fetchImpl: (async () => new Response()) as typeof fetch });
-    const rec = await p.recommendModel('code', { preferLocal: true });
+suite('ZippyMeshProvider — recommendModel (S2 HTTP)', () => {
+  test('happy path — newer ZMLR with recommendations array', async () => {
+    const capture: Capture[] = [];
+    const fetchImpl = makeFetch(
+      {
+        status: 200,
+        body: {
+          success: true,
+          recommendations: [
+            { model: 'openai/gpt-4o', score: 92 },
+            { model: 'ollama/llama3.1:70b' },
+          ],
+          fallbackChain: ['ollama/llama3.1:70b', 'ollama/llama3.1:8b'],
+        },
+      },
+      capture,
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('code', { preferLocal: true, maxLatencyMs: 2000 });
+    assert.ok(rec, 'recommendation should not be null');
+    assert.strictEqual(rec!.model, 'openai/gpt-4o');
+    assert.deepStrictEqual(rec!.fallbackChain, ['ollama/llama3.1:70b', 'ollama/llama3.1:8b']);
+
+    const mcpCall = capture.find((c) => c.url.endsWith('/mcp'));
+    assert.ok(mcpCall, 'must POST to /mcp');
+    assert.strictEqual(mcpCall!.method, 'POST');
+    // Constraints must be snake_cased to match ZMLR's handler shape
+    assert.strictEqual((mcpCall!.body as Record<string, unknown>).tool, 'recommend_model');
+    const input = (mcpCall!.body as { input: Record<string, unknown> }).input;
+    assert.strictEqual(input.intent, 'code');
+    const constraints = input.constraints as Record<string, unknown>;
+    assert.strictEqual(constraints.prefer_local, true);
+    assert.strictEqual(constraints.max_latency_ms, 2000);
+  });
+
+  test('legacy shape — single `recommendation` field (older ZMLR)', async () => {
+    const fetchImpl = makeFetch(
+      {
+        status: 200,
+        body: {
+          success: true,
+          recommendation: 'ollama/llama3.1:8b',
+          fallbackChain: [],
+        },
+      },
+      [],
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('chat');
+    assert.ok(rec);
+    assert.strictEqual(rec!.model, 'ollama/llama3.1:8b');
+  });
+
+  test('404 — older ZMLR without the /mcp route → null (no throw)', async () => {
+    const fetchImpl = makeFetch({ status: 404, body: { error: 'route_not_found' } }, []);
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('code');
     assert.strictEqual(rec, null);
+  });
+
+  test('handler self-reports failure → null', async () => {
+    const fetchImpl = makeFetch(
+      { status: 200, body: { success: false, error: 'discovery service down' } },
+      [],
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('code');
+    assert.strictEqual(rec, null);
+  });
+
+  test('502 → null', async () => {
+    const fetchImpl = makeFetch({ status: 502, body: { error: 'upstream' } }, []);
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('code');
+    assert.strictEqual(rec, null);
+  });
+
+  test('transport failure → null (no throw)', async () => {
+    const fetchImpl = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as typeof fetch;
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('code');
+    assert.strictEqual(rec, null);
+  });
+
+  test('falls back to fallbackChain[0] when neither recommendation nor recommendations is set', async () => {
+    const fetchImpl = makeFetch(
+      {
+        status: 200,
+        body: {
+          success: true,
+          fallbackChain: ['ollama/llama3.1:8b', 'ollama/qwen3:14b'],
+        },
+      },
+      [],
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('code');
+    assert.ok(rec);
+    assert.strictEqual(rec!.model, 'ollama/llama3.1:8b');
+  });
+
+  test('/mcp URL is derived by stripping /v1 from baseUrl', async () => {
+    const capture: Capture[] = [];
+    const fetchImpl = makeFetch(
+      { status: 200, body: { success: true, recommendation: 'x' } },
+      capture,
+    );
+    const p = new ZippyMeshProvider({ host: 'http://example.com:9999', fetchImpl });
+    await p.recommendModel('chat');
+    const mcpCall = capture.find((c) => c.url.endsWith('/mcp'));
+    assert.ok(mcpCall);
+    assert.strictEqual(mcpCall!.url, 'http://example.com:9999/mcp');
   });
 });
 

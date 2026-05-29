@@ -254,6 +254,41 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // LLM provider install — wires ZippyMesh + Ollama into the workspace.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.llm.install', async () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        vscode.window.showWarningMessage('Open a workspace folder before running LLM install.');
+        return;
+      }
+      const choice = await vscode.window.showQuickPick(
+        [
+          { label: 'ZippyMesh + Ollama (Recommended)', zippymesh: true, ollama: true },
+          { label: 'ZippyMesh only', zippymesh: true, ollama: false },
+          { label: 'Ollama only', zippymesh: false, ollama: true },
+        ],
+        { placeHolder: 'Which providers should I install?' },
+      );
+      if (!choice) return;
+      const { installLlm, formatLlmInstallReport } = await import('./llm');
+      const report = await installLlm({
+        workspaceRoot,
+        zippymesh: choice.zippymesh,
+        ollama: choice.ollama,
+      });
+      const text = formatLlmInstallReport(report);
+      const channel = vscode.window.createOutputChannel('AutoClaw — LLM Install');
+      channel.appendLine(text);
+      channel.show(true);
+      if (report.ok) {
+        vscode.window.showInformationMessage('LLM install completed. See output channel.');
+      } else {
+        vscode.window.showErrorMessage('LLM install completed with errors. See output channel.');
+      }
+    })
+  );
+
   // Skill launcher — quick pick that copies a skill prompt to clipboard
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.launchSkill', async () => {

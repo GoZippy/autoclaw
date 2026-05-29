@@ -8,11 +8,14 @@
  * works whether the user is running an older or newer ZMLR build. Also
  * supports `x-session-parallel` / `x-session-id` for /mateam fan-out.
  *
- * `recommendModel()` is the bridge to ZMLR's MCP `recommend_model`
- * handler. In S1 it returns null (ZMLR's MCP HTTP route doesn't exist
- * yet — see docs/specs/llm-provider-s2-zmlr-mcp-route/spec.md). The
- * registry treats null as "skip step 2 of getPreferred algorithm and
- * fall through to the oracle".
+ * `recommendModel()` calls ZMLR's MCP `recommend_model` handler over the
+ * `/mcp` HTTP route. On any failure (404 for older ZMLR builds without
+ * the route, 502 when the handler self-reports failure, transport
+ * timeout, connection refused) it returns null — the registry treats
+ * null as "skip step 2 of getPreferred algorithm and fall through to
+ * the oracle". See docs/specs/llm-provider-s2-zmlr-mcp-route/spec.md
+ * for the ZMLR-side route contract and
+ * docs/specs/llm-provider-s2-autoclaw-side/spec.md for this caller.
  *
  * @see ZMLR\src\sse\handlers\chat.js (line 131)
  * @see ZMLR\src\lib\routing\smartRouter.js (line 269)
@@ -79,20 +82,120 @@ export class ZippyMeshProvider extends OpenAiCompatibleProvider {
   /**
    * Ask ZMLR's `recommend_model` MCP handler for a routing decision.
    *
-   * S1 stopgap: always returns null. S2 ships a PR to ZMLR exposing
-   * `:20128/mcp` and this method calls it over HTTP.
-   *
-   * The registry treats null as "skip the ZMLR-recommend step and fall
-   * through to the oracle's ladder".
+   * POSTs `{ tool: 'recommend_model', input: { intent, constraints } }` to
+   * `${host}/mcp` and parses the handler's response. Any failure mode
+   * (404 — older ZMLR without the route, 502 — handler self-reported
+   * failure, transport error, timeout) collapses to `null`, which the
+   * registry treats as a signal to fall through to the oracle ladder.
    *
    * @see docs/specs/llm-provider-s2-zmlr-mcp-route/spec.md
+   * @see docs/specs/llm-provider-s2-autoclaw-side/spec.md
    */
   async recommendModel(
-    _intent: string,
-    _constraints?: RecommendModelConstraints,
+    intent: string,
+    constraints?: RecommendModelConstraints,
   ): Promise<RecommendModelResult | null> {
-    return null;
+    const mcpUrl = this.deriveMcpUrl();
+    try {
+      const res = await this.fetchImpl(mcpUrl, {
+        method: 'POST',
+        headers: {
+          ...this.buildHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          tool: 'recommend_model',
+          input: {
+            intent,
+            constraints: constraints && mapConstraintsToHandlerShape(constraints),
+          },
+        }),
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (!res.ok) {
+        // 404 (route not deployed yet) and 502 (handler self-reported
+        // failure) both land here. Same observable: null. The registry
+        // falls through to the oracle ladder.
+        return null;
+      }
+      const json = (await res.json()) as RecommendModelHandlerResponse;
+      if (!json.success) return null;
+      return parseHandlerResponse(json);
+    } catch {
+      // Timeout / transport / parse error — return null. The oracle
+      // ladder catches us.
+      return null;
+    }
   }
+
+  /**
+   * Derive the `/mcp` URL from the adapter's configured baseUrl.
+   * baseUrl is e.g. `http://127.0.0.1:20128/v1`; we strip `/v1` and
+   * append `/mcp`. Visible for testing.
+   */
+  protected deriveMcpUrl(): string {
+    return this.baseUrl.replace(/\/v1\/?$/, '') + '/mcp';
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  recommend_model HTTP plumbing                                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The shape ZMLR's recommend_model handler returns, per the ZMLR-side
+ * spec. We accept the documented happy shape AND the looser legacy shape
+ * (a plain `recommendations: string[]`) so the adapter keeps working
+ * across ZMLR minor versions.
+ */
+interface RecommendModelHandlerResponse {
+  success: boolean;
+  /** Newer ZMLR — array of objects with model details. */
+  recommendations?: Array<{ model?: string; id?: string } | string>;
+  /** Ordered fallback chain ZMLR would try if the first recommendation fails. */
+  fallbackChain?: string[];
+  /** Older variant some ZMLR builds emit. */
+  recommendation?: string | { model?: string; id?: string };
+  /** Set when `success: false`. */
+  error?: string;
+}
+
+function parseHandlerResponse(json: RecommendModelHandlerResponse): RecommendModelResult | null {
+  const fallbackChain = Array.isArray(json.fallbackChain) ? json.fallbackChain : [];
+  // Prefer the recommendations array (newer ZMLR), fall back to recommendation
+  // (older variant), fall back to fallbackChain[0] if neither was provided.
+  const top = pickTopRecommendation(json) ?? fallbackChain[0];
+  if (!top) return null;
+  return { model: top, fallbackChain };
+}
+
+function pickTopRecommendation(json: RecommendModelHandlerResponse): string | undefined {
+  if (Array.isArray(json.recommendations) && json.recommendations.length > 0) {
+    const first = json.recommendations[0];
+    if (typeof first === 'string') return first;
+    if (first && typeof first === 'object') return first.model ?? first.id;
+  }
+  if (typeof json.recommendation === 'string') return json.recommendation;
+  if (json.recommendation && typeof json.recommendation === 'object') {
+    return json.recommendation.model ?? json.recommendation.id;
+  }
+  return undefined;
+}
+
+/**
+ * Map the AutoClaw camelCase constraints to the snake_case shape ZMLR's
+ * handler expects (per the input schema in zmlr-server.js).
+ */
+function mapConstraintsToHandlerShape(
+  c: RecommendModelConstraints,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (typeof c.maxLatencyMs === 'number') out.max_latency_ms = c.maxLatencyMs;
+  if (typeof c.maxCostPerMTokens === 'number') out.max_cost_per_m_tokens = c.maxCostPerMTokens;
+  if (typeof c.minContextWindow === 'number') out.min_context_window = c.minContextWindow;
+  if (typeof c.preferFree === 'boolean') out.prefer_free = c.preferFree;
+  if (typeof c.preferLocal === 'boolean') out.prefer_local = c.preferLocal;
+  return out;
 }
 
 /**
