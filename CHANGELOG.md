@@ -23,6 +23,53 @@ branch. Functionally identical to 3.1.0; users on 3.1.0 should update.
   `docs/V3_1_ROADMAP.md` (none of which ship in the VSIX, but were
   about to be pushed to GitHub).
 
+## [3.1.2] - 2026-05-27
+
+This release ("IDE-aware port allocation + cross-IDE agent orchestration registry") solves the `EADDRINUSE` crash that occurred when running AutoClaw simultaneously in multiple IDEs (e.g. VS Code + Kiro on the same workspace). Net: +327 LOC across 2 new files + 3 modified files, zero new dependencies.
+
+### Added
+
+- **IDE-aware port allocation** (`src/ide-ports.ts`) -- Each recognized IDE gets a dedicated non-overlapping 5-port block so bridge and KG daemon ports never collide across IDEs:
+
+  | IDE         | Bridge ports  | KG ports      |
+  |-------------|---------------|---------------|
+  | VS Code     | 9876-9880     | 9877-9881     |
+  | Cursor      | 10876-10880   | 10877-10881   |
+  | Kiro        | 11876-11880   | 11877-11881   |
+  | Windsurf    | 12876-12880   | 12877-12881   |
+  | Antigravity | 13876-13880   | 13877-13881   |
+  | Other       | 14876-14880   | 14877-14881   |
+
+  Within each IDE block, a SHA-1 hash of the workspace path produces a deterministic salt (0-4) so different projects get different starting ports. The allocator checks both a machine-wide port registry AND live port availability before assigning.
+
+- **Machine-wide port registry** (`~/.autoclaw/.port-registry.json`) -- Tracks which (IDE, workspace, PID) owns which ports. Dead PIDs are garbage-collected on load. Ports are released on bridge stop or extension deactivation.
+
+- **Cross-IDE agent orchestration registry** (`src/workspace-registry.ts`, `~/.autoclaw/.agent-registry.json`) -- Each IDE instance registers its bridge endpoint (URL, PID, capabilities, status) on bridge start. Other agents (Codex, Claude Code, OpenClaw, Hermes, etc.) can query `getAvailableWorkers()` to discover all live AutoClaw bridge endpoints on the machine. Stale entries auto-expire after 5 minutes.
+
+- **Centralized IDE detection** (`detectIde()`) -- Single source of truth for IDE identification from `vscode.env.appName`, replacing the previous scattered regex checks. Used by `activeHostAgentId()`, port allocation, and adapter installation.
+
+- **Bridge port block constraint** (`BridgeConfig.portBlockBase`) -- Bridge fallback probing now stays within the IDE's assigned port block instead of potentially leaking into another IDE's range.
+
+### Changed
+
+- **`autoclaw.bridge.port` default: `9876` -> `0`** -- A value of 0 (default) triggers automatic IDE- and workspace-aware port allocation. Users can still set an explicit port to override.
+- **`autoclaw.kg.port` default: `9877` -> `0`** -- Same auto-allocation behavior for the KG daemon.
+- **Bridge auto-start** now calls `allocatePorts()` before `startBridge()`, ensuring the allocated port is conflict-free across all running IDE instances.
+- **Bridge stop** now calls `releasePorts()` and `unregisterWorker()` to clean up registries.
+- **Extension deactivation** now unregisters the worker and releases ports.
+
+### Settings
+
+| Setting | Default | What |
+|---|---|---|
+| `autoclaw.bridge.port` | `0` | Bridge port. 0 = auto-allocate per IDE/workspace. |
+| `autoclaw.kg.port` | `0` | KG daemon port. 0 = auto-allocate per IDE/workspace. |
+| `autoclaw.workspaceRegistry.enabled` | `true` | Enable cross-IDE agent registry at `~/.autoclaw/.agent-registry.json`. |
+
+### Fixed
+
+- **`EADDRINUSE` crash when opening the same workspace in multiple IDEs** -- Root cause: all IDE instances tried to bind to port 9876. Fixed by IDE-specific port blocks with zero overlap.
+
 ## [3.1.0] - 2026-05-24
 
 This release ("v3.1.0 — hands-off peer review + the agendaboard") closes

@@ -82,6 +82,13 @@ import {
   type BridgeState, type BridgeConfig,
 } from './bridge';
 import {
+  detectIde, allocatePorts, releasePorts, getIdePorts, getIDEPortBlock,
+  type IdeId,
+} from './ide-ports';
+import {
+  registerWorker, unregisterWorker,
+} from './workspace-registry';
+import {
   createFabricBus,
   type BusDriver, type FabricBus,
 } from './fabric';
@@ -125,6 +132,8 @@ let activeKg: KgState | null = null;
  * filesystem mailbox always remains the canonical durable record.
  */
 let activeFabric: FabricBus | null = null;
+let currentIde: IdeId = 'other';
+let currentWorkspace: string = '';
 
 function getKgOutputChannel(): vscode.OutputChannel {
   if (!kgOutputChannel) {
@@ -162,10 +171,15 @@ async function maybeStartKgDaemon(extensionPath: string): Promise<void> {
   const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
   if (!cfg.get<boolean>('enabled', false)) { return; }
   if (activeKg?.child && activeKg.child.exitCode === null) { return; }
-  const port = cfg.get<number>('port', 9877);
+  const userKgPort = cfg.get<number>('port', 0);
   const dbPath = cfg.get<string>('dbPath', '');
   const channel = getKgOutputChannel();
-  const result = await startKgDaemon({ extensionPath, port, dbPath, logger: channel });
+
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+  const idePorts = getIdePorts(currentIde, workspaceRoot || undefined);
+  const kgPort = userKgPort > 0 ? userKgPort : idePorts.kgPort;
+
+  const result = await startKgDaemon({ extensionPath, port: kgPort, dbPath, logger: channel });
   if (result.ok) {
     activeKg = result.state;
   } else {
@@ -201,6 +215,10 @@ let refreshIntervalId: NodeJS.Timeout | undefined = undefined;
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('AutoClaw activated — skills ready');
+
+  currentIde = detectIde(vscode.env.appName || '');
+  currentWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+  console.log(`AutoClaw: detected IDE=${currentIde}, workspace=${currentWorkspace || '(none)'}`);
 
   const adaptersDir = path.join(context.extensionPath, 'adapters');
 
@@ -2812,22 +2830,53 @@ async function bridgeStartCommand(): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) { vscode.window.showErrorMessage('Bridge: open a workspace first.'); return; }
   const cfg = vscode.workspace.getConfiguration('autoclaw.bridge');
+  const userPort = cfg.get<number>('port', 0);
+  const host = cfg.get<string>('host', '127.0.0.1');
+
+  const allocated = await allocatePorts(
+    currentIde,
+    workspaceRoot,
+    userPort > 0 ? userPort : undefined,
+    undefined
+  );
+
+  const block = getIDEPortBlock(currentIde);
   const config: BridgeConfig = {
-    port: cfg.get<number>('port', 9876), host: cfg.get<string>('host', '127.0.0.1'),
+    port: allocated.bridgePort, host,
+    portBlockBase: block.bridgeBase,
     commsDir: path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms'),
     tokensPath: path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'tokens.json'),
   };
   try {
     activeBridge = await startBridge(config);
-    vscode.window.showInformationMessage(`OpenClaw bridge started on ${config.host}:${config.port}`);
-  } catch (e) { vscode.window.showErrorMessage(`Bridge failed: ${(e as Error).message}`); }
+    registerWorker({
+      id: `${currentIde}-${process.pid}`,
+      ide: currentIde,
+      workspace: workspaceRoot,
+      bridgeHost: host,
+      bridgePort: allocated.bridgePort,
+      bridgeUrl: `http://${host}:${allocated.bridgePort}`,
+      pid: process.pid,
+      status: 'online',
+      capabilities: ['bridge', 'orchestrate'],
+      lastHeartbeat: new Date().toISOString(),
+      assignedTasks: [],
+    });
+    vscode.window.showInformationMessage(`OpenClaw bridge started on ${host}:${allocated.bridgePort} [${currentIde}]`);
+  } catch (e) {
+    releasePorts(currentIde, workspaceRoot);
+    vscode.window.showErrorMessage(`Bridge failed: ${(e as Error).message}`);
+  }
 }
 
 async function bridgeStopCommand(): Promise<void> {
   if (!activeBridge?.running) { vscode.window.showInformationMessage('Bridge not running.'); return; }
+  const port = activeBridge.config.port;
   await stopBridge(activeBridge);
   activeBridge = null;
-  vscode.window.showInformationMessage('OpenClaw bridge stopped.');
+  unregisterWorker(process.pid, currentIde);
+  if (currentWorkspace) { releasePorts(currentIde, currentWorkspace); }
+  vscode.window.showInformationMessage(`OpenClaw bridge stopped (was on ${port}).`);
 }
 
 async function kgHealthCheckCommand(): Promise<void> {
@@ -3087,12 +3136,7 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
 /** Best-effort "who am I?" for the host running this extension instance.
  *  Used to populate the "Awaiting You" filter. Falls back to undefined. */
 function activeHostAgentId(): string | undefined {
-  const appName = (vscode.env.appName || '').toLowerCase();
-  if (appName.includes('antigravity')) { return 'antigravity'; }
-  if (appName.includes('kiro')) { return 'kiro'; }
-  if (appName.includes('cursor')) { return 'cursor'; }
-  if (appName.includes('windsurf')) { return 'windsurf'; }
-  // Default VS Code; let the user pick the agent name via setting if needed.
+  if (currentIde !== 'other' && currentIde !== 'vscode') { return currentIde; }
   const cfg = vscode.workspace.getConfiguration('autoclaw');
   const explicit = cfg.get<string>('hostAgentId');
   if (explicit && explicit.length > 0) { return explicit; }
@@ -3342,6 +3386,10 @@ export function deactivate() {
   if (activeBridge?.running) {
     stopBridge(activeBridge).catch(() => {});
     activeBridge = null;
+  }
+  unregisterWorker(process.pid, currentIde);
+  if (currentWorkspace) {
+    releasePorts(currentIde, currentWorkspace);
   }
   if (activeFabric) {
     activeFabric.close().catch(() => {});

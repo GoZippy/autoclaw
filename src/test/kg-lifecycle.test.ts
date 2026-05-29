@@ -204,7 +204,7 @@ suite('KG: package.json contributions', function () {
     assert.strictEqual(props['autoclaw.kg.enabled'].default, false,
       'kg.enabled defaults to false (opt-in)');
     assert.ok('autoclaw.kg.port' in props);
-    assert.strictEqual(props['autoclaw.kg.port'].default, 9877);
+    assert.strictEqual(props['autoclaw.kg.port'].default, 0);
     assert.ok('autoclaw.kg.dbPath' in props);
     assert.strictEqual(props['autoclaw.kg.dbPath'].default, '');
   });
