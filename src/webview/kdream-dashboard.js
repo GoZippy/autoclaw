@@ -141,13 +141,54 @@
       // Auto-open when there is anything to show.
       if (count > 0) section.classList.add('open');
     }
-    // Wire Reply buttons
+    // Wire Reply buttons (question / generic items)
     el.querySelectorAll('.reply-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         const messageId = btn.getAttribute('data-message-id');
         const from = btn.getAttribute('data-from');
         const type = btn.getAttribute('data-type');
         vscode.postMessage({ command: 'replyAwaiting', messageId, from, type });
+      });
+    });
+
+    // Expand / collapse the drill-down detail panel.
+    el.querySelectorAll('.awaiting-head[data-action="toggle-detail"]').forEach(head => {
+      const toggle = () => {
+        const row = head.closest('.awaiting-row');
+        const detail = row && row.querySelector('.awaiting-detail');
+        const caret = head.querySelector('.awaiting-caret');
+        if (!detail) return;
+        const opening = detail.hasAttribute('hidden');
+        if (opening) { detail.removeAttribute('hidden'); } else { detail.setAttribute('hidden', ''); }
+        head.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        if (caret) caret.textContent = opening ? '▾' : '▸';
+      };
+      head.addEventListener('click', toggle);
+      head.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+      });
+    });
+
+    // Wire Approve / Request changes / Reject vote buttons.
+    el.querySelectorAll('.vote-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const row = btn.closest('.awaiting-row');
+        const commentEl = row && row.querySelector('.vote-comment');
+        vscode.postMessage({
+          command: 'castVote',
+          taskId: btn.getAttribute('data-task-id'),
+          vote: btn.getAttribute('data-vote'),
+          messageId: btn.getAttribute('data-message-id'),
+          from: btn.getAttribute('data-from'),
+          comment: commentEl ? commentEl.value : '',
+        });
+      });
+    });
+
+    // Wire file links in the drill-down panel.
+    el.querySelectorAll('.file-link').forEach(link => {
+      link.addEventListener('click', () => {
+        vscode.postMessage({ command: 'openAwaitingFile', file: link.getAttribute('data-file') });
       });
     });
   }
