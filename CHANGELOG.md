@@ -1,5 +1,25 @@
 # Changelog
 
+## [3.1.4] - 2026-05-29
+
+Panel UX completion over 3.1.3. Ships the review-request decision UI (the "validate each other's work" feature) and the final visual-cleanup pass, closing the panel-ux sprint.
+
+### Added
+
+- **Review-request decision UI** (`src/webview-render.ts`, `src/webview/kdream-dashboard.{css,js}`). When a `review_request` lands in your "Awaiting You" list, the row now renders an inline decision surface instead of a free-text reply box:
+  - **Vote buttons** — approve / request_changes / reject, acted on inline.
+  - **Live consensus tally** — approvals/changes/rejects, votes received vs required, the active rule (majority for tasks, unanimous for security findings), your own existing vote if cast, decided state, and any deadline.
+  - **Source-work drill-in** (`ReviewContext`) — resolves the request's `source_task_complete_id` against the shared inbox so you see *what* you are approving: author, task, sprint, summary, branch, and files touched. Falls back gracefully when the source `task_complete` can't be located.
+  - `payloadExcerpt` now describes auto-promoted reviews instead of dumping raw JSON.
+
+### Changed
+
+- **Panel visual cleanup** (`src/webview/kdream-dashboard.css`) — vertical rhythm normalized to a 4-6-8px scale (top-level sections on 8px, nested cards on 6px); nested-card borders lightened to 50-60% opacity via `color-mix` so the section frame stays dominant; whole agent-card hover state (border lifts to `focusBorder`) with a 0.12s transition to avoid flicker on list refresh.
+
+### Tests
+
+- 55 webview-rendering tests pass (6 new for the review-decision UI).
+
 ## [3.1.3] - 2026-05-29
 
 Daemon stability patch over 3.1.2. Fixes three live bugs in the cross-agent heartbeat daemon and the orchestrator-loop work-discovery dispatcher. The bugs were visible in production: heartbeat entries on the Fleet panel showed garbage like `current_task: ".env"` (whichever file VS Code had open), every detected agent was stamped with the host's `session_id` so peer sessions could not be told apart, and the `inboxes/shared/` directory filled up with `task_claim-next-<agent>` placeholders at ~4/minute. The `autobuild heartbeat-drift-check` workflow that ships alongside this release surfaces these conditions automatically if they recur.
