@@ -792,3 +792,38 @@ th {
 .panel-footer:hover {
   opacity: 1;
 }
+
+/* ── UI-4: Visual cleanup pass ─────────────────────────────────────── */
+/* Normalize vertical rhythm to a 4-6-8px scale. Top-level sections sit
+   on the 8px step; cards nested inside a section body sit on 6px so the
+   nesting reads as a hierarchy rather than a flat stack. */
+.panel-section { margin-bottom: 8px; }
+.section-body .agent-card { margin-bottom: 6px; }
+.section-body .agent-card:last-child { margin-bottom: 0; }
+
+/* Lighten borders on nested cards. A card inside a section body does not
+   need a full-weight border competing with the section's own outline —
+   drop it to 60% opacity so the section frame stays dominant. */
+.section-body .agent-card {
+  border-color: color-mix(in srgb, var(--vscode-panel-border) 60%, transparent);
+}
+/* The divider between an agent-card head and its expanded body is purely
+   internal — make it the lightest line in the hierarchy. */
+.agent-card-body {
+  border-top-color: color-mix(in srgb, var(--vscode-panel-border) 50%, transparent);
+}
+
+/* Subtle whole-card hover. Previously only the clickable head reacted; now
+   the entire card lifts its border on hover so the hit target reads as one
+   unit. Transition keeps it from flickering during list refreshes. */
+.agent-card {
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.agent-card:hover {
+  border-color: var(--vscode-focusBorder);
+}
+/* When a card is open, keep the head visually connected to its body by
+   tinting the head a hair on hover instead of the whole card flashing. */
+.agent-card.open:hover {
+  border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
+}
