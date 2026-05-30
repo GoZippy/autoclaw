@@ -2005,6 +2005,18 @@ const AGENT_DEFINITIONS: Omit<DetectedAgent, 'detected'>[] = [
   { id: 'antigravity', name: 'Antigravity', extensionId: null, rulesFormat: 'antigravity-rules', rulesDir: '.agent/rules', hooksSupported: false },
 ];
 
+/**
+ * `detected: true` means the agent is REGISTERED in this workspace — either
+ * its extension is installed OR its rules directory exists (.cursor, .agent,
+ * etc.) — NOT that it is actually running right now. Distinguish the two:
+ *
+ *   - Cross-agent rules generation: use `detected` so peer-agent inboxes are
+ *     wired up even when an agent isn't loaded at the moment.
+ *   - Heartbeat ticker / presence reporting: ALSO check
+ *     `vscode.extensions.getExtension(id)?.isActive` or `isHost`. The mere
+ *     presence of `.agent/` in the workspace does NOT mean Antigravity is
+ *     running — see writeAgentHeartbeats() for the presence gate.
+ */
 function detectAgents(workspaceRoot: string): DetectedAgent[] {
   const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
   const isKiroHost = /kiro/i.test(vscode.env.appName || '');
@@ -2252,26 +2264,36 @@ async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Pr
   const hostAgentId = detectAutoclawHostAgent(vscode.env.appName ?? '');
 
   for (const agent of detectedAgents) {
-    // Determine agent status from real signals
-    let status: 'active' | 'idle' = 'idle';
+    // PRESENCE GATE — three classes of agent, only two get live heartbeats:
+    //   (a) extension-backed agent whose extension is currently activated
+    //   (b) the host IDE itself (Antigravity in Antigravity IDE, Cursor in
+    //       Cursor, etc.)
+    //   (c) "registered but absent" — workspace has the agent's rules dir
+    //       (.agent, .cursor) but the agent isn't actually loaded. We skip
+    //       writing a heartbeat for (c) so host-side activity (file saves,
+    //       visible editors) doesn't get falsely attributed to an agent
+    //       that isn't running.
+    const isHost = agent.id === hostAgentId;
+    const ext = agent.extensionId ? vscode.extensions.getExtension(agent.extensionId) : undefined;
+    const extActive = !!ext?.isActive;
+    const isRegisteredButAbsent = !isHost && !extActive;
 
-    if (agent.extensionId) {
-      const ext = vscode.extensions.getExtension(agent.extensionId);
-      if (ext?.isActive) {
-        // Extension is loaded and activated
-        status = recentSave || hasVisibleEditors ? 'active' : 'idle';
-      }
-    } else {
-      // Agents without extension IDs (Cursor, Antigravity) — detected by host
-      status = recentSave || hasVisibleEditors ? 'active' : 'idle';
+    if (isRegisteredButAbsent) {
+      // Do not fabricate a heartbeat. Leave the previous file in place so
+      // operators can see when it last legitimately ticked; downstream
+      // consumers should compare timestamp to wall clock + treat stale
+      // heartbeats as "presence unknown."
+      continue;
     }
+
+    // Status now only reflects activity we can ACTUALLY attribute to this
+    // agent: either the host IDE shell or its own active extension.
+    const status: 'active' | 'idle' = (recentSave || hasVisibleEditors) ? 'active' : 'idle';
 
     // Read existing heartbeat so agent-set fields survive the tick.
     // The tick owns timestamp + status; the AGENT owns session_id +
     // current_task + sprint.
     const existingHb = await readHeartbeat(commsDir, agent.id);
-
-    const isHost = agent.id === hostAgentId;
 
     const hb: import('./comms').Heartbeat = {
       agent_id: agent.id,
