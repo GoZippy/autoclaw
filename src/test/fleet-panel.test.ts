@@ -29,6 +29,9 @@ import {
   buildCostLedger,
   buildPresence,
   buildFleetDashboard,
+  mergeFleetHeartbeats,
+  fleetKey,
+  LOCAL_HOST,
   type RawHeartbeat,
   type RawAgentProfile,
   type RawMessage,
@@ -243,6 +246,97 @@ suite('Fleet panel — agent cards', () => {
     const tree = buildAgentTree(cards);
     assert.strictEqual(tree.length, 1);
     assert.strictEqual(tree[0].children.length, 0);
+  });
+});
+
+suite('Fleet panel — cross-machine merge (CF-1)', () => {
+  test('tags local + relay origins and keys distinct hosts separately', () => {
+    const merged = mergeFleetHeartbeats(
+      [{ agent_id: 'claude-code', timestamp: iso(-3) }],
+      [{ agent_id: 'claude-code', timestamp: iso(-4), host: 'workstation-2' }],
+      { localHost: 'laptop-1', now: NOW }
+    );
+    assert.strictEqual(merged.length, 2, 'same agent on two hosts = two rows');
+    const local = merged.find(h => h.host === 'laptop-1')!;
+    const remote = merged.find(h => h.host === 'workstation-2')!;
+    assert.strictEqual(local.origin, 'local');
+    assert.strictEqual(remote.origin, 'relay');
+  });
+
+  test('de-dupes same (agent, host) to the freshest heartbeat', () => {
+    const merged = mergeFleetHeartbeats(
+      [
+        { agent_id: 'a', timestamp: iso(-30) },
+        { agent_id: 'a', timestamp: iso(-2) },
+      ],
+      [],
+      { localHost: 'h', now: NOW }
+    );
+    assert.strictEqual(merged.length, 1);
+    assert.strictEqual(merged[0].timestamp, iso(-2));
+  });
+
+  test('local wins over relay on a same-host timestamp tie', () => {
+    const t = iso(-5);
+    const merged = mergeFleetHeartbeats(
+      [{ agent_id: 'a', timestamp: t }],
+      [{ agent_id: 'a', timestamp: t, host: 'box' }],
+      { localHost: 'box', now: NOW }
+    );
+    assert.strictEqual(merged.length, 1);
+    assert.strictEqual(merged[0].origin, 'local');
+  });
+
+  test('relay rows age out beyond relayStaleMs; local rows never do', () => {
+    const merged = mergeFleetHeartbeats(
+      [{ agent_id: 'local-old', timestamp: iso(-99999) }],
+      [
+        { agent_id: 'fresh', timestamp: iso(-10), host: 'remote' },
+        { agent_id: 'stale', timestamp: iso(-600), host: 'remote' },
+      ],
+      { localHost: 'me', now: NOW, relayStaleMs: 60_000 }
+    );
+    const ids = merged.map(h => h.agent_id).sort();
+    assert.deepStrictEqual(ids, ['fresh', 'local-old'], 'stale relay dropped, local kept');
+  });
+
+  test('relay row with an unparseable timestamp ages out when stale-checking', () => {
+    const merged = mergeFleetHeartbeats(
+      [],
+      [{ agent_id: 'x', timestamp: 'not-a-date', host: 'r' }],
+      { now: NOW, relayStaleMs: 60_000 }
+    );
+    assert.strictEqual(merged.length, 0);
+  });
+
+  test('fleetKey composes agent + host', () => {
+    assert.strictEqual(fleetKey('a', 'h'), 'a::h');
+  });
+
+  test('buildAgentCards marks a relay-fed heartbeat as remote, keeps local default', () => {
+    const cards = buildAgentCards({
+      profiles: [
+        { id: 'local-agent' },
+        { id: 'remote-agent' },
+      ],
+      heartbeats: new Map<string, RawHeartbeat>([
+        ['local-agent', { agent_id: 'local-agent', timestamp: iso(-2) }],
+        ['remote-agent', { agent_id: 'remote-agent', timestamp: iso(-2), origin: 'relay', host: 'box-9' }],
+      ]),
+      health: new Map(),
+      messages: [],
+      sprintAssignments: new Map(),
+      claimedTasks: new Map(),
+    }, NOW);
+
+    const local = cards.find(c => c.agentId === 'local-agent')!;
+    const remote = cards.find(c => c.agentId === 'remote-agent')!;
+    assert.strictEqual(local.origin, 'local');
+    assert.strictEqual(local.isRemote, false);
+    assert.strictEqual(local.host, LOCAL_HOST);
+    assert.strictEqual(remote.origin, 'relay');
+    assert.strictEqual(remote.isRemote, true);
+    assert.strictEqual(remote.host, 'box-9');
   });
 });
 
