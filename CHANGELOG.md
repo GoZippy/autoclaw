@@ -1,5 +1,50 @@
 # Changelog
 
+## [3.1.4] - 2026-05-29
+
+Panel UX completion over 3.1.3. Ships the review-request decision UI (the "validate each other's work" feature) and the final visual-cleanup pass, closing the panel-ux sprint.
+
+### Added
+
+- **Review-request decision UI** (`src/webview-render.ts`, `src/webview/kdream-dashboard.{css,js}`). When a `review_request` lands in your "Awaiting You" list, the row now renders an inline decision surface instead of a free-text reply box:
+  - **Vote buttons** — approve / request_changes / reject, acted on inline.
+  - **Live consensus tally** — approvals/changes/rejects, votes received vs required, the active rule (majority for tasks, unanimous for security findings), your own existing vote if cast, decided state, and any deadline.
+  - **Source-work drill-in** (`ReviewContext`) — resolves the request's `source_task_complete_id` against the shared inbox so you see *what* you are approving: author, task, sprint, summary, branch, and files touched. Falls back gracefully when the source `task_complete` can't be located.
+  - `payloadExcerpt` now describes auto-promoted reviews instead of dumping raw JSON.
+
+### Changed
+
+- **Panel visual cleanup** (`src/webview/kdream-dashboard.css`) — vertical rhythm normalized to a 4-6-8px scale (top-level sections on 8px, nested cards on 6px); nested-card borders lightened to 50-60% opacity via `color-mix` so the section frame stays dominant; whole agent-card hover state (border lifts to `focusBorder`) with a 0.12s transition to avoid flicker on list refresh.
+
+### Tests
+
+- 55 webview-rendering tests pass (6 new for the review-decision UI).
+
+## [3.1.3] - 2026-05-29
+
+Daemon stability patch over 3.1.2. Fixes three live bugs in the cross-agent heartbeat daemon and the orchestrator-loop work-discovery dispatcher. The bugs were visible in production: heartbeat entries on the Fleet panel showed garbage like `current_task: ".env"` (whichever file VS Code had open), every detected agent was stamped with the host's `session_id` so peer sessions could not be told apart, and the `inboxes/shared/` directory filled up with `task_claim-next-<agent>` placeholders at ~4/minute. The `autobuild heartbeat-drift-check` workflow that ships alongside this release surfaces these conditions automatically if they recur.
+
+### Fixed
+
+- **Heartbeat `current_task` no longer overwritten with host UI state** (`src/extension.ts`). The previous daemon stamped `vscode.window.activeTextEditor?.document.fileName` onto every detected agent's `current_task`, overwriting the agent-owned value with whichever file the user had open in the IDE (e.g. `.env`, `.autoclaw/docs/foo.md`, AikidoSecurity output channel paths). `current_task` is now agent-owned: the daemon preserves whatever the agent wrote and only updates `timestamp` and `status` on the heartbeat tick.
+
+- **`session_id` only stamped on the HOST agent's heartbeat** (`src/extension.ts`, `src/comms.ts`). The previous daemon copied the host extension's `sessionId` into every detected agent's heartbeat, so two concurrent sessions of different agents (e.g. claude-code and kilocode) showed the same `session_id` — and the orchestrator could not distinguish them. New pure helper `detectAutoclawHostAgent(appName)` (in `comms.ts`) identifies the host agent from `vscode.env.appName`; peer agents preserve their own `session_id`.
+
+- **`orchestratorLoop.discoverWork` no longer re-broadcasts `next-<agent>` placeholders every tick** (`src/orchestratorLoop.ts`). New `readClaimedAgentIds()` skips agents that already own an active (non-expired) claim under `comms/claims/`; new `readRecentNextDispatches()` skips agents that received a `next-<agent>` placeholder in the last 5 minutes. Result: the placeholder fires at most once per agent per cooldown window instead of once per 30-second tick.
+
+### Added
+
+- **AutoBuild stability workflows** (`.autoclaw/autobuild/workflows/`, `.autoclaw/autobuild/scripts/`) — five scheduled jobs that surface and self-heal recurring drift conditions:
+  - `heartbeat-drift-check` (every 15 min) flags daemon heartbeat bugs by detecting `current_task` values that look like file paths and `session_id` collisions across agents; writes a `finding_report` to `inboxes/shared/` when drift is seen.
+  - `inbox-prune` (every 30 min) moves `task_claim-next-*` placeholders older than 10 min from `inboxes/shared/` to `processed/`. Real `task_claim-<task-id>` messages are not touched.
+  - `state-json-drift` (hourly) compares `.autoclaw/orchestrator/state.json` against the last 24h of git history and surfaces tasks that shipped via commit but still show `pending`/`review` status.
+  - `nightly-publish-dryrun` (daily 3am) dry-runs both Marketplace and OpenVSX publishes so version-skew and missing-publisher bugs surface before the actual release window.
+  - `ux-1-close-check` (one-shot via `/autobuild run`) runs `tsc --noEmit` + the webview-rendering and orchestratorLoop test files as a fast pre-commit gate.
+
+### Tests
+
+- 53 orchestratorLoop tests pass (13 new), covering claim-aware dedup, cooldown-window dedup, and per-host detection for all five recognized IDE variants.
+
 ## [3.1.1] - 2026-05-25
 
 Hot-patch over 3.1.0. The 3.1.0 VSIX inadvertently shipped JSDoc header

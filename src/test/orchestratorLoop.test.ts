@@ -10,6 +10,9 @@ import {
   writeLoopState,
   readPersistedLoopState,
   dispatchWork,
+  discoverWork,
+  readClaimedAgentIds,
+  readRecentNextDispatches,
   buildWorkLoopPrompt,
   runTick,
   getAgentRegistry,
@@ -27,6 +30,7 @@ import {
   type LoopState,
   type WorkPackage,
 } from '../orchestratorLoop';
+import { detectAutoclawHostAgent } from '../comms';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -431,5 +435,119 @@ suite('startOrchestratorLoop lifecycle', () => {
     handle.stop();
     handle.stop(); // should not throw
     assert.strictEqual(handle.isRunning(), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HB-FIX stability: discoverWork dedup
+// ---------------------------------------------------------------------------
+
+function makeHealth(agentIds: string[]): HealthCheckResult {
+  const entries = agentIds.map(id => ({
+    agentId: id,
+    vendor: id as any,
+    state: 'alive' as const,
+    lastHeartbeatAt: new Date().toISOString(),
+    missedTicks: 0,
+    hasUnreadMessages: false,
+    unreadCount: 0,
+    currentSprint: null,
+    currentTask: null,
+  }));
+  return { entries, stalledIds: [], deadIds: [], healthyCount: entries.length, idleCount: entries.length };
+}
+
+suite('HB-FIX: discoverWork dedup', () => {
+  test('readClaimedAgentIds returns empty when no claims dir', async () => {
+    const root = makeTmp('dedup-empty');
+    const out = await readClaimedAgentIds(root);
+    assert.strictEqual(out.size, 0);
+  });
+
+  test('readClaimedAgentIds returns agents with active claims', async () => {
+    const root = makeTmp('dedup-active');
+    const claimsDir = path.join(root, '.autoclaw', 'orchestrator', 'comms', 'claims');
+    fs.mkdirSync(claimsDir, { recursive: true });
+    fs.writeFileSync(path.join(claimsDir, 'HB-FIX.json'), JSON.stringify({
+      task_ids: ['HB-FIX'], claimed_by: 'claude-code',
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    }), 'utf8');
+    const out = await readClaimedAgentIds(root);
+    assert.ok(out.has('claude-code'));
+    assert.strictEqual(out.size, 1);
+  });
+
+  test('readClaimedAgentIds skips expired claims', async () => {
+    const root = makeTmp('dedup-expired');
+    const claimsDir = path.join(root, '.autoclaw', 'orchestrator', 'comms', 'claims');
+    fs.mkdirSync(claimsDir, { recursive: true });
+    fs.writeFileSync(path.join(claimsDir, 'STALE.json'), JSON.stringify({
+      claimed_by: 'kilocode',
+      expires_at: new Date(Date.now() - 60_000).toISOString(),
+    }), 'utf8');
+    const out = await readClaimedAgentIds(root);
+    assert.strictEqual(out.size, 0);
+  });
+
+  test('readRecentNextDispatches finds next-<agent> within window', async () => {
+    const root = makeTmp('dedup-recent');
+    const shared = path.join(root, '.autoclaw', 'orchestrator', 'comms', 'inboxes', 'shared');
+    fs.writeFileSync(
+      path.join(shared, '2026-05-29T05-59-59-057Z-task_claim-next-claude-code.json'),
+      JSON.stringify({ type: 'task_claim' }),
+      'utf8'
+    );
+    const out = await readRecentNextDispatches(root, 60 * 60 * 1000);
+    assert.ok(out.has('claude-code'));
+  });
+
+  test('discoverWork dispatches to truly idle agents', async () => {
+    const root = makeTmp('discover-fresh');
+    const work = await discoverWork(root, makeHealth(['claude-code']));
+    assert.strictEqual(work.length, 1);
+    assert.strictEqual(work[0].item.taskId, 'next-claude-code');
+  });
+
+  test('discoverWork skips agent with active claim', async () => {
+    const root = makeTmp('discover-claimed');
+    const claimsDir = path.join(root, '.autoclaw', 'orchestrator', 'comms', 'claims');
+    fs.mkdirSync(claimsDir, { recursive: true });
+    fs.writeFileSync(path.join(claimsDir, 'X.json'), JSON.stringify({
+      claimed_by: 'claude-code',
+      expires_at: new Date(Date.now() + 60_000).toISOString(),
+    }), 'utf8');
+    const work = await discoverWork(root, makeHealth(['claude-code', 'kilocode']));
+    const ids = work.map(w => w.item.assignToVendor);
+    assert.ok(!ids.includes('claude-code'), 'claimed agent must not be re-dispatched');
+    assert.ok(ids.includes('kilocode'), 'unclaimed agent still gets work');
+  });
+
+  test('discoverWork skips agent in cooldown window', async () => {
+    const root = makeTmp('discover-cooldown');
+    const shared = path.join(root, '.autoclaw', 'orchestrator', 'comms', 'inboxes', 'shared');
+    fs.writeFileSync(
+      path.join(shared, '2026-05-29T05-59-59-057Z-task_claim-next-claude-code.json'),
+      JSON.stringify({ type: 'task_claim' }),
+      'utf8'
+    );
+    const work = await discoverWork(root, makeHealth(['claude-code']));
+    assert.strictEqual(work.length, 0, 'agent in cooldown must not be re-spammed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HB-FIX stability: detectAutoclawHostAgent (session_id ownership)
+// ---------------------------------------------------------------------------
+
+suite('HB-FIX: detectAutoclawHostAgent', () => {
+  test('Antigravity host', () => assert.strictEqual(detectAutoclawHostAgent('Antigravity'), 'antigravity'));
+  test('Kiro host',        () => assert.strictEqual(detectAutoclawHostAgent('Kiro'), 'kiro'));
+  test('Cursor host',      () => assert.strictEqual(detectAutoclawHostAgent('Cursor'), 'cursor'));
+  test('Windsurf host',    () => assert.strictEqual(detectAutoclawHostAgent('Windsurf'), 'windsurf'));
+  test('Stock VS Code falls back to claude-code', () => {
+    assert.strictEqual(detectAutoclawHostAgent('Visual Studio Code'), 'claude-code');
+  });
+  test('Empty appName falls back to claude-code', () => {
+    assert.strictEqual(detectAutoclawHostAgent(''), 'claude-code');
   });
 });

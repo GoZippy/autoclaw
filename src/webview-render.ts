@@ -29,11 +29,53 @@ export interface InboxSummary {
   archived: number;
 }
 
+/** Resolved context for a `review_request` — the work actually under review.
+ *  Built by resolving the request's `source_task_complete_id` against the
+ *  shared inbox. Lets the reviewer see *what* they are approving. */
+export interface ReviewContext {
+  /** False when the source `task_complete` could not be located. */
+  found: boolean;
+  /** id of the source `task_complete` message. */
+  sourceId?: string;
+  author?: string;
+  taskId?: string;
+  sprint?: number;
+  /** Human-readable summary of the completed work. */
+  summary?: string;
+  /** Branch the work landed on (`task_complete` `payload.branch`). */
+  branch?: string;
+  /** Files the author listed as touched, if any. */
+  files?: string[];
+}
+
+/** Live consensus state for a `review_request`, powering the decision UI. */
+export interface ConsensusTally {
+  approvals: number;
+  requestChanges: number;
+  rejects: number;
+  /** Distinct voters seen so far. */
+  votesReceived: number;
+  /** Votes needed to resolve under `rule`. */
+  votesRequired: number;
+  rule: 'majority' | 'unanimous';
+  reviewers: string[];
+  /** This reviewer's existing vote, if they already voted. */
+  myVote?: 'approve' | 'request_changes' | 'reject' | null;
+  /** True when the gate has already resolved. */
+  decided?: boolean;
+  /** ISO deadline from the request, if set. */
+  deadlineIso?: string;
+}
+
 /** Message + the agent perspective the webview is showing. */
 export interface AwaitingYouRow {
   message: Message;
   /** Excerpt of payload (up to ~140 chars). */
   excerpt: string;
+  /** Resolved source-work context (review_request only). */
+  context?: ReviewContext;
+  /** Live consensus tally (review_request only). */
+  tally?: ConsensusTally;
 }
 
 /** Health snapshot for the panel header badges. */
@@ -279,6 +321,13 @@ export function payloadExcerpt(payload: Record<string, unknown> | undefined, max
       return v.length > max ? v.slice(0, max) + '…' : v;
     }
   }
+  // Auto-promoted review_requests carry no human text — they point at the
+  // work via `source_task_complete_id`. Describe them instead of dumping JSON.
+  if (typeof (payload as Record<string, unknown>).source_task_complete_id === 'string') {
+    const author = typeof (payload as Record<string, unknown>).author === 'string'
+      ? ` by ${(payload as Record<string, unknown>).author}` : '';
+    return `Peer review requested${author} — expand to see the completed work.`;
+  }
   try {
     const s = JSON.stringify(payload);
     return s.length > max ? s.slice(0, max) + '…' : s;
@@ -300,6 +349,88 @@ export function filterAwaitingYou(
   );
 }
 
+/** Render one Approve / Request changes / Reject button. */
+function voteButton(
+  vote: 'approve' | 'request_changes' | 'reject',
+  label: string,
+  taskId: string,
+  m: Message,
+  myVote: string | null,
+): string {
+  const isCast = myVote === vote;
+  return '<button class="vote-btn vote-' + vote + (isCast ? ' cast' : '') + '" type="button"'
+    + ' data-task-id="' + esc(taskId) + '"'
+    + ' data-message-id="' + esc(m.id) + '"'
+    + ' data-from="' + esc(m.from) + '"'
+    + ' data-vote="' + vote + '"'
+    + (isCast ? ' aria-pressed="true"' : '')
+    + '>' + esc(label) + (isCast ? ' ✓' : '') + '</button>';
+}
+
+/** Render the consensus tally line — counts, threshold, and a plain-English
+ *  hint that tells the reviewer whether their decision is still needed. */
+function renderTally(t: ConsensusTally): string {
+  const need = t.rule === 'unanimous' ? 'unanimous' : 'majority';
+  let cls = 'awaiting-tally';
+  let hint: string;
+  if (t.decided) {
+    hint = 'Decision reached — your vote is optional.';
+  } else if (t.myVote) {
+    hint = 'You voted ' + t.myVote.replace('_', ' ') + ' — you can change it below.';
+  } else {
+    cls += ' needs-you';
+    hint = 'Your decision is needed.';
+  }
+  let h = '<div class="' + cls + '">';
+  h += '<span class="tally-counts">';
+  h += '<span class="t-approve" title="approvals">✓ ' + t.approvals + '</span> ';
+  h += '<span class="t-changes" title="change requests">✎ ' + t.requestChanges + '</span> ';
+  h += '<span class="t-reject" title="rejections">✗ ' + t.rejects + '</span>';
+  h += '</span>';
+  h += '<span class="tally-rule">' + t.votesReceived + '/' + t.votesRequired + ' votes · ' + need + '</span>';
+  h += '<span class="tally-hint">' + esc(hint) + '</span>';
+  if (typeof t.deadlineIso === 'string' && t.deadlineIso.length >= 16) {
+    h += '<span class="tally-deadline">due ' + esc(t.deadlineIso.slice(0, 16).replace('T', ' ')) + '</span>';
+  }
+  h += '</div>';
+  return h;
+}
+
+/** One key/value line in the review detail grid. */
+function detailKV(label: string, value: string): string {
+  return '<div class="detail-kv"><span class="detail-label">' + esc(label)
+    + '</span><span class="detail-val">' + esc(value) + '</span></div>';
+}
+
+/** Render the collapsed drill-down panel showing the work under review. */
+function renderReviewDetail(ctx?: ReviewContext): string {
+  let h = '<div class="awaiting-detail" hidden>';
+  if (!ctx || !ctx.found) {
+    h += '<p class="detail-missing">The original completion report wasn\'t found in the '
+      + 'shared inbox — it may have been archived. Decide from the task history, or ask '
+      + 'the author for a recap before voting.</p>';
+    if (ctx?.sourceId) { h += '<p class="detail-src">source: ' + esc(ctx.sourceId) + '</p>'; }
+    return h + '</div>';
+  }
+  h += '<div class="detail-grid">';
+  if (ctx.author) { h += detailKV('Author', ctx.author); }
+  if (typeof ctx.sprint === 'number') { h += detailKV('Sprint', String(ctx.sprint)); }
+  if (ctx.branch) { h += detailKV('Branch', ctx.branch); }
+  h += '</div>';
+  if (ctx.summary) { h += '<div class="detail-summary">' + esc(ctx.summary) + '</div>'; }
+  if (ctx.files && ctx.files.length > 0) {
+    h += '<div class="detail-files"><span class="detail-label">Files changed</span><ul>';
+    for (const f of ctx.files.slice(0, 20)) {
+      h += '<li><button class="file-link" type="button" data-file="' + esc(f) + '">' + esc(f) + '</button></li>';
+    }
+    if (ctx.files.length > 20) { h += '<li class="more">+' + (ctx.files.length - 20) + ' more</li>'; }
+    h += '</ul></div>';
+  }
+  h += '<p class="detail-decide">You\'re deciding whether this work is approved. '
+    + 'Approve it, request changes, or reject below.</p>';
+  return h + '</div>';
+}
+
 /** Render the Awaiting You section body. */
 export function renderAwaitingYou(rows: readonly AwaitingYouRow[]): string {
   if (rows.length === 0) {
@@ -308,17 +439,41 @@ export function renderAwaitingYou(rows: readonly AwaitingYouRow[]): string {
   let h = '<div class="awaiting-list" aria-live="polite">';
   for (const r of rows) {
     const m = r.message;
+    const isReview = m.type === 'review_request';
+    const taskId = r.context?.taskId || m.task_id || '';
     h += '<div class="awaiting-row" data-message-id="' + esc(m.id) + '">';
-    h += '<div class="awaiting-meta">';
+
+    // Header — clickable to expand the drill-down detail panel.
+    h += '<div class="awaiting-head awaiting-meta" data-action="toggle-detail" role="button" tabindex="0" aria-expanded="false">';
+    h += '<span class="awaiting-caret" aria-hidden="true">▸</span>';
     h += '<span class="awaiting-from">' + esc(m.from) + '</span>';
     h += '<span class="awaiting-type">' + esc(m.type) + '</span>';
     if (typeof m.sprint === 'number') { h += '<span class="awaiting-sprint">sprint ' + esc(m.sprint) + '</span>'; }
-    if (m.task_id) { h += '<span class="awaiting-task">' + esc(m.task_id) + '</span>'; }
+    if (taskId) { h += '<span class="awaiting-task">' + esc(taskId) + '</span>'; }
     h += '</div>';
-    h += '<div class="awaiting-body">' + esc(r.excerpt) + '</div>';
+
+    // One-line summary, always visible.
+    h += '<div class="awaiting-body awaiting-preview">' + esc(r.excerpt) + '</div>';
+
+    // Consensus tally + drill-down (review_request only).
+    if (isReview && r.tally) { h += renderTally(r.tally); }
+    if (isReview) { h += renderReviewDetail(r.context); }
+
+    // Actions: a real decision for reviews, free-text reply otherwise.
     h += '<div class="awaiting-actions">';
-    h += '<button class="reply-btn" type="button" data-message-id="' + esc(m.id) + '" data-from="' + esc(m.from) + '" data-type="' + esc(m.type) + '">Reply</button>';
+    if (isReview && taskId) {
+      const my = r.tally?.myVote ?? null;
+      h += '<input class="vote-comment" type="text" placeholder="Optional note for the author…" aria-label="Review comment" />';
+      h += '<div class="vote-btns">';
+      h += voteButton('approve', 'Approve', taskId, m, my);
+      h += voteButton('request_changes', 'Request changes', taskId, m, my);
+      h += voteButton('reject', 'Reject', taskId, m, my);
+      h += '</div>';
+    } else {
+      h += '<button class="reply-btn" type="button" data-message-id="' + esc(m.id) + '" data-from="' + esc(m.from) + '" data-type="' + esc(m.type) + '">Reply</button>';
+    }
     h += '</div>';
+
     h += '</div>';
   }
   return h + '</div>';

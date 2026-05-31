@@ -67,7 +67,7 @@ import { registerChatParticipant } from './chatparticipant';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
-  markMessageReplied,
+  markMessageReplied, detectAutoclawHostAgent,
   type CommsLogEntry, type Message,
 } from './comms';
 import {
@@ -251,6 +251,41 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.installAdapters', async () => {
       await installAdapters(adaptersDir, context.extensionPath);
+    })
+  );
+
+  // LLM provider install — wires ZippyMesh + Ollama into the workspace.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.llm.install', async () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        vscode.window.showWarningMessage('Open a workspace folder before running LLM install.');
+        return;
+      }
+      const choice = await vscode.window.showQuickPick(
+        [
+          { label: 'ZippyMesh + Ollama (Recommended)', zippymesh: true, ollama: true },
+          { label: 'ZippyMesh only', zippymesh: true, ollama: false },
+          { label: 'Ollama only', zippymesh: false, ollama: true },
+        ],
+        { placeHolder: 'Which providers should I install?' },
+      );
+      if (!choice) return;
+      const { installLlm, formatLlmInstallReport } = await import('./llm');
+      const report = await installLlm({
+        workspaceRoot,
+        zippymesh: choice.zippymesh,
+        ollama: choice.ollama,
+      });
+      const text = formatLlmInstallReport(report);
+      const channel = vscode.window.createOutputChannel('AutoClaw — LLM Install');
+      channel.appendLine(text);
+      channel.show(true);
+      if (report.ok) {
+        vscode.window.showInformationMessage('LLM install completed. See output channel.');
+      } else {
+        vscode.window.showErrorMessage('LLM install completed with errors. See output channel.');
+      }
     })
   );
 
@@ -2211,11 +2246,10 @@ async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Pr
   // Check if there are visible text editors (someone is working)
   const hasVisibleEditors = vscode.window.visibleTextEditors.length > 0;
 
-  // Check active editor for a hint about what's being worked on
-  const activeFile = vscode.window.activeTextEditor?.document.fileName;
-  const currentTask = activeFile
-    ? path.relative(workspaceRoot, activeFile).replace(/\\/g, '/')
-    : null;
+  // The HOST agent — only one agent legitimately gets stamped with the host's
+  // sessionId. Peer agents own their own session_id and the daemon must not
+  // overwrite it. Fixes session_id collision across all detected agents.
+  const hostAgentId = detectAutoclawHostAgent(vscode.env.appName ?? '');
 
   for (const agent of detectedAgents) {
     // Determine agent status from real signals
@@ -2232,20 +2266,27 @@ async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Pr
       status = recentSave || hasVisibleEditors ? 'active' : 'idle';
     }
 
-    // Read existing heartbeat so agent-set fields (sprint, current_task) survive the tick.
-    // The tick owns timestamp/status; agents own sprint/current_task.
+    // Read existing heartbeat so agent-set fields survive the tick.
+    // The tick owns timestamp + status; the AGENT owns session_id +
+    // current_task + sprint.
     const existingHb = await readHeartbeat(commsDir, agent.id);
+
+    const isHost = agent.id === hostAgentId;
 
     const hb: import('./comms').Heartbeat = {
       agent_id: agent.id,
       timestamp: now,
       status,
-      // Use VS Code's active file only when it has a value; otherwise keep what the agent set.
-      current_task: (status === 'active' && currentTask) ? currentTask : (existingHb?.current_task ?? null),
-      // Preserve agent-set sprint unless the plan-summary provides a better value below.
+      // current_task is OWNED BY THE AGENT. vscode.window.activeTextEditor is
+      // HOST UI state (which file the user has open), not agent task state.
+      // Stamping it overwrites real claims (e.g. UI-4) with junk like ".env"
+      // or AikidoSecurity output channel paths. Preserve the agent's value.
+      current_task: existingHb?.current_task ?? null,
       sprint: existingHb?.sprint ?? null,
-      // Stamp the per-activation session id so per-session heartbeat rows are renderable.
-      session_id: sessionId,
+      // session_id is OWNED BY THE AGENT. claude-code's session_id is NOT
+      // kilocode's session_id. Only stamp the host's sessionId on the host's
+      // own heartbeat; for peer agents preserve whatever they wrote.
+      session_id: isHost ? sessionId : existingHb?.session_id,
     };
 
     // Try to read sprint assignment from plan-summary — overrides agent-set value when found.

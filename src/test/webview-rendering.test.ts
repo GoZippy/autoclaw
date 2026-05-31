@@ -252,19 +252,93 @@ suite('webview-render — Awaiting You filter', () => {
     assert.match(html, /class="empty"/);
   });
 
-  test('renderAwaitingYou row carries Reply button data attributes', () => {
+  test('review_request rows render vote buttons (not a free-text reply)', () => {
     const rows: AwaitingYouRow[] = [{
       message: makeMessage({ task_id: 'T-9', sprint: 4 }),
       excerpt: 'Please review',
     }];
     const html = renderAwaitingYou(rows);
     assert.match(html, /class="awaiting-row"/);
-    assert.match(html, /class="reply-btn"/);
+    // Decision buttons, one per vote, carrying the task + message ids.
+    assert.match(html, /data-vote="approve"/);
+    assert.match(html, /data-vote="request_changes"/);
+    assert.match(html, /data-vote="reject"/);
+    assert.match(html, /data-task-id="T-9"/);
     assert.match(html, /data-message-id="msg-1"/);
-    assert.match(html, /data-from="kiro"/);
-    assert.match(html, /data-type="review_request"/);
+    assert.match(html, /class="vote-comment"/);
     assert.match(html, /sprint 4/);
-    assert.match(html, /T-9/);
+    // A review is a decision, not a reply — no free-text reply button here.
+    assert.doesNotMatch(html, /class="reply-btn"/);
+  });
+
+  test('non-review items (question) keep the free-text Reply button', () => {
+    const rows: AwaitingYouRow[] = [{
+      message: makeMessage({ id: 'q-1', type: 'question', payload: { question: 'Which DB?' } }),
+      excerpt: 'Which DB?',
+    }];
+    const html = renderAwaitingYou(rows);
+    assert.match(html, /class="reply-btn"/);
+    assert.match(html, /data-type="question"/);
+    assert.doesNotMatch(html, /data-vote="approve"/);
+  });
+
+  test('renderAwaitingYou renders the consensus tally and "needs you" hint', () => {
+    const rows: AwaitingYouRow[] = [{
+      message: makeMessage({ task_id: 'T-9' }),
+      excerpt: 'Please review',
+      tally: {
+        approvals: 1, requestChanges: 0, rejects: 0,
+        votesReceived: 1, votesRequired: 2, rule: 'majority',
+        reviewers: ['kilocode', 'claude-code'], myVote: null, decided: false,
+      },
+    }];
+    const html = renderAwaitingYou(rows);
+    assert.match(html, /awaiting-tally needs-you/);
+    assert.match(html, /1\/2 votes · majority/);
+    assert.match(html, /Your decision is needed/);
+  });
+
+  test('renderAwaitingYou marks the reviewer\'s existing vote as cast', () => {
+    const rows: AwaitingYouRow[] = [{
+      message: makeMessage({ task_id: 'T-9' }),
+      excerpt: 'Please review',
+      tally: {
+        approvals: 1, requestChanges: 0, rejects: 0,
+        votesReceived: 1, votesRequired: 2, rule: 'majority',
+        reviewers: ['claude-code'], myVote: 'approve', decided: false,
+      },
+    }];
+    const html = renderAwaitingYou(rows);
+    assert.match(html, /vote-approve cast/);
+    assert.match(html, /aria-pressed="true"/);
+  });
+
+  test('renderAwaitingYou drills into resolved source context', () => {
+    const rows: AwaitingYouRow[] = [{
+      message: makeMessage({ task_id: 'T-9' }),
+      excerpt: 'Added retry logic',
+      context: {
+        found: true, author: 'kilocode', sprint: 2, branch: 'feat/x',
+        summary: 'Added retry logic', files: ['src/a.ts', 'src/b.ts'],
+        sourceId: 'msg-src-1',
+      },
+    }];
+    const html = renderAwaitingYou(rows);
+    assert.match(html, /class="awaiting-detail" hidden/);
+    assert.match(html, /feat\/x/);
+    assert.match(html, /data-file="src\/a.ts"/);
+    assert.match(html, /You're deciding whether this work is approved/);
+  });
+
+  test('renderAwaitingYou shows a graceful message when source work is missing', () => {
+    const rows: AwaitingYouRow[] = [{
+      message: makeMessage({ task_id: 'T-9' }),
+      excerpt: 'Peer review requested',
+      context: { found: false, sourceId: 'msg-gone', author: 'kilocode' },
+    }];
+    const html = renderAwaitingYou(rows);
+    assert.match(html, /detail-missing/);
+    assert.match(html, /msg-gone/);
   });
 
   test('payloadExcerpt prefers human fields and truncates long bodies', () => {
@@ -276,6 +350,17 @@ suite('webview-render — Awaiting You filter', () => {
     const out = payloadExcerpt({ message: long });
     assert.ok(out.length <= 141);
     assert.ok(out.endsWith('…'));
+  });
+
+  test('payloadExcerpt describes auto-promoted reviews instead of dumping JSON', () => {
+    const out = payloadExcerpt({
+      author: 'kilocode',
+      source_task_complete_id: 'msg-2026-05-03T05-30-00-task-complete',
+      reason: 'auto_promoted',
+      review_policy: 'peer',
+    });
+    assert.match(out, /Peer review requested by kilocode/);
+    assert.doesNotMatch(out, /source_task_complete_id/);
   });
 
   test('payloadExcerpt JSON-stringifies unknown payload shape', () => {

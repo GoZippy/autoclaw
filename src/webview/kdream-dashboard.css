@@ -395,7 +395,7 @@ th {
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
-.awaiting-actions { display: flex; gap: 4px; justify-content: flex-end; }
+.awaiting-actions { display: flex; flex-direction: column; gap: 5px; }
 .reply-btn {
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
@@ -404,8 +404,102 @@ th {
   border-radius: 2px;
   font-size: 0.8em;
   cursor: pointer;
+  align-self: flex-end;
 }
 .reply-btn:hover { background: var(--vscode-button-hoverBackground); }
+
+/* Clickable header / drill-down caret */
+.awaiting-head { cursor: pointer; user-select: none; }
+.awaiting-head:hover { color: var(--vscode-textLink-activeForeground); }
+.awaiting-head:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+.awaiting-caret { color: var(--vscode-descriptionForeground); width: 0.9em; flex-shrink: 0; }
+
+/* Consensus tally line */
+.awaiting-tally {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75em;
+  margin: 2px 0 5px 0;
+  padding: 3px 6px;
+  border-radius: 3px;
+  background: var(--vscode-editor-background);
+}
+.awaiting-tally.needs-you {
+  background: var(--vscode-inputValidation-warningBackground, rgba(255, 152, 0, 0.12));
+  border: 1px solid var(--vscode-charts-orange);
+}
+.tally-counts { font-family: var(--vscode-editor-font-family); font-weight: 700; }
+.t-approve { color: var(--vscode-charts-green); }
+.t-changes { color: var(--vscode-charts-yellow); }
+.t-reject { color: var(--vscode-charts-red); }
+.tally-rule { color: var(--vscode-descriptionForeground); }
+.tally-hint { font-style: italic; }
+.awaiting-tally.needs-you .tally-hint { font-style: normal; font-weight: 600; color: var(--vscode-charts-orange); }
+.tally-deadline { margin-left: auto; color: var(--vscode-descriptionForeground); font-family: var(--vscode-editor-font-family); }
+
+/* Drill-down detail panel */
+.awaiting-detail {
+  margin: 2px 0 6px 0;
+  padding: 6px 8px;
+  border-radius: 3px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  font-size: 0.8em;
+}
+.awaiting-detail[hidden] { display: none; }
+.detail-grid { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-bottom: 4px; }
+.detail-kv { display: flex; gap: 5px; }
+.detail-kv .detail-label { min-width: 0; }
+.detail-val { font-family: var(--vscode-editor-font-family); }
+.detail-summary { margin: 4px 0; white-space: pre-wrap; word-wrap: break-word; }
+.detail-files { margin: 4px 0; }
+.detail-files ul { margin: 2px 0 0 0; padding-left: 0; list-style: none; }
+.detail-files li { padding: 1px 0; }
+.detail-files li.more { color: var(--vscode-descriptionForeground); font-style: italic; }
+.file-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--vscode-textLink-foreground);
+  font-family: var(--vscode-editor-font-family);
+  font-size: 1em;
+  cursor: pointer;
+  text-align: left;
+}
+.file-link:hover { text-decoration: underline; }
+.detail-decide { margin: 4px 0 0 0; color: var(--vscode-descriptionForeground); }
+.detail-missing { margin: 0; color: var(--vscode-descriptionForeground); }
+.detail-src { margin: 4px 0 0 0; font-family: var(--vscode-editor-font-family); font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+
+/* Vote (decision) controls */
+.vote-comment {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  font-size: 0.8em;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 2px;
+}
+.vote-btns { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+.vote-btn {
+  flex: 1 1 auto;
+  min-width: 72px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-button-secondaryBackground, var(--vscode-editor-inactiveSelectionBackground));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  padding: 3px 8px;
+  border-radius: 2px;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+.vote-btn:hover { background: var(--vscode-button-hoverBackground); color: var(--vscode-button-foreground); }
+.vote-approve.cast { background: var(--vscode-charts-green); color: var(--vscode-editor-background); border-color: transparent; }
+.vote-request_changes.cast { background: var(--vscode-charts-yellow); color: var(--vscode-editor-foreground); border-color: transparent; }
+.vote-reject.cast { background: var(--vscode-charts-red); color: var(--vscode-editor-background); border-color: transparent; }
 
 /* ── Health badges (panel header) ──────────────────────────────────── */
 .fabric-health-bar {
@@ -697,4 +791,39 @@ th {
 
 .panel-footer:hover {
   opacity: 1;
+}
+
+/* ── UI-4: Visual cleanup pass ─────────────────────────────────────── */
+/* Normalize vertical rhythm to a 4-6-8px scale. Top-level sections sit
+   on the 8px step; cards nested inside a section body sit on 6px so the
+   nesting reads as a hierarchy rather than a flat stack. */
+.panel-section { margin-bottom: 8px; }
+.section-body .agent-card { margin-bottom: 6px; }
+.section-body .agent-card:last-child { margin-bottom: 0; }
+
+/* Lighten borders on nested cards. A card inside a section body does not
+   need a full-weight border competing with the section's own outline —
+   drop it to 60% opacity so the section frame stays dominant. */
+.section-body .agent-card {
+  border-color: color-mix(in srgb, var(--vscode-panel-border) 60%, transparent);
+}
+/* The divider between an agent-card head and its expanded body is purely
+   internal — make it the lightest line in the hierarchy. */
+.agent-card-body {
+  border-top-color: color-mix(in srgb, var(--vscode-panel-border) 50%, transparent);
+}
+
+/* Subtle whole-card hover. Previously only the clickable head reacted; now
+   the entire card lifts its border on hover so the hit target reads as one
+   unit. Transition keeps it from flickering during list refreshes. */
+.agent-card {
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+.agent-card:hover {
+  border-color: var(--vscode-focusBorder);
+}
+/* When a card is open, keep the head visually connected to its body by
+   tinting the head a hair on hover instead of the whole card flashing. */
+.agent-card.open:hover {
+  border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
 }

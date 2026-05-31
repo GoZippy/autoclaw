@@ -82,3 +82,15 @@ export {
   type FailsafeInstallResult,
   type FailsafeInstallOptions,
 } from './failsafe-install';
+
+export {
+  installLlm,
+  formatLlmInstallReport,
+  parseConfig,
+  serializeConfig,
+  type LlmInstallStep,
+  type LlmInstallStepKind,
+  type LlmInstallOutcome,
+  type LlmInstallReport,
+  type LlmInstallOptions,
+} from './install';
