@@ -118,6 +118,7 @@ import {
 import { stopSvidRefresh } from './svid';
 import { getFleetMetrics, recordTaskDuration, resetMetrics } from './metrics';
 export { recordTaskDuration }; // allow reconcile and other callers to import directly
+import { writeConsensusVote } from './orchestrator/voteWriter';
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -430,6 +431,25 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.kg.healthCheck', async () => {
       await kgHealthCheckCommand();
+    })
+  );
+  // RV-3: the panel's KG fabric-health chip dispatches to these three commands
+  // (startKgDaemon / restartKgDaemon / openKgDashboard). Before v3.2 they were
+  // referenced but never registered, so the chip click fell through to a docs
+  // prompt. Register them so the chip actually controls the daemon.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.start', async () => {
+      await kgStartCommand(context.extensionPath);
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.restart', async () => {
+      await kgRestartCommand(context.extensionPath);
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.openDashboard', async () => {
+      await kgOpenDashboardCommand();
     })
   );
 
@@ -1474,6 +1494,21 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             from: message.from,
             type: message.type,
           });
+          break;
+        }
+        case 'castVote': {
+          // RV-1: the review-decision Approve / Request changes / Reject
+          // buttons. Writes this host's own consensus vote file end-to-end.
+          await handleCastVote(webviewView, {
+            taskId: message.taskId,
+            vote: message.vote,
+            comment: message.comment,
+          });
+          break;
+        }
+        case 'openAwaitingFile': {
+          // RV-2: drill-in source links in the review-decision panel.
+          await handleOpenAwaitingFile(message.file);
           break;
         }
         case 'persistFilterState': {
@@ -2972,6 +3007,64 @@ async function kgHealthCheckCommand(): Promise<void> {
   }
 }
 
+/**
+ * RV-3: explicit `autoclaw.kg.start` — spawn the kg-daemon on demand. Unlike
+ * maybeStartKgDaemon (auto-start, gated on `autoclaw.kg.enabled`), an explicit
+ * user/panel action starts the daemon regardless of the enabled flag. A
+ * no-op + toast if it is already running.
+ */
+async function kgStartCommand(extensionPath: string): Promise<void> {
+  if (activeKg?.child && activeKg.child.exitCode === null) {
+    vscode.window.showInformationMessage(`AutoClaw KG: daemon already running on port ${activeKg.port}.`);
+    return;
+  }
+  const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
+  const userKgPort = cfg.get<number>('port', 0);
+  const dbPath = cfg.get<string>('dbPath', '');
+  const channel = getKgOutputChannel();
+
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+  const idePorts = getIdePorts(currentIde, workspaceRoot || undefined);
+  const kgPort = userKgPort > 0 ? userKgPort : idePorts.kgPort;
+
+  const result = await startKgDaemon({ extensionPath, port: kgPort, dbPath, logger: channel });
+  if (result.ok) {
+    activeKg = result.state;
+    vscode.window.showInformationMessage(`AutoClaw KG: daemon started on port ${result.state.port}.`);
+  } else {
+    channel.appendLine(`[kg] ${result.message}`);
+    vscode.window.showWarningMessage(
+      `AutoClaw KG: could not start daemon — ${result.message}`,
+      'Open KG Output'
+    ).then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+  }
+}
+
+/**
+ * RV-3: explicit `autoclaw.kg.restart` — stop the running daemon (if any),
+ * then start a fresh one.
+ */
+async function kgRestartCommand(extensionPath: string): Promise<void> {
+  const channel = getKgOutputChannel();
+  if (activeKg?.child && activeKg.child.exitCode === null) {
+    channel.appendLine('[kg] restart → stopping current daemon');
+    try { await stopKgDaemon(activeKg); } catch (e) { channel.appendLine(`[kg] stop warning: ${(e as Error).message}`); }
+    activeKg = null;
+  }
+  await kgStartCommand(extensionPath);
+}
+
+/**
+ * RV-3: explicit `autoclaw.kg.openDashboard` — focus the AutoClaw panel where
+ * the KG (kg:) fabric-health badge lives, then surface a live health line so
+ * the user can see daemon status. There is no separate KG webview; the unified
+ * dashboard is the surface.
+ */
+async function kgOpenDashboardCommand(): Promise<void> {
+  try { await vscode.commands.executeCommand('kdreamDashboard.focus'); } catch { /* panel may be unavailable in headless */ }
+  await kgHealthCheckCommand();
+}
+
 async function bridgeAddAgentCommand(): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) { vscode.window.showErrorMessage('Open a workspace first.'); return; }
@@ -3317,6 +3410,73 @@ async function handleReplyAwaiting(
     await refreshOrchestratorData(view);
   } catch (e) {
     vscode.window.showWarningMessage(`Reply failed: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * RV-1: handle a `castVote` message from the review-decision UI. Writes this
+ * host agent's own consensus vote file (`<task>-<agent>.json`) under
+ * comms/consensus/active/ via the vscode-free voteWriter, then refreshes the
+ * panel so the consensus tally reflects the new vote immediately.
+ */
+async function handleCastVote(
+  view: vscode.WebviewView,
+  args: { taskId?: string; vote?: string; comment?: string }
+): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { return; }
+  const me = activeHostAgentId();
+  if (!me) { return; }
+  if (!args.taskId || !args.vote) {
+    vscode.window.showWarningMessage('Vote ignored: missing task id or vote value.');
+    return;
+  }
+
+  const consensusActiveDir = path.join(
+    wr, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active'
+  );
+  const result = await writeConsensusVote({
+    consensusActiveDir,
+    taskId: args.taskId,
+    voter: me,
+    sessionId,
+    vote: args.vote,
+    comment: args.comment ?? '',
+  });
+
+  if (result.ok) {
+    const label = args.vote.replace('_', ' ');
+    vscode.window.showInformationMessage(`Vote recorded: ${label} on ${args.taskId}.`);
+    await refreshOrchestratorData(view);
+  } else {
+    vscode.window.showWarningMessage(`Vote failed: ${result.error}`);
+  }
+}
+
+/**
+ * RV-2: handle an `openAwaitingFile` message from a review-decision drill-in
+ * link. Opens the referenced file in the editor. Paths are resolved relative
+ * to the workspace root and rejected if they escape it (a referenced ref
+ * could be attacker-influenced bus data). A missing file (post-rebase drift)
+ * surfaces a friendly toast instead of an unhandled rejection.
+ */
+async function handleOpenAwaitingFile(file?: string): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr || !file) { return; }
+
+  const root = path.resolve(wr);
+  const target = path.resolve(root, file);
+  const rel = path.relative(root, target);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    vscode.window.showWarningMessage(`Refusing to open '${file}' — outside the workspace.`);
+    return;
+  }
+
+  try {
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
+    await vscode.window.showTextDocument(doc, { preview: true });
+  } catch {
+    vscode.window.showWarningMessage(`Could not open '${file}' — it may have moved or been removed.`);
   }
 }
 
