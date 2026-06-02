@@ -5,6 +5,7 @@ import {
   renderChips, renderDetailRow, renderAgentCard, renderAgentList,
   extractPlatform, payloadExcerpt, filterAwaitingYou, renderAwaitingYou,
   renderFabricHealth, bridgeTooltip, kgTooltip, kgClickCommand,
+  agentHost, isRemoteAgent,
   type AgentWithLive, type InboxSummary, type AwaitingYouRow, type FabricHealth,
 } from '../webview-render';
 import type { Message, RegisteredAgent, Heartbeat } from '../comms';
@@ -608,5 +609,59 @@ suite('webview-render — defensive edges', () => {
     assert.ok(!html.includes('Machine'), 'no machine_id row when absent');
     assert.ok(!html.includes('Human-in-Loop'), 'no human_in_loop row when absent');
     assert.ok(!html.includes('Max Parallel'), 'no max_parallel row when absent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF-2: cross-machine origin badge + per-host grouping
+// ---------------------------------------------------------------------------
+
+suite('webview-render — cross-machine fleet (CF-2)', () => {
+  test('agentHost resolves host → machine_id → "local"', () => {
+    assert.strictEqual(agentHost({ ...makeMinimalAgent(), host: 'box-9' }), 'box-9');
+    assert.strictEqual(agentHost({ ...makeMinimalAgent(), machine_id: 'm1' }), 'm1');
+    assert.strictEqual(agentHost(makeMinimalAgent()), 'local');
+  });
+
+  test('isRemoteAgent only true for origin=relay', () => {
+    assert.strictEqual(isRemoteAgent({ ...makeMinimalAgent(), origin: 'relay' }), true);
+    assert.strictEqual(isRemoteAgent({ ...makeMinimalAgent(), origin: 'local' }), false);
+    assert.strictEqual(isRemoteAgent(makeMinimalAgent()), false);
+  });
+
+  test('local agent renders no origin badge (single-host path unchanged)', () => {
+    const html = renderAgentCard(makeMinimalAgent());
+    assert.ok(!html.includes('origin-badge'), 'no badge for a local agent');
+  });
+
+  test('remote agent renders an origin badge with its host', () => {
+    const a: AgentWithLive = { ...makeMinimalAgent(), origin: 'relay', host: 'workstation-2' };
+    const html = renderAgentCard(a);
+    assert.ok(html.includes('origin-badge origin-remote'), 'badge present');
+    assert.ok(html.includes('workstation-2'), 'host shown in badge');
+    assert.ok(html.includes('Host'), 'host detail row present');
+  });
+
+  test('renderAgentList stays flat when no relay agents present', () => {
+    const html = renderAgentList([makeMinimalAgent(), { ...makeMinimalAgent(), id: 'x2' }]);
+    assert.ok(!html.includes('host-group-header'), 'no group headers without relay data');
+  });
+
+  test('renderAgentList groups local-first then remote hosts, with counts', () => {
+    const agents: AgentWithLive[] = [
+      { ...makeMinimalAgent(), id: 'remote-b', origin: 'relay', host: 'zeta' },
+      { ...makeMinimalAgent(), id: 'local-a' },
+      { ...makeMinimalAgent(), id: 'remote-a', origin: 'relay', host: 'alpha' },
+    ];
+    const html = renderAgentList(agents);
+    // Grouping headers present.
+    assert.ok(html.includes('host-group-header local'), 'local group header');
+    assert.ok(html.includes('This machine'), 'local label');
+    assert.ok(html.includes('alpha') && html.includes('zeta'), 'remote host labels');
+    // Order: This machine first, then alpha, then zeta.
+    const iLocal = html.indexOf('This machine');
+    const iAlpha = html.indexOf('>alpha<');
+    const iZeta = html.indexOf('>zeta<');
+    assert.ok(iLocal < iAlpha && iAlpha < iZeta, 'local-first then hosts alphabetically');
   });
 });
