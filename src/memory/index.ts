@@ -7,3 +7,4 @@
 
 export * from './bitemporalFact';
 export * from './tiers';
+export * from './personas';
