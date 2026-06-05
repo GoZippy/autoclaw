@@ -9,6 +9,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { spawnSync } from 'child_process';
 
 import {
   parseCron,
@@ -308,7 +309,9 @@ suite('AutoBuild: tick()', function () {
       finishedAt: new Date().toISOString(),
       status: 'passed',
       logPath: path.join(getRunsDir(workspace), 'fake.log'),
-      steps: []
+      steps: [],
+      guardBlockRejected: 0,
+      guardRolledBack: 0,
     });
     for (let i = 0; i < 50 && _isInFlight('flight'); i++) {
       await new Promise(r => setTimeout(r, 50));
@@ -431,4 +434,320 @@ suite('AutoBuild: registry persistence', function () {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Guard tests (AB-4)
+  // ──────────────────────────────────────────────────────────────────────
+
+  suite('Guard — YAML parsing', () => {
+    test('parses guard block with all fields', () => {
+      const yaml = [
+        'name: guarded',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: fix',
+        '    run: npm run lint -- --fix',
+        '    mode: fix',
+        '    guard:',
+        '      scope_globs: ["src/**", "test/**"]',
+        '      max_files: 5',
+        '      require_clean_git: true',
+        '      rollback_on: test_fail',
+      ].join('\n');
+      const wf = parseWorkflowYaml(yaml);
+      assert.strictEqual(wf.steps.length, 1);
+      const guard = wf.steps[0].guard!;
+      assert.ok(guard);
+      assert.deepStrictEqual(guard.scope_globs, ['src/**', 'test/**']);
+      assert.strictEqual(guard.max_files, 5);
+      assert.strictEqual(guard.require_clean_git, true);
+      assert.strictEqual(guard.rollback_on, 'test_fail');
+      assert.strictEqual(wf.steps[0].mode, 'fix');
+    });
+
+    test('parses guard block with rollback_on: never', () => {
+      const yaml = [
+        'name: guarded',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: fix',
+        '    run: echo hello',
+        '    mode: fix',
+        '    guard:',
+        '      scope_globs: ["**/*"]',
+        '      max_files: 10',
+        '      require_clean_git: false',
+        '      rollback_on: never',
+      ].join('\n');
+      const wf = parseWorkflowYaml(yaml);
+      assert.strictEqual(wf.steps[0].guard!.rollback_on, 'never');
+      assert.strictEqual(wf.steps[0].guard!.require_clean_git, false);
+    });
+
+    test('defaults mode to report when omitted', () => {
+      const yaml = [
+        'name: simple',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: step1',
+        '    run: echo hello',
+      ].join('\n');
+      const wf = parseWorkflowYaml(yaml);
+      assert.strictEqual(wf.steps[0].mode, 'report');
+    });
+
+    test('rejects invalid mode value', () => {
+      const yaml = [
+        'name: bad',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: step1',
+        '    run: echo hello',
+        '    mode: invalid',
+      ].join('\n');
+      assert.throws(() => parseWorkflowYaml(yaml), /step mode must be/);
+    });
+
+    test('rejects invalid rollback_on value', () => {
+      const yaml = [
+        'name: bad',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: step1',
+        '    run: echo hello',
+        '    mode: fix',
+        '    guard:',
+        '      scope_globs: ["**/*"]',
+        '      max_files: 5',
+        '      require_clean_git: true',
+        '      rollback_on: sometimes',
+      ].join('\n');
+      assert.throws(() => parseWorkflowYaml(yaml), /guard.rollback_on must be/);
+    });
+
+    test('guard defaults are applied when guard key is list marker', () => {
+      const yaml = [
+        'name: guarded',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: fix',
+        '    run: echo hello',
+        '    guard:',
+      ].join('\n');
+      const wf = parseWorkflowYaml(yaml);
+      const guard = wf.steps[0].guard!;
+      assert.ok(guard);
+      assert.deepStrictEqual(guard.scope_globs, ['**/*']);
+      assert.strictEqual(guard.max_files, 10);
+      assert.strictEqual(guard.require_clean_git, true);
+      assert.strictEqual(guard.rollback_on, 'test_fail');
+    });
+
+    test('flushes guard state between steps', () => {
+      const yaml = [
+        'name: multi',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: fix1',
+        '    run: echo a',
+        '    mode: fix',
+        '    guard:',
+        '      scope_globs: ["src/**"]',
+        '      max_files: 3',
+        '      require_clean_git: true',
+        '      rollback_on: test_fail',
+        '  - id: report1',
+        '    run: echo b',
+      ].join('\n');
+      const wf = parseWorkflowYaml(yaml);
+      assert.strictEqual(wf.steps.length, 2);
+      assert.ok(wf.steps[0].guard);
+      assert.strictEqual(wf.steps[1].guard, undefined);
+      assert.strictEqual(wf.steps[1].mode, 'report');
+    });
+  });
+
+  suite('Guard — scope_glob matching', () => {
+    test('matches simple glob patterns', () => {
+      const yaml = [
+        'name: scope',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: fix',
+        '    run: echo hello',
+        '    mode: fix',
+        '    guard:',
+        '      scope_globs: ["src/**", "test/**"]',
+        '      max_files: 5',
+        '      require_clean_git: false',
+        '      rollback_on: never',
+      ].join('\n');
+      const wf = parseWorkflowYaml(yaml);
+      const guard = wf.steps[0].guard!;
+      assert.ok(guard.scope_globs.some((p: string) => p === 'src/**'));
+      assert.ok(guard.scope_globs.some((p: string) => p === 'test/**'));
+    });
+  });
+
+  suite('Guard — verify field', () => {
+    test('parses verify field', () => {
+      const yaml = [
+        'name: verified',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: fix',
+        '    run: npm run fix',
+        '    verify: npm test',
+      ].join('\n');
+      const wf = parseWorkflowYaml(yaml);
+      assert.strictEqual(wf.steps[0].verify, 'npm test');
+    });
+  });
+
+  suite('Guard — max_files validation', () => {
+    test('rejects non-positive max_files', () => {
+      const yaml = [
+        'name: bad',
+        'cron: "0 2 * * *"',
+        'steps:',
+        '  - id: step1',
+        '    run: echo hello',
+        '    guard:',
+        '      scope_globs: ["**/*"]',
+        '      max_files: 0',
+        '      require_clean_git: true',
+        '      rollback_on: test_fail',
+      ].join('\n');
+      assert.throws(() => parseWorkflowYaml(yaml), /max_files must be a positive integer/);
+    });
+  });
+
+  suite('Guard — RunResult shape', () => {
+    test('RunResult includes guardBlockRejected and guardRolledBack fields', () => {
+      const import_check = require('../autobuild');
+      assert.ok(typeof import_check === 'object');
+    });
+  });
+
 });
+
+// ---------------------------------------------------------------------------
+// AB-4: guarded auto-fix — real rollback behaviour (integration, needs git)
+// ---------------------------------------------------------------------------
+
+suite('AutoBuild: guarded fix rollback', function () {
+  this.timeout(30000);
+
+  let repo: string;
+
+  function git(args: string, cwd: string): void {
+    const r = spawnSync('git', args.split(' '), { cwd, encoding: 'utf8' });
+    if (r.status !== 0) { throw new Error(`git ${args} failed: ${r.stderr || r.stdout}`); }
+  }
+
+  setup(function () {
+    repo = makeTempDir('autoclaw-ab-rollback-');
+    git('init -q', repo);
+    git('config user.email test@autoclaw.dev', repo);
+    git('config user.name AutoClawTest', repo);
+    // .autoclaw is gitignored in real AutoClaw repos — mirror that so the
+    // workflow, run logs, and our helper scripts don't show as untracked.
+    fs.writeFileSync(path.join(repo, '.gitignore'), '.autoclaw/\n');
+    fs.writeFileSync(path.join(repo, 'target.txt'), 'baseline\n');
+    git('add -A', repo);
+    git('commit -qm baseline', repo);
+    // Helper scripts invoked by filename (no nested shell quotes — cmd.exe
+    // mangles `node -e "..."`). They run with cwd = repo, so the relative
+    // paths resolve against the repo root.
+    fs.mkdirSync(path.join(repo, '.autoclaw'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.autoclaw', 'corrupt.js'), `require('fs').writeFileSync('target.txt','corrupted');`);
+    fs.writeFileSync(path.join(repo, '.autoclaw', 'mkoutside.js'), `require('fs').writeFileSync('outside.txt','x');`);
+    fs.writeFileSync(path.join(repo, '.autoclaw', 'fail.js'), `process.exit(1);`);
+  });
+
+  teardown(function () {
+    fs.rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('verify failure rolls back a tracked change (verdict rolled_back, file restored)', async function () {
+    const wf = writeWorkflowFile(repo, 'heal', [
+      'name: heal',
+      'cron: "* * * * *"',
+      'steps:',
+      '  - id: badfix',
+      '    run: node .autoclaw/corrupt.js',
+      '    mode: fix',
+      '    verify: node .autoclaw/fail.js',
+      '    guard:',
+      '      scope_globs: ["**/*"]',
+      '      max_files: 10',
+      '      require_clean_git: true',
+      '      rollback_on: test_fail',
+    ].join('\n'));
+
+    const result = await runWorkflow(wf, getRunsDir(repo));
+    const step = result.steps[0];
+    assert.strictEqual(step.guard_verdict, 'rolled_back', 'verdict is rolled_back');
+    assert.strictEqual(result.guardRolledBack, 1);
+    // The file is restored to its committed baseline (line-ending-agnostic:
+    // git on Windows may re-checkout with CRLF under core.autocrlf).
+    assert.strictEqual(fs.readFileSync(path.join(repo, 'target.txt'), 'utf8').trim(), 'baseline');
+  });
+
+  test('out-of-scope change is rejected and reverted (verdict rejected_scope)', async function () {
+    const wf = writeWorkflowFile(repo, 'heal', [
+      'name: heal',
+      'cron: "* * * * *"',
+      'steps:',
+      '  - id: scopefix',
+      '    run: node .autoclaw/mkoutside.js',
+      '    mode: fix',
+      '    guard:',
+      '      scope_globs: ["src/**"]',
+      '      max_files: 10',
+      '      require_clean_git: true',
+      '      rollback_on: test_fail',
+    ].join('\n'));
+
+    const result = await runWorkflow(wf, getRunsDir(repo));
+    assert.strictEqual(result.steps[0].guard_verdict, 'rejected_scope');
+    assert.strictEqual(result.guardBlockRejected, 1);
+    // The newly-created out-of-scope file was removed by the revert.
+    assert.strictEqual(fs.existsSync(path.join(repo, 'outside.txt')), false);
+  });
+
+  test('a dirty tree short-circuits a require_clean_git fix (verdict rejected_dirty)', async function () {
+    fs.appendFileSync(path.join(repo, 'target.txt'), 'dirty\n'); // make the tree dirty
+    const wf = writeWorkflowFile(repo, 'heal', [
+      'name: heal',
+      'cron: "* * * * *"',
+      'steps:',
+      '  - id: fix',
+      '    run: node .autoclaw/corrupt.js',
+      '    mode: fix',
+      '    guard:',
+      '      scope_globs: ["**/*"]',
+      '      max_files: 10',
+      '      require_clean_git: true',
+      '      rollback_on: test_fail',
+    ].join('\n'));
+
+    const result = await runWorkflow(wf, getRunsDir(repo));
+    assert.strictEqual(result.steps[0].guard_verdict, 'rejected_dirty');
+    assert.strictEqual(result.guardBlockRejected, 1);
+  });
+
+  test('report-mode step never triggers guard machinery (verdict na)', async function () {
+    const wf = writeWorkflowFile(repo, 'rep', [
+      'name: rep',
+      'cron: "* * * * *"',
+      'steps:',
+      '  - id: look',
+      '    run: node --version',
+    ].join('\n'));
+    const result = await runWorkflow(wf, getRunsDir(repo));
+    assert.strictEqual(result.steps[0].guard_verdict, 'na');
+    assert.strictEqual(result.steps[0].mode, 'report');
+  });
+});
+
