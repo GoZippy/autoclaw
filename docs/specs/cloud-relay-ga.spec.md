@@ -1,10 +1,10 @@
 ---
 spec_id: cloud-relay-ga
 title: Cloud relay GA — flip the inert preview relay to opt-in GA
-status: draft  # draft | review | pilot | implement | verify | done
+status: verify  # draft | review | pilot | implement | verify | done
 owner: claude-code
 created: 2026-06-04
-updated: 2026-06-04
+updated: 2026-06-05
 supersedes: []
 superseded_by: null
 references:

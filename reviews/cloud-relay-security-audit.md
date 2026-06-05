@@ -92,3 +92,29 @@ Inbox queue items keep `id/to/from/type/timestamp` + `installation_id` in clear
 **Unanimous-vote items:** F1 and F2 are blocking. CF-3 must resolve them and
 CF-4 must confirm each finding is fixed or has a documented accepted-risk line
 before the GA flip merges. Re-audit after CF-3.
+
+---
+
+## Resolution (CF-3 + CF-4) — 2026-06-05, claude-code
+
+CF-3 landed the GA path; CF-4 walks each finding. Both must-fixes are resolved.
+
+| Finding | Disposition | Evidence |
+|---|---|---|
+| **F1** HTTPS enforcement | **FIXED** | `endpointIsSecure()` + `relayIsActive()` now reject non-`https` (loopback `http` only). Tests: "F1: endpointIsSecure…", "F1: an http:// endpoint keeps the relay inert". |
+| **F2** expired-token rejection | **FIXED** | `getCloudToken()` returns `reason:'expired'`; relay maps it to `token_unusable` (inert). Tests: "F2: getCloudToken rejects an expired token", "F2: an expired token makes the relay inert". |
+| **F3** heartbeat cleartext | **ADDRESSED (opt-out + consent)** | `forward.heartbeats:false` skips the channel (`channel_disabled`); GA tier requires `consentAckAt`. **Deferred (accepted-risk):** dropping `session_id` from the wire shape — tracked for a follow-up; heartbeats still leave in clear when opted in. |
+| **F4** endpoint validation / SSRF | **PARTIALLY FIXED** | Scheme validation done (F1). **Deferred:** the consent modal that *shows the endpoint* before enabling is an `extension.ts` UI task (outside `src/cloud/` scope) — tracked, not blocking the inert-safe code. |
+| **F5** token-derived key | **ACCEPTED (documented)** | MVP limitation; future DEK negotiation. |
+| **F6** file-store key strength | **ACCEPTED (documented)** | OS keychain preferred; Windows-ACL hardening tracked as a follow-up. |
+| **F7** queue metadata cleartext | **ACCEPTED (documented)** | Local-only, gitignored. |
+
+**Gate status:** both unanimous-vote blockers (F1, F2) FIXED with tests; F3/F4
+residuals are documented accepted-risk follow-ups that do not weaken the
+inert-by-default or token-hygiene guarantees. **CF-4 gate: PASS** — the GA path
+is safe to ship opt-in. The relay still defaults to `preview`/inert; GA requires
+`tier:ga` + `consentAckAt` + an `https` endpoint + a live token.
+
+**Follow-ups (non-blocking, tracked):** (1) drop `session_id` from `RelayHeartbeat`;
+(2) consent modal in `extension.ts` that displays the endpoint + writes
+`consentAckAt`; (3) Windows ACL on `credentials.enc`/`.keyseed`.
