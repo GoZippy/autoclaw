@@ -119,6 +119,7 @@ import { stopSvidRefresh } from './svid';
 import { getFleetMetrics, recordTaskDuration, resetMetrics } from './metrics';
 export { recordTaskDuration }; // allow reconcile and other callers to import directly
 import { writeConsensusVote } from './orchestrator/voteWriter';
+import { syncVoidSpecCommand } from './voidspec/dispatch';
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -486,6 +487,26 @@ export function activate(context: vscode.ExtensionContext) {
         ...Object.entries(m.by_agent).map(([id, s]) => `  ${id}: p50=${Math.round(s.p50_ms / 1000)}s (${s.count} tasks)`),
       ];
       vscode.window.showInformationMessage(lines.join('\n'), { modal: true });
+    })
+  );
+
+  // VoidSpec sync command — thin VS Code wrapper around the headless
+  // syncVoidSpecCommand() in src/voidspec/dispatch.ts (no vscode import there,
+  // so the core sync logic stays unit-testable). This layer resolves the
+  // workspace root and surfaces the summary to the user.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.voidspec.sync', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!root) {
+        vscode.window.showWarningMessage('AutoClaw: open a workspace folder before syncing VoidSpec tasks.');
+        return;
+      }
+      try {
+        const r = await syncVoidSpecCommand({ workspaceRoot: root });
+        vscode.window.showInformationMessage(r.summary);
+      } catch (err) {
+        vscode.window.showErrorMessage(`AutoClaw: VoidSpec sync failed — ${String(err)}`);
+      }
     })
   );
 

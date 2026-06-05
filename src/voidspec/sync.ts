@@ -72,12 +72,27 @@ export function parseVoidSpecYaml(content: string): VoidSpecDocument {
 
   const tasks: VoidSpecTask[] = [];
 
-  // Isolate the `tasks:` block — everything indented under it until a
-  // non-indented line (or EOF).
-  const tasksBlockM = text.match(/^tasks:\s*\n([\s\S]*?)(?=^\S|\s*$)/m);
-  if (tasksBlockM) {
+  // Isolate the `tasks:` block — everything indented under the `tasks:` line
+  // until a non-indented, non-blank line (or EOF). A line-based scan is used
+  // instead of a single non-greedy regex because a `(?=...\s*$)` lookahead
+  // matches the zero-width position at the very start of the block and so
+  // captures nothing useful (truncating the list to its first line).
+  const lines = text.split('\n');
+  const tasksLineIdx = lines.findIndex((l) => /^tasks:\s*$/.test(l));
+  if (tasksLineIdx !== -1) {
+    const blockLines: string[] = [];
+    for (let i = tasksLineIdx + 1; i < lines.length; i++) {
+      const line = lines[i];
+      // A blank line stays inside the block; a non-indented, non-blank line
+      // ends it (the next top-level key).
+      if (line.trim() === '' || /^\s/.test(line)) {
+        blockLines.push(line);
+      } else {
+        break;
+      }
+    }
     // Prepend a newline so the first "- id:" entry splits cleanly.
-    const block = '\n' + tasksBlockM[1];
+    const block = '\n' + blockLines.join('\n');
     // Each task entry begins with `<indent>- ` at the list level.
     const entries = block.split(/\n\s*-\s+/g).slice(1);
     for (const entry of entries) {
