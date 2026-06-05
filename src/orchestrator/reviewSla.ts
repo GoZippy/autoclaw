@@ -227,6 +227,26 @@ export interface QuorumResult {
  * A `halted` heartbeat is excluded even when fresh: a halted session cannot
  * cast a vote.
  */
+/**
+ * PA-4: personas whose findings are SECURITY-TIER — their review uses the
+ * unanimous rule, not 2/3 majority (AGENT_SESSION_PROTOCOL §2.2). A
+ * subcontract carrying one of these `persona_id`s, or a `finding_report`
+ * authored by one, must clear unanimously before merge.
+ */
+export const SECURITY_TIER_PERSONAS: readonly string[] = [
+  'security-auditor',
+  'supply-chain-auditor',
+];
+
+/**
+ * The consensus rule to apply for a review, given the optional persona that
+ * produced the work/finding. Security-tier personas ⇒ `unanimous`; everything
+ * else ⇒ `majority`.
+ */
+export function quorumRuleForPersona(personaId?: string): 'majority' | 'unanimous' {
+  return personaId && SECURITY_TIER_PERSONAS.includes(personaId) ? 'unanimous' : 'majority';
+}
+
 export function computeQuorum(
   heartbeats: HeartbeatLike[],
   opts: {

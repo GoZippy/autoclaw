@@ -51,8 +51,24 @@ import {
   type ScopingDecision,
   type ToolAuthPolicy,
 } from './scoping';
+import { LlmRegistry } from '../llm';
 
 const fsPromises = fs.promises;
+
+// ---------------------------------------------------------------------------
+// PA-5: LLM registry factory (injectable for tests). Delegates routing to the
+// existing src/llm registry — ZMLR-first, oracle fallback (Option C). No
+// parallel router lives here.
+// ---------------------------------------------------------------------------
+let llmRegistryFactory: (workspaceRoot: string) => LlmRegistry =
+  (workspaceRoot) => new LlmRegistry({ workspaceRoot });
+
+/** Test seam: override how `llm.*` tools obtain their registry. */
+export function _setLlmRegistryFactoryForTests(
+  factory: ((workspaceRoot: string) => LlmRegistry) | null,
+): void {
+  llmRegistryFactory = factory ?? ((workspaceRoot) => new LlmRegistry({ workspaceRoot }));
+}
 
 // ---------------------------------------------------------------------------
 // Authorization gate
@@ -885,6 +901,122 @@ const dreamRunTool: ToolHandler = {
 };
 
 // ---------------------------------------------------------------------------
+// PA-5 — MCP llm.* write-tools (gated + audited; delegate to src/llm registry)
+// ---------------------------------------------------------------------------
+
+/**
+ * `llm.chat` — run one chat completion through the LLM registry. Routing is
+ * ZMLR-first with an oracle fallback (Option C); this tool builds NO parallel
+ * router. Gated like every write-tool and audited to the message ledger; the
+ * registry additionally records the call in the ZICO cost ledger.
+ */
+const llmChatTool: ToolHandler = {
+  definition: {
+    name: 'llm.chat',
+    description:
+      'Run a chat completion via the AutoClaw LLM registry (ZMLR-first, oracle ' +
+      'fallback). Requires write access. The model/provider is chosen by the ' +
+      'registry unless `providerRef` is given.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'User prompt (sugar for a single user message).' },
+        messages: { type: 'array', description: 'Full chat message array (role/content).', items: { type: 'object' } },
+        providerRef: { type: 'string', description: 'Optional explicit "<provider>:<model>" override.' },
+        temperature: { type: 'number' },
+        maxTokens: { type: 'number' },
+        jsonMode: { type: 'boolean' },
+      },
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const prompt = typeof args.prompt === 'string' ? args.prompt : undefined;
+    const messages = Array.isArray(args.messages) ? args.messages : undefined;
+    if (!prompt && !messages) {
+      return { ok: false, reason: 'invalid_params', detail: 'llm.chat requires prompt or messages' };
+    }
+    const msgId = newMsgId();
+    try {
+      const registry = llmRegistryFactory(ctx.workspaceRoot);
+      const result = await registry.chat({
+        prompt,
+        messages: messages as never,
+        temperature: typeof args.temperature === 'number' ? args.temperature : undefined,
+        maxTokens: typeof args.maxTokens === 'number' ? args.maxTokens : undefined,
+        jsonMode: args.jsonMode === true,
+        sessionId: ctx.sessionId,
+        callerPersonaId: typeof args.callerPersonaId === 'string' ? args.callerPersonaId : undefined,
+      }, typeof args.providerRef === 'string' ? args.providerRef : undefined);
+
+      const ledger = await appendLedgerEntry(ctx, msgId, {
+        type: 'llm_chat', servedBy: result.servedBy, model: result.model,
+        ok: result.ok, tokens: result.tokens, ...callerOf(ctx),
+      });
+      if (!result.ok) {
+        return { ok: false, reason: 'state_unreachable', detail: result.errorMessage ?? result.errorClass ?? 'chat failed' };
+      }
+      return {
+        ok: true,
+        data: {
+          response: result.response, model: result.model, servedBy: result.servedBy,
+          tokens: result.tokens, durationMs: result.durationMs, costCents: result.costCents,
+          ledger_ok: ledger.ok,
+        },
+      };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: err instanceof Error ? err.message : String(err) };
+    }
+  },
+};
+
+/**
+ * `llm.models` — list the models each registered provider reports. Read-mostly
+ * but gated as a write-tool because it probes external providers.
+ */
+const llmModelsTool: ToolHandler = {
+  definition: {
+    name: 'llm.models',
+    description: 'List models available across the registry providers (ZMLR, Ollama). Requires write access.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  async run(ctx): Promise<ToolResult> {
+    try {
+      const registry = llmRegistryFactory(ctx.workspaceRoot);
+      const out: Record<string, unknown> = {};
+      for (const p of registry.list()) {
+        try { out[p.id] = await p.models(); } catch (e) { out[p.id] = { error: e instanceof Error ? e.message : String(e) }; }
+      }
+      return { ok: true, data: { providers: out } };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: err instanceof Error ? err.message : String(err) };
+    }
+  },
+};
+
+/**
+ * `llm.health` — health snapshot per provider (reachable / auth / model count).
+ */
+const llmHealthTool: ToolHandler = {
+  definition: {
+    name: 'llm.health',
+    description: 'Report health for each registry provider (reachable, auth, model count). Requires write access.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  async run(ctx): Promise<ToolResult> {
+    try {
+      const registry = llmRegistryFactory(ctx.workspaceRoot);
+      const out: Record<string, unknown> = {};
+      for (const p of registry.list()) {
+        try { out[p.id] = await p.health(); } catch (e) { out[p.id] = { ok: false, error: e instanceof Error ? e.message : String(e) }; }
+      }
+      return { ok: true, data: { providers: out } };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: err instanceof Error ? err.message : String(err) };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -914,6 +1046,9 @@ export const WRITE_TOOLS: ToolHandler[] = [
   claimTaskTool,
   dreamRunTool,
   consensusVoteTool,
+  llmChatTool,
+  llmModelsTool,
+  llmHealthTool,
 ].map(withGate);
 
 /** The un-gated write-tool handlers, exposed for unit tests of tool bodies. */
@@ -924,4 +1059,7 @@ export const RAW_WRITE_TOOLS: ToolHandler[] = [
   claimTaskTool,
   dreamRunTool,
   consensusVoteTool,
+  llmChatTool,
+  llmModelsTool,
+  llmHealthTool,
 ];

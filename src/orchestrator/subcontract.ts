@@ -126,6 +126,13 @@ export interface SubcontractPayload {
   child: string;
   /** Free-form brief / deliverable description / verdict notes. */
   brief?: string;
+  /**
+   * PA-4: route the subcontract to a named specialized persona (e.g.
+   * `security-auditor`, `doc-writer`). When set, the child runs the work
+   * under that persona's profile + memory rather than its generic role.
+   * Absent ⇒ the child's default behaviour (back-compatible).
+   */
+  persona_id?: string;
   /** On `reject_with_fixes`: the structured list of required fixes. */
   fixes?: Array<{ detail: string; severity?: 'blocker' | 'major' | 'minor' }>;
   /** On `deliver`: a reference to the produced artifact (branch, diff, …). */
@@ -297,12 +304,12 @@ export class SubcontractDriver {
    * `request` message. The driver's state advances to `request`.
    */
   static open(
-    args: { taskId: string; parent: string; child: string; brief?: string },
+    args: { taskId: string; parent: string; child: string; brief?: string; persona_id?: string },
     opts: { sessionId?: string; now?: Date } = {},
   ): { driver: SubcontractDriver; message: SubcontractMessage } {
     const id = newSubcontractId();
     const driver = new SubcontractDriver(id, args.taskId, args.parent, args.child, null, []);
-    const message = driver.advance('request', { brief: args.brief }, opts);
+    const message = driver.advance('request', { brief: args.brief, persona_id: args.persona_id }, opts);
     return { driver, message };
   }
 
