@@ -35,7 +35,7 @@ project (github.com/GoZippy/VoidSpec); AutoClaw is the consumer.
 ### Release / process
 | # | Item | Status |
 |---|------|--------|
-| REL-1 | Land `integrate-automate-v3.2` → `dev-beta` (staging) → `master` after approval | in-progress |
+| REL-1 | Promote `dev-beta` → `master`. v3.2 is merged into `dev-beta` (clean, 874 tests green, pushed); **awaiting user testing + final approval** before the `master` merge. | awaiting-approval |
 
 ---
 
