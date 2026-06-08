@@ -13,6 +13,7 @@
 
 import type { HealthState, AgentHealth } from '../lmd/types';
 import type {
+  FleetOrigin,
   HealthColor,
   HealthGridRow,
   AgentCard,
@@ -43,6 +44,14 @@ export interface RawHeartbeat {
   sprint?: number | null;
   session_id?: string;
   queue_depth?: number;
+  /**
+   * CF-1: the host the heartbeat originated on. Local heartbeats may omit
+   * this (resolved to the local-host label); relay-forwarded heartbeats carry
+   * the remote machine id so the same agent_id on two machines stays distinct.
+   */
+  host?: string;
+  /** CF-1: `local` for file-bus heartbeats, `relay` for relay-forwarded ones. */
+  origin?: FleetOrigin;
 }
 
 /** Minimal registered-agent shape this module reads. */
@@ -100,6 +109,100 @@ export function relativeAge(iso: string, now: number = Date.now()): string {
   if (h < 24) { return `${h}h ago`; }
   const d = Math.floor(h / 24);
   return `${d}d ago`;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-machine fleet (CF-1)
+// ---------------------------------------------------------------------------
+
+/** Default label for the machine this extension is running on. */
+export const LOCAL_HOST = 'local';
+
+/**
+ * A heartbeat after origin/host resolution — every field present, ready to
+ * key by (agent, host). Produced by `mergeFleetHeartbeats`.
+ */
+export interface ResolvedHeartbeat extends RawHeartbeat {
+  host: string;
+  origin: FleetOrigin;
+}
+
+/** Composite key that keeps the same agent_id on two machines distinct. */
+export function fleetKey(agentId: string, host: string): string {
+  return `${agentId}::${host}`;
+}
+
+export interface MergeFleetHeartbeatsOptions {
+  /** Label applied to local heartbeats that don't carry their own host. */
+  localHost?: string;
+  /** Clock, for stale-relay age-out. */
+  now?: number;
+  /**
+   * Relay agents whose last heartbeat is older than this age out of the
+   * merged fleet — the same liveness window applied to local agents. `0`
+   * (default) disables age-out (keep everything).
+   */
+  relayStaleMs?: number;
+}
+
+/**
+ * Merge this machine's local heartbeats with relay-forwarded heartbeats from
+ * other machines into a single de-duplicated fleet.
+ *
+ * Rules:
+ *  - Local heartbeats are tagged `origin:'local'`, `host: localHost` (unless
+ *    they already carry a host).
+ *  - Relay heartbeats are tagged `origin:'relay'`, `host: hb.host ?? 'unknown'`.
+ *  - De-dupe is by **(agent_id, host)** — the same agent on two machines is two
+ *    rows; two heartbeats for the same agent+host collapse to the freshest.
+ *  - When a local and a relay heartbeat collide on the same (agent, host),
+ *    local wins on a tie and relay only wins if strictly fresher — the local
+ *    file bus is the source of truth for this machine.
+ *  - Relay rows older than `relayStaleMs` are dropped (stale remote agents age
+ *    out just like local ones); local rows are never aged out here (the LMD
+ *    health layer governs local liveness).
+ *
+ * Pure + deterministic given `now`. Result is sorted by agent_id then host.
+ */
+export function mergeFleetHeartbeats(
+  local: RawHeartbeat[],
+  relay: RawHeartbeat[],
+  opts: MergeFleetHeartbeatsOptions = {}
+): ResolvedHeartbeat[] {
+  const localHost = opts.localHost ?? LOCAL_HOST;
+  const now = opts.now ?? Date.now();
+  const staleMs = opts.relayStaleMs ?? 0;
+
+  const resolved: ResolvedHeartbeat[] = [];
+  for (const hb of local) {
+    resolved.push({ ...hb, origin: 'local', host: hb.host ?? localHost });
+  }
+  for (const hb of relay) {
+    const host = hb.host ?? 'unknown';
+    if (staleMs > 0) {
+      const age = now - new Date(hb.timestamp).getTime();
+      // Drop stale or unparseable-timestamp relay rows.
+      if (!(age >= 0) || age > staleMs) { continue; }
+    }
+    resolved.push({ ...hb, origin: 'relay', host });
+  }
+
+  const byKey = new Map<string, ResolvedHeartbeat>();
+  for (const hb of resolved) {
+    const key = fleetKey(hb.agent_id, hb.host);
+    const prev = byKey.get(key);
+    if (!prev) { byKey.set(key, hb); continue; }
+    const prevT = new Date(prev.timestamp).getTime();
+    const curT = new Date(hb.timestamp).getTime();
+    // Freshest wins; on a tie, prefer a local origin over a relay one.
+    if (curT > prevT || (curT === prevT && prev.origin === 'relay' && hb.origin === 'local')) {
+      byKey.set(key, hb);
+    }
+  }
+
+  return Array.from(byKey.values()).sort(
+    (a, b) => a.agent_id.localeCompare(b.agent_id) || a.host.localeCompare(b.host)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -245,12 +348,19 @@ export function buildAgentCards(
       const h = inputs.health.get(p.id);
       const state: HealthState = h?.state ?? 'alive';
       const lastHb = hb?.timestamp ?? h?.lastHeartbeatAt ?? '';
+      // CF-1: a relay-forwarded heartbeat carries its own host + origin; those
+      // win over the profile's machine_id. Absent a relay heartbeat the card
+      // is a local one (origin 'local'), preserving the single-host path.
+      const origin: FleetOrigin = hb?.origin ?? 'local';
+      const host = hb?.host ?? p.machine_id ?? LOCAL_HOST;
       return {
         agentId: p.id,
         name: p.name ?? p.id,
         avatar: avatarFor(p.id, p.name),
         role: p.role ?? '',
-        host: p.machine_id ?? 'local',
+        host,
+        origin,
+        isRemote: origin === 'relay',
         currentTask: (hb?.current_task ?? null) || null,
         lastHeartbeat: lastHb,
         lastHeartbeatLabel: lastHb ? relativeAge(lastHb, now) : '—',

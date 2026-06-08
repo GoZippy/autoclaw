@@ -71,6 +71,16 @@ export interface RelayConfig {
   heartbeatIntervalMs: number;
   /** Per-request timeout (ms). Defaults to 15s. */
   requestTimeoutMs: number;
+  // ── GA additions (CF-3) — all optional; absent ⇒ the safe/inert value ──
+  /** Release tier. `'ga'` additionally REQUIRES an explicit consent ack. */
+  tier?: 'preview' | 'ga';
+  /** ISO timestamp of the user's explicit GA opt-in. Null/absent ⇒ no consent. */
+  consentAckAt?: string | null;
+  /**
+   * Per-channel forwarding switches (F3 — heartbeats leave in clear). Absent
+   * ⇒ both forward (preview back-compat). A channel set to `false` is skipped.
+   */
+  forward?: { heartbeats: boolean; inbox: boolean };
 }
 
 /** The inert default config — relay OFF, no endpoint. */
@@ -80,7 +90,28 @@ export function defaultRelayConfig(): RelayConfig {
     enabled: false,
     heartbeatIntervalMs: CLOUD_HEARTBEAT_INTERVAL_MS,
     requestTimeoutMs: 15_000,
+    tier: 'preview',
+    consentAckAt: null,
   };
+}
+
+/**
+ * F1 (security audit): a relay endpoint must be HTTPS so the bearer token
+ * (Authorization header) and payload metadata are never sent in cleartext.
+ * Plain `http://` is allowed ONLY for loopback (local dev). Anything else
+ * (or an unparseable URL) is rejected ⇒ the relay stays inert.
+ */
+export function endpointIsSecure(endpoint: string): boolean {
+  try {
+    const u = new URL(endpoint);
+    if (u.protocol === 'https:') { return true; }
+    if (u.protocol === 'http:') {
+      return u.hostname === 'localhost' || u.hostname === '127.0.0.1' || u.hostname === '::1';
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 /** Directory holding all cloud-relay state under a workspace `.autoclaw/`. */
@@ -105,6 +136,7 @@ export async function readRelayConfig(autoclawDir: string): Promise<RelayConfig>
   }
   try {
     const parsed = JSON.parse(raw.replace(/^﻿/, '')) as Partial<RelayConfig>;
+    const fwd = parsed.forward;
     return {
       endpoint: typeof parsed.endpoint === 'string' ? parsed.endpoint.trim() : base.endpoint,
       enabled: parsed.enabled === true,
@@ -116,6 +148,11 @@ export async function readRelayConfig(autoclawDir: string): Promise<RelayConfig>
         typeof parsed.requestTimeoutMs === 'number' && parsed.requestTimeoutMs > 0
           ? parsed.requestTimeoutMs
           : base.requestTimeoutMs,
+      tier: parsed.tier === 'ga' ? 'ga' : 'preview',
+      consentAckAt: typeof parsed.consentAckAt === 'string' ? parsed.consentAckAt : null,
+      ...(fwd && typeof fwd === 'object'
+        ? { forward: { heartbeats: fwd.heartbeats !== false, inbox: fwd.inbox !== false } }
+        : {}),
     };
   } catch {
     return base;
@@ -127,7 +164,13 @@ export async function readRelayConfig(autoclawDir: string): Promise<RelayConfig>
  * non-empty endpoint is configured. Every send path checks this first.
  */
 export function relayIsActive(cfg: RelayConfig): boolean {
-  return cfg.enabled === true && typeof cfg.endpoint === 'string' && cfg.endpoint.trim().length > 0;
+  if (cfg.enabled !== true) { return false; }
+  if (typeof cfg.endpoint !== 'string' || cfg.endpoint.trim().length === 0) { return false; }
+  // F1: a configured endpoint must be HTTPS (or loopback http) or we stay inert.
+  if (!endpointIsSecure(cfg.endpoint.trim())) { return false; }
+  // GA tier additionally requires an explicit, recorded consent acknowledgement.
+  if (cfg.tier === 'ga' && !cfg.consentAckAt) { return false; }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +324,7 @@ export async function queueDepth(autoclawDir: string): Promise<number> {
 export interface RelaySendResult {
   ok: boolean;
   /** Set when the call did not actually transmit (relay off, no token, …). */
-  skipped?: 'relay_disabled' | 'no_token' | 'token_unusable';
+  skipped?: 'relay_disabled' | 'no_token' | 'token_unusable' | 'channel_disabled';
   /** HTTP status when a request was made. */
   status?: number;
   /** Items written to the offline queue because the send failed. */
@@ -406,6 +449,10 @@ export class CloudRelay {
     if (!relayIsActive(cfg)) {
       return { ok: true, skipped: 'relay_disabled', detail: 'cloud relay is disabled (inert)' };
     }
+    // F3: heartbeats leave in clear — honour an explicit opt-out.
+    if (cfg.forward && cfg.forward.heartbeats === false) {
+      return { ok: true, skipped: 'channel_disabled', detail: 'heartbeat forwarding disabled' };
+    }
     if (heartbeats.length === 0) {
       return { ok: true, detail: 'no heartbeats to send' };
     }
@@ -453,6 +500,9 @@ export class CloudRelay {
     const cfg = await this.config();
     if (!relayIsActive(cfg)) {
       return { ok: true, skipped: 'relay_disabled', detail: 'cloud relay is disabled (inert)' };
+    }
+    if (cfg.forward && cfg.forward.inbox === false) {
+      return { ok: true, skipped: 'channel_disabled', detail: 'inbox forwarding disabled' };
     }
     if (messages.length === 0) {
       return { ok: true, detail: 'no inbox messages to send' };

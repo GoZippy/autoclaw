@@ -278,3 +278,51 @@ suite('VoidSpec — syncVoidSpecCommand', () => {
     assert.ok(r.summary.includes('VoidSpec sync'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// AF-0505 — the `autoclaw.voidspec.sync` command is contributed + wired.
+// These assertions are intentionally headless: they read package.json and the
+// dispatch module directly (no `vscode` import), so they run under plain mocha.
+// ---------------------------------------------------------------------------
+suite('VoidSpec — AF-0505 command wiring', () => {
+  const pkg = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'),
+  ) as { contributes: { commands: { command: string; title: string }[] } };
+
+  test('autoclaw.voidspec.sync appears in package contributions', () => {
+    const cmd = pkg.contributes.commands.find(
+      (c) => c.command === 'autoclaw.voidspec.sync',
+    );
+    assert.ok(cmd, 'autoclaw.voidspec.sync must be contributed in package.json');
+    assert.ok(
+      cmd!.title.length > 0,
+      'the contributed command must carry a human-readable title',
+    );
+  });
+
+  test('the sync handler runs without requiring a vscode import', () => {
+    // syncVoidSpecCommand is imported from dispatch.ts at the top of this file;
+    // if dispatch.ts pulled in `vscode`, this module would fail to load under
+    // plain mocha. Reaching this assertion proves the core logic is headless.
+    assert.strictEqual(typeof syncVoidSpecCommand, 'function');
+  });
+
+  test('no-task-file case: command reports ran:false gracefully', async () => {
+    const dir = tmpDir();
+    const r = await syncVoidSpecCommand({ workspaceRoot: dir, logger: SILENT });
+    assert.strictEqual(r.ran, false);
+    assert.ok(r.summary.includes('No VoidSpec tasks found'));
+  });
+
+  test('sync case: command syncs an existing tasks.yaml', async () => {
+    const dir = tmpDir();
+    const file = resolveTasksYamlPath(dir);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, SAMPLE_YAML, 'utf8');
+    const r = await syncVoidSpecCommand({ workspaceRoot: dir, logger: SILENT });
+    assert.strictEqual(r.ran, true);
+    assert.ok(r.result, 'a sync result must be returned when a task file exists');
+    assert.strictEqual(r.result!.added, 3);
+    assert.strictEqual(r.dispatch!.mode, 'native');
+  });
+});

@@ -231,6 +231,46 @@ th {
   margin-left: auto;
 }
 
+/* CF-2: cross-machine origin badge on a remote agent card. */
+.origin-badge {
+  font-size: 0.7em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+.origin-badge.origin-remote {
+  background: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 22%, transparent);
+  color: var(--vscode-charts-purple, #b180d7);
+  border: 1px solid color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 40%, transparent);
+}
+
+/* CF-2: per-host group header in the cross-machine fleet view. */
+.host-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 4px;
+  padding: 2px 4px;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.host-group-header:first-child { margin-top: 0; }
+.host-group-header .host-glyph { opacity: 0.8; }
+.host-group-header .host-label { font-weight: 600; }
+.host-group-header.remote .host-label { color: var(--vscode-charts-purple, #b180d7); }
+.host-group-header .host-count {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
 .awaiting-pip {
   font-size: 0.7em;
   padding: 1px 5px;

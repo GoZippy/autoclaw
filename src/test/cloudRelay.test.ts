@@ -31,10 +31,12 @@ import {
   readRelayConfig,
   relayIsActive,
   defaultRelayConfig,
+  endpointIsSecure,
   encryptPayload,
   decryptPayload,
   queueDepth,
   CLOUD_HEARTBEAT_INTERVAL_MS,
+  type RelayConfig,
 } from '../cloud/relay';
 import {
   readExtendedConfig,
@@ -241,6 +243,88 @@ suite('Sprint 4 WA-4 — D2 cloud relay', () => {
     assert.strictEqual(env.alg, 'aes-256-gcm');
     assert.ok(!env.data.includes('inbox body'), 'ciphertext does not contain plaintext');
     assert.deepStrictEqual(decryptPayload(env, key), value);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CF-3 / CF-5 — cloud relay GA posture (security audit must-fixes)
+// ---------------------------------------------------------------------------
+
+suite('integrate-automate-v3.2 — relay GA posture (CF-3/CF-5)', () => {
+  const baseGa = (over: Partial<RelayConfig>): RelayConfig => ({
+    endpoint: 'https://relay.example', enabled: true,
+    heartbeatIntervalMs: 60_000, requestTimeoutMs: 5_000,
+    tier: 'preview', consentAckAt: null, ...over,
+  });
+
+  test('F1: endpointIsSecure — https ok, loopback http ok, public http + junk rejected', () => {
+    assert.strictEqual(endpointIsSecure('https://relay.example'), true);
+    assert.strictEqual(endpointIsSecure('http://localhost:8080'), true);
+    assert.strictEqual(endpointIsSecure('http://127.0.0.1:3000'), true);
+    assert.strictEqual(endpointIsSecure('http://relay.example'), false, 'public http rejected');
+    assert.strictEqual(endpointIsSecure('ftp://x'), false);
+    assert.strictEqual(endpointIsSecure('not a url'), false);
+  });
+
+  test('F1: an http:// endpoint keeps the relay inert (no token over cleartext)', () => {
+    assert.strictEqual(relayIsActive(baseGa({ endpoint: 'http://relay.example' })), false);
+    assert.strictEqual(relayIsActive(baseGa({ endpoint: 'https://relay.example' })), true);
+  });
+
+  test('GA tier requires an explicit consentAckAt; preview does not', () => {
+    assert.strictEqual(relayIsActive(baseGa({ tier: 'ga', consentAckAt: null })), false, 'ga + no consent ⇒ inert');
+    assert.strictEqual(relayIsActive(baseGa({ tier: 'ga', consentAckAt: '2026-06-05T00:00:00Z' })), true, 'ga + consent ⇒ active');
+    assert.strictEqual(relayIsActive(baseGa({ tier: 'preview' })), true, 'preview needs no consent');
+  });
+
+  test('readRelayConfig parses GA fields with safe defaults', async () => {
+    const { autoclawDir } = makeWorkspace();
+    fs.mkdirSync(path.join(autoclawDir, 'cloud'), { recursive: true });
+    fs.writeFileSync(path.join(autoclawDir, 'cloud', 'relay-config.json'),
+      JSON.stringify({ endpoint: 'https://r.example', enabled: true, tier: 'ga', consentAckAt: '2026-06-05T00:00:00Z', forward: { heartbeats: false, inbox: true } }));
+    const cfg = await readRelayConfig(autoclawDir);
+    assert.strictEqual(cfg.tier, 'ga');
+    assert.strictEqual(cfg.consentAckAt, '2026-06-05T00:00:00Z');
+    assert.deepStrictEqual(cfg.forward, { heartbeats: false, inbox: true });
+    // a bare config defaults tier→preview, consent→null, forward→absent
+    assert.strictEqual(defaultRelayConfig().tier, 'preview');
+    assert.strictEqual(defaultRelayConfig().consentAckAt, null);
+  });
+
+  test('F2: getCloudToken rejects an expired token', async () => {
+    const { autoclawDir } = makeWorkspace();
+    const store = new MemoryStore();
+    const installationId = await resolveInstallationId(autoclawDir);
+    const expired: CloudTokenRecord = {
+      token: 'tok', installation_id: installationId, source: 'oauth',
+      issued_at: '2020-01-01T00:00:00Z', expires_at: '2020-01-02T00:00:00Z', rotation: 0,
+    };
+    await store.set(`token:${installationId}`, JSON.stringify(expired));
+    const got = await getCloudToken(autoclawDir, store);
+    assert.strictEqual(got.ok, false);
+    if (!got.ok) { assert.strictEqual(got.reason, 'expired'); }
+  });
+
+  test('F2: an expired token makes the relay inert (token_unusable)', async () => {
+    const { autoclawDir } = makeWorkspace();
+    const store = new MemoryStore();
+    const installationId = await resolveInstallationId(autoclawDir);
+    await store.set(`token:${installationId}`, JSON.stringify({
+      token: 'tok', installation_id: installationId, source: 'oauth',
+      issued_at: '2020-01-01T00:00:00Z', expires_at: '2020-01-02T00:00:00Z', rotation: 0,
+    }));
+    const relay = new CloudRelay({ autoclawDir, secretStore: store, config: baseGa({}) });
+    const res = await relay.sendHeartbeats([{ agent_id: 'a', timestamp: new Date().toISOString(), status: 'active', current_task: null, sprint: null }]);
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.skipped, 'token_unusable');
+  });
+
+  test('F3: forward.heartbeats=false skips heartbeat forwarding (channel_disabled)', async () => {
+    const { autoclawDir } = makeWorkspace();
+    const relay = new CloudRelay({ autoclawDir, secretStore: new MemoryStore(), config: baseGa({ forward: { heartbeats: false, inbox: true } }) });
+    const res = await relay.sendHeartbeats([{ agent_id: 'a', timestamp: new Date().toISOString(), status: 'active', current_task: 'x', sprint: 1 }]);
+    assert.strictEqual(res.skipped, 'channel_disabled');
+    assert.strictEqual(await queueDepth(autoclawDir), 0, 'nothing queued for a disabled channel');
   });
 });
 

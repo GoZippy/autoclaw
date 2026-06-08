@@ -453,7 +453,7 @@ export async function getCloudToken(
   store?: SecretStore,
 ): Promise<
   | { ok: true; record: CloudTokenRecord }
-  | { ok: false; reason: 'no_token' | 'scope_mismatch' | 'corrupt'; detail: string }
+  | { ok: false; reason: 'no_token' | 'scope_mismatch' | 'corrupt' | 'expired'; detail: string }
 > {
   const installationId = await resolveInstallationId(autoclawDir);
   const s = store ?? resolveSecretStore(autoclawDir);
@@ -479,6 +479,11 @@ export async function getCloudToken(
         `stored token is scoped to a different installation ` +
         `(${record.installation_id} != ${installationId}); run cloud login again`,
     };
+  }
+  // F2 (security audit): a token past its expiry must not authenticate. The
+  // relay treats this as inert (token_unusable) rather than sending a dead token.
+  if (isTokenExpired(record)) {
+    return { ok: false, reason: 'expired', detail: 'stored token has expired; run cloud login again' };
   }
   return { ok: true, record };
 }
