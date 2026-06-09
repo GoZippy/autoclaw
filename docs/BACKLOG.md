@@ -46,4 +46,6 @@ When a user files one, copy it here, triage, and respond on the repo.
 ---
 
 ## Done log
-- (none yet — completed items move here with a date + commit/PR ref)
+- 2026-06-08 — Closed the `activate()` coverage gap: `src/test/extensionActivate.test.ts`
+  drives the real entry point in node (stubbed `vscode`, timers neutralized),
+  asserting all 35 commands register without throwing. Full suite 877 green.
