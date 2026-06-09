@@ -15,10 +15,30 @@ import type {
   RegisteredAgent, Heartbeat, AgentStatus, Message,
 } from './comms';
 
+/** Where an agent's presence reached this panel from (CF-2, integrate-automate-v3.2).
+ *  Mirrors the `FleetOrigin` in views/fleetViewModel.ts; kept inline so the
+ *  pure render module has no cross-module import. */
+export type AgentOrigin = 'local' | 'relay';
+
 /** RegisteredAgent + the live runtime fields that getAgentStatuses() injects. */
 export interface AgentWithLive extends RegisteredAgent {
   live_status?: AgentStatus;
   heartbeat?: Heartbeat | null;
+  /** CF-2: 'relay' for a remote-host agent forwarded by the cloud relay,
+   *  'local' (or absent) for an agent on this machine. */
+  origin?: AgentOrigin;
+  /** CF-2: the host the agent runs on. Falls back to machine_id, then 'local'. */
+  host?: string;
+}
+
+/** Resolve an agent's display host (CF-2): explicit host → machine_id → 'local'. */
+export function agentHost(agent: AgentWithLive): string {
+  return agent.host || agent.machine_id || 'local';
+}
+
+/** True when the agent is a relay-forwarded remote-host agent (CF-2). */
+export function isRemoteAgent(agent: AgentWithLive): boolean {
+  return agent.origin === 'relay';
 }
 
 /** Inbox summary tuple posted from extension.ts. */
@@ -206,6 +226,12 @@ export function renderAgentCard(
   if (agent.extension_id) {
     head += `<span class="agent-platform">${esc(extractPlatform(agent.extension_id))}</span>`;
   }
+  // CF-2: origin/host badge — only for relay-forwarded remote-host agents, so
+  // the single-machine view is unchanged (no badge when origin is local/absent).
+  if (isRemoteAgent(agent)) {
+    const host = agentHost(agent);
+    head += `<span class="origin-badge origin-remote" title="Remote agent on ${esc(host)} (via cloud relay)">⌂ ${esc(host)}</span>`;
+  }
   if (summary && summary.awaiting_response > 0) {
     head += `<span class="awaiting-pip" title="${summary.awaiting_response} awaiting your response">${summary.awaiting_response}</span>`;
   }
@@ -227,6 +253,10 @@ export function renderAgentCard(
     if (typeof agent.cost_budget.daily_usd === 'number') { parts.push(`$${agent.cost_budget.daily_usd}/day`); }
     if (typeof agent.cost_budget.hourly_usd === 'number') { parts.push(`$${agent.cost_budget.hourly_usd}/hr`); }
     if (parts.length) { body += renderDetailRow('Budget', parts.join(' · ')); }
+  }
+  // CF-2: surface host + origin so a remote agent is unambiguous in the body.
+  if (isRemoteAgent(agent)) {
+    body += renderDetailRow('Host', `${agentHost(agent)} (remote · via relay)`);
   }
   // v2 identity + routing fields
   if (agent.machine_id) { body += renderDetailRow('Machine', agent.machine_id); }
@@ -279,7 +309,12 @@ export function renderAgentCard(
   return `<div class="agent-card" data-agent-id="${esc(agent.id)}">${head}${body}</div>`;
 }
 
-/** Render the entire agent list. Returns a string the JS sets as innerHTML. */
+/** Render the entire agent list. Returns a string the JS sets as innerHTML.
+ *
+ * CF-2: when any agent is relay-forwarded (cross-machine fleet), cards are
+ * grouped under a per-host header — this machine's local agents first, then
+ * remote hosts alphabetically. With no relay data the list is flat, exactly
+ * as before (single-machine view unchanged). */
 export function renderAgentList(
   agents: readonly AgentWithLive[],
   summaries: Record<string, InboxSummary> = {},
@@ -288,9 +323,46 @@ export function renderAgentList(
   if (!agents || agents.length === 0) {
     return '<p class="empty">No agents detected.</p>';
   }
-  return agents
-    .map(a => renderAgentCard(a, summaries[a.id] ?? null, now))
-    .join('');
+
+  const hasRelay = agents.some(isRemoteAgent);
+  const card = (a: AgentWithLive) => renderAgentCard(a, summaries[a.id] ?? null, now);
+
+  if (!hasRelay) {
+    return agents.map(card).join('');
+  }
+
+  // Partition into this machine's local agents and remote agents grouped by
+  // host. Local agents render first under "This machine"; each remote host is
+  // its own group, hosts alphabetical.
+  const localAgents: AgentWithLive[] = [];
+  const remoteByHost = new Map<string, AgentWithLive[]>();
+  for (const a of agents) {
+    if (isRemoteAgent(a)) {
+      const host = agentHost(a);
+      const list = remoteByHost.get(host) ?? [];
+      list.push(a);
+      remoteByHost.set(host, list);
+    } else {
+      localAgents.push(a);
+    }
+  }
+
+  const groupHeader = (cls: string, glyph: string, label: string, count: number): string =>
+    `<div class="host-group-header ${cls}"><span class="host-glyph">${glyph}</span>` +
+    `<span class="host-label">${esc(label)}</span>` +
+    `<span class="host-count">${count}</span></div>`;
+
+  let out = '';
+  if (localAgents.length > 0) {
+    out += groupHeader('local', '⚑', 'This machine', localAgents.length);
+    out += localAgents.map(card).join('');
+  }
+  for (const host of Array.from(remoteByHost.keys()).sort((a, b) => a.localeCompare(b))) {
+    const list = remoteByHost.get(host)!;
+    out += groupHeader('remote', '⌂', host, list.length);
+    out += list.map(card).join('');
+  }
+  return out;
 }
 
 /** Heuristic: derive a short platform tag from extension_id. */

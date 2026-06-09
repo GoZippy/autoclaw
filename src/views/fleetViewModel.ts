@@ -22,6 +22,14 @@ import type { HealthState } from '../lmd/types';
 /** Coarse traffic-light colour derived from the LMD `HealthState`. */
 export type HealthColor = 'green' | 'amber' | 'red';
 
+/**
+ * Where a fleet agent's presence came from (integrate-automate-v3.2 / CF-1):
+ *  - `local`  — read from this machine's `.autoclaw` file bus.
+ *  - `relay`  — forwarded from another machine by the cloud relay (Lane D).
+ * Defaults to `local` everywhere so the single-host path is unchanged.
+ */
+export type FleetOrigin = 'local' | 'relay';
+
 /** One row of the LMD health grid (one per tracked agent). */
 export interface HealthGridRow {
   agentId: string;
@@ -74,6 +82,10 @@ export interface AgentCard {
   role: string;
   /** Host machine identifier (machine_id, falls back to "local"). */
   host: string;
+  /** Where this card's presence came from — local file bus or cloud relay. */
+  origin: FleetOrigin;
+  /** Convenience flag: true when `origin === 'relay'` (a remote-host agent). */
+  isRemote: boolean;
   /** What the agent is working on right now, or null when idle. */
   currentTask: string | null;
   /** ISO timestamp of the last heartbeat. */

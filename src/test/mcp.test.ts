@@ -517,7 +517,9 @@ suite('MCP — write-tool gate (BP3)', () => {
       const names = tools.map(t => t.definition.name);
       assert.ok(names.includes('note.add'));
       assert.ok(names.includes('claim.task'));
-      assert.strictEqual(tools.length, READ_ONLY_TOOLS.length + 6);
+      assert.ok(names.includes('llm.chat'), 'PA-5 llm.chat exposed');
+      // 6 original write tools + 3 PA-5 llm.* tools.
+      assert.strictEqual(tools.length, READ_ONLY_TOOLS.length + 9);
     } finally {
       rmrf(root);
     }

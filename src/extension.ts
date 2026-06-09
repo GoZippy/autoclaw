@@ -118,6 +118,8 @@ import {
 import { stopSvidRefresh } from './svid';
 import { getFleetMetrics, recordTaskDuration, resetMetrics } from './metrics';
 export { recordTaskDuration }; // allow reconcile and other callers to import directly
+import { writeConsensusVote } from './orchestrator/voteWriter';
+import { syncVoidSpecCommand } from './voidspec/dispatch';
 
 const fsPromises = fs.promises;
 let doctorOutputChannel: vscode.OutputChannel | undefined;
@@ -432,6 +434,25 @@ export function activate(context: vscode.ExtensionContext) {
       await kgHealthCheckCommand();
     })
   );
+  // RV-3: the panel's KG fabric-health chip dispatches to these three commands
+  // (startKgDaemon / restartKgDaemon / openKgDashboard). Before v3.2 they were
+  // referenced but never registered, so the chip click fell through to a docs
+  // prompt. Register them so the chip actually controls the daemon.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.start', async () => {
+      await kgStartCommand(context.extensionPath);
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.restart', async () => {
+      await kgRestartCommand(context.extensionPath);
+    })
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.openDashboard', async () => {
+      await kgOpenDashboardCommand();
+    })
+  );
 
   // Program-plane commands (Phase 4 cross-repo registry)
   context.subscriptions.push(
@@ -466,6 +487,26 @@ export function activate(context: vscode.ExtensionContext) {
         ...Object.entries(m.by_agent).map(([id, s]) => `  ${id}: p50=${Math.round(s.p50_ms / 1000)}s (${s.count} tasks)`),
       ];
       vscode.window.showInformationMessage(lines.join('\n'), { modal: true });
+    })
+  );
+
+  // VoidSpec sync command — thin VS Code wrapper around the headless
+  // syncVoidSpecCommand() in src/voidspec/dispatch.ts (no vscode import there,
+  // so the core sync logic stays unit-testable). This layer resolves the
+  // workspace root and surfaces the summary to the user.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.voidspec.sync', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!root) {
+        vscode.window.showWarningMessage('AutoClaw: open a workspace folder before syncing VoidSpec tasks.');
+        return;
+      }
+      try {
+        const r = await syncVoidSpecCommand({ workspaceRoot: root });
+        vscode.window.showInformationMessage(r.summary);
+      } catch (err) {
+        vscode.window.showErrorMessage(`AutoClaw: VoidSpec sync failed — ${String(err)}`);
+      }
     })
   );
 
@@ -1476,6 +1517,21 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           });
           break;
         }
+        case 'castVote': {
+          // RV-1: the review-decision Approve / Request changes / Reject
+          // buttons. Writes this host's own consensus vote file end-to-end.
+          await handleCastVote(webviewView, {
+            taskId: message.taskId,
+            vote: message.vote,
+            comment: message.comment,
+          });
+          break;
+        }
+        case 'openAwaitingFile': {
+          // RV-2: drill-in source links in the review-decision panel.
+          await handleOpenAwaitingFile(message.file);
+          break;
+        }
         case 'persistFilterState': {
           // UI-6: per-section filter state persistence (Memento)
           if (message.sectionId && message.state) {
@@ -2005,6 +2061,18 @@ const AGENT_DEFINITIONS: Omit<DetectedAgent, 'detected'>[] = [
   { id: 'antigravity', name: 'Antigravity', extensionId: null, rulesFormat: 'antigravity-rules', rulesDir: '.agent/rules', hooksSupported: false },
 ];
 
+/**
+ * `detected: true` means the agent is REGISTERED in this workspace — either
+ * its extension is installed OR its rules directory exists (.cursor, .agent,
+ * etc.) — NOT that it is actually running right now. Distinguish the two:
+ *
+ *   - Cross-agent rules generation: use `detected` so peer-agent inboxes are
+ *     wired up even when an agent isn't loaded at the moment.
+ *   - Heartbeat ticker / presence reporting: ALSO check
+ *     `vscode.extensions.getExtension(id)?.isActive` or `isHost`. The mere
+ *     presence of `.agent/` in the workspace does NOT mean Antigravity is
+ *     running — see writeAgentHeartbeats() for the presence gate.
+ */
 function detectAgents(workspaceRoot: string): DetectedAgent[] {
   const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
   const isKiroHost = /kiro/i.test(vscode.env.appName || '');
@@ -2252,26 +2320,36 @@ async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Pr
   const hostAgentId = detectAutoclawHostAgent(vscode.env.appName ?? '');
 
   for (const agent of detectedAgents) {
-    // Determine agent status from real signals
-    let status: 'active' | 'idle' = 'idle';
+    // PRESENCE GATE — three classes of agent, only two get live heartbeats:
+    //   (a) extension-backed agent whose extension is currently activated
+    //   (b) the host IDE itself (Antigravity in Antigravity IDE, Cursor in
+    //       Cursor, etc.)
+    //   (c) "registered but absent" — workspace has the agent's rules dir
+    //       (.agent, .cursor) but the agent isn't actually loaded. We skip
+    //       writing a heartbeat for (c) so host-side activity (file saves,
+    //       visible editors) doesn't get falsely attributed to an agent
+    //       that isn't running.
+    const isHost = agent.id === hostAgentId;
+    const ext = agent.extensionId ? vscode.extensions.getExtension(agent.extensionId) : undefined;
+    const extActive = !!ext?.isActive;
+    const isRegisteredButAbsent = !isHost && !extActive;
 
-    if (agent.extensionId) {
-      const ext = vscode.extensions.getExtension(agent.extensionId);
-      if (ext?.isActive) {
-        // Extension is loaded and activated
-        status = recentSave || hasVisibleEditors ? 'active' : 'idle';
-      }
-    } else {
-      // Agents without extension IDs (Cursor, Antigravity) — detected by host
-      status = recentSave || hasVisibleEditors ? 'active' : 'idle';
+    if (isRegisteredButAbsent) {
+      // Do not fabricate a heartbeat. Leave the previous file in place so
+      // operators can see when it last legitimately ticked; downstream
+      // consumers should compare timestamp to wall clock + treat stale
+      // heartbeats as "presence unknown."
+      continue;
     }
+
+    // Status now only reflects activity we can ACTUALLY attribute to this
+    // agent: either the host IDE shell or its own active extension.
+    const status: 'active' | 'idle' = (recentSave || hasVisibleEditors) ? 'active' : 'idle';
 
     // Read existing heartbeat so agent-set fields survive the tick.
     // The tick owns timestamp + status; the AGENT owns session_id +
     // current_task + sprint.
     const existingHb = await readHeartbeat(commsDir, agent.id);
-
-    const isHost = agent.id === hostAgentId;
 
     const hb: import('./comms').Heartbeat = {
       agent_id: agent.id,
@@ -2950,6 +3028,64 @@ async function kgHealthCheckCommand(): Promise<void> {
   }
 }
 
+/**
+ * RV-3: explicit `autoclaw.kg.start` — spawn the kg-daemon on demand. Unlike
+ * maybeStartKgDaemon (auto-start, gated on `autoclaw.kg.enabled`), an explicit
+ * user/panel action starts the daemon regardless of the enabled flag. A
+ * no-op + toast if it is already running.
+ */
+async function kgStartCommand(extensionPath: string): Promise<void> {
+  if (activeKg?.child && activeKg.child.exitCode === null) {
+    vscode.window.showInformationMessage(`AutoClaw KG: daemon already running on port ${activeKg.port}.`);
+    return;
+  }
+  const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
+  const userKgPort = cfg.get<number>('port', 0);
+  const dbPath = cfg.get<string>('dbPath', '');
+  const channel = getKgOutputChannel();
+
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+  const idePorts = getIdePorts(currentIde, workspaceRoot || undefined);
+  const kgPort = userKgPort > 0 ? userKgPort : idePorts.kgPort;
+
+  const result = await startKgDaemon({ extensionPath, port: kgPort, dbPath, logger: channel });
+  if (result.ok) {
+    activeKg = result.state;
+    vscode.window.showInformationMessage(`AutoClaw KG: daemon started on port ${result.state.port}.`);
+  } else {
+    channel.appendLine(`[kg] ${result.message}`);
+    vscode.window.showWarningMessage(
+      `AutoClaw KG: could not start daemon — ${result.message}`,
+      'Open KG Output'
+    ).then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+  }
+}
+
+/**
+ * RV-3: explicit `autoclaw.kg.restart` — stop the running daemon (if any),
+ * then start a fresh one.
+ */
+async function kgRestartCommand(extensionPath: string): Promise<void> {
+  const channel = getKgOutputChannel();
+  if (activeKg?.child && activeKg.child.exitCode === null) {
+    channel.appendLine('[kg] restart → stopping current daemon');
+    try { await stopKgDaemon(activeKg); } catch (e) { channel.appendLine(`[kg] stop warning: ${(e as Error).message}`); }
+    activeKg = null;
+  }
+  await kgStartCommand(extensionPath);
+}
+
+/**
+ * RV-3: explicit `autoclaw.kg.openDashboard` — focus the AutoClaw panel where
+ * the KG (kg:) fabric-health badge lives, then surface a live health line so
+ * the user can see daemon status. There is no separate KG webview; the unified
+ * dashboard is the surface.
+ */
+async function kgOpenDashboardCommand(): Promise<void> {
+  try { await vscode.commands.executeCommand('kdreamDashboard.focus'); } catch { /* panel may be unavailable in headless */ }
+  await kgHealthCheckCommand();
+}
+
 async function bridgeAddAgentCommand(): Promise<void> {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) { vscode.window.showErrorMessage('Open a workspace first.'); return; }
@@ -3295,6 +3431,73 @@ async function handleReplyAwaiting(
     await refreshOrchestratorData(view);
   } catch (e) {
     vscode.window.showWarningMessage(`Reply failed: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * RV-1: handle a `castVote` message from the review-decision UI. Writes this
+ * host agent's own consensus vote file (`<task>-<agent>.json`) under
+ * comms/consensus/active/ via the vscode-free voteWriter, then refreshes the
+ * panel so the consensus tally reflects the new vote immediately.
+ */
+async function handleCastVote(
+  view: vscode.WebviewView,
+  args: { taskId?: string; vote?: string; comment?: string }
+): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { return; }
+  const me = activeHostAgentId();
+  if (!me) { return; }
+  if (!args.taskId || !args.vote) {
+    vscode.window.showWarningMessage('Vote ignored: missing task id or vote value.');
+    return;
+  }
+
+  const consensusActiveDir = path.join(
+    wr, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active'
+  );
+  const result = await writeConsensusVote({
+    consensusActiveDir,
+    taskId: args.taskId,
+    voter: me,
+    sessionId,
+    vote: args.vote,
+    comment: args.comment ?? '',
+  });
+
+  if (result.ok) {
+    const label = args.vote.replace('_', ' ');
+    vscode.window.showInformationMessage(`Vote recorded: ${label} on ${args.taskId}.`);
+    await refreshOrchestratorData(view);
+  } else {
+    vscode.window.showWarningMessage(`Vote failed: ${result.error}`);
+  }
+}
+
+/**
+ * RV-2: handle an `openAwaitingFile` message from a review-decision drill-in
+ * link. Opens the referenced file in the editor. Paths are resolved relative
+ * to the workspace root and rejected if they escape it (a referenced ref
+ * could be attacker-influenced bus data). A missing file (post-rebase drift)
+ * surfaces a friendly toast instead of an unhandled rejection.
+ */
+async function handleOpenAwaitingFile(file?: string): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr || !file) { return; }
+
+  const root = path.resolve(wr);
+  const target = path.resolve(root, file);
+  const rel = path.relative(root, target);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+    vscode.window.showWarningMessage(`Refusing to open '${file}' — outside the workspace.`);
+    return;
+  }
+
+  try {
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
+    await vscode.window.showTextDocument(doc, { preview: true });
+  } catch {
+    vscode.window.showWarningMessage(`Could not open '${file}' — it may have moved or been removed.`);
   }
 }
 

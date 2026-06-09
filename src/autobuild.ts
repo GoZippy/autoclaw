@@ -32,7 +32,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 
 const DEFAULT_STEP_TIMEOUT_SECONDS = 120;
 const MAX_LOG_BYTES = 1024 * 1024; // 1 MB per log
@@ -204,10 +204,22 @@ export function cronMatches(spec: CronSpec, date: Date): boolean {
 
 // ----- YAML loader (scoped subset) -----------------------------------------
 
+export type StepMode = 'report' | 'fix';
+
+export interface StepGuard {
+  scope_globs: string[];
+  max_files: number;
+  require_clean_git: boolean;
+  rollback_on: 'test_fail' | 'never';
+}
+
 export interface WorkflowStep {
   id: string;
   run: string;
   condition?: string;
+  mode?: StepMode;
+  guard?: StepGuard;
+  verify?: string;
 }
 
 export interface Workflow {
@@ -246,23 +258,40 @@ function parseScalar(raw: string): string | number | boolean {
 }
 
 export function parseWorkflowYaml(text: string): Workflow {
-  // Tiny YAML reader scoped to the workflow schema. Top-level scalars and a
-  // single `steps:` list of objects (each step's keys at indent 6, list marker
-  // at indent 4, with `- id:` form). We DON'T claim to be a general YAML
-  // parser — anything outside the schema is ignored.
   const lines = text.split(/\r?\n/);
   const top: Record<string, string | number | boolean> = {};
   const steps: WorkflowStep[] = [];
   let inSteps = false;
   let currentStep: Partial<WorkflowStep> | null = null;
+  let guardState: {
+    inGuard: boolean;
+    scope_globs: string[];
+    max_files: number;
+    require_clean_git: boolean;
+    rollback_on: 'test_fail' | 'never';
+  } | null = null;
+
+  const flushGuard = () => {
+    if (guardState && guardState.inGuard && currentStep) {
+      currentStep.guard = {
+        scope_globs: guardState.scope_globs,
+        max_files: guardState.max_files,
+        require_clean_git: guardState.require_clean_git,
+        rollback_on: guardState.rollback_on,
+      };
+    }
+    guardState = null;
+  };
 
   const flushStep = () => {
+    flushGuard();
     if (currentStep) {
       if (!currentStep.id || !currentStep.run) {
         throw new Error(
           `workflow step missing required id/run: ${JSON.stringify(currentStep)}`
         );
       }
+      if (!currentStep.mode) currentStep.mode = 'report';
       steps.push(currentStep as WorkflowStep);
       currentStep = null;
     }
@@ -287,15 +316,48 @@ export function parseWorkflowYaml(text: string): Workflow {
         }
         continue;
       }
-      if (value.trim().length === 0) {
-        // Top-level key with no scalar value — ignore (we only model the schema above).
-        continue;
-      }
+      if (value.trim().length === 0) { continue; }
       top[key] = parseScalar(value);
       continue;
     }
 
-    if (!inSteps) { continue; } // we only descend into known nested context
+    if (!inSteps) { continue; }
+
+    // Guard sub-key inside a step: deeper than the step keys (which sit at
+    // 4 spaces), i.e. 6+ spaces, and a guard block is already open.
+    if (guardState && guardState.inGuard && /^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.test(line)) {
+      const indent = line.length - line.trimStart().length;
+      if (indent >= 6) {
+        const gm = line.match(/^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+        if (gm) {
+          const gk = gm[1];
+          const gv = unquote(gm[2]);
+          if (gk === 'scope_globs') {
+            const raw = gv.trim();
+            if (raw.startsWith('[') && raw.endsWith(']')) {
+              // YAML array: ["src/**", "test/**"]
+              guardState.scope_globs = raw.slice(1, -1).split(',').map((s: string) => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+            } else {
+              // Comma-separated: src/**, test/**
+              guardState.scope_globs = raw.split(',').map((s: string) => s.trim()).filter(Boolean);
+            }
+          } else if (gk === 'max_files') {
+            guardState.max_files = parseInt(gv, 10);
+            if (!Number.isFinite(guardState.max_files) || guardState.max_files <= 0) {
+              throw new Error(`guard.max_files must be a positive integer, got "${gv}"`);
+            }
+          } else if (gk === 'require_clean_git') {
+            guardState.require_clean_git = gv === 'true';
+          } else if (gk === 'rollback_on') {
+            if (gv !== 'test_fail' && gv !== 'never') {
+              throw new Error(`guard.rollback_on must be "test_fail" or "never", got "${gv}"`);
+            }
+            guardState.rollback_on = gv;
+          }
+          continue;
+        }
+      }
+    }
 
     // List marker: "  - id: foo"
     const listMatch = line.match(/^(\s*)-\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
@@ -304,21 +366,35 @@ export function parseWorkflowYaml(text: string): Workflow {
       currentStep = {};
       const key = listMatch[2];
       const value = listMatch[3];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (currentStep as any)[key] = unquote(value);
+      if (key === 'guard') {
+        guardState = { inGuard: true, scope_globs: ['**/*'], max_files: 10, require_clean_git: true, rollback_on: 'test_fail' };
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (currentStep as any)[key] = unquote(value);
+      }
       continue;
     }
 
-    // Continuation key inside the current step: "      run: ..."
+    // Continuation key inside the current step
     const contMatch = line.match(/^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
     if (contMatch && currentStep) {
       const key = contMatch[1];
-      const value = contMatch[2];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (currentStep as any)[key] = unquote(value);
+      const value = unquote(contMatch[2]);
+      if (key === 'mode') {
+        if (value !== 'report' && value !== 'fix') {
+          throw new Error(`step mode must be "report" or "fix", got "${value}"`);
+        }
+        currentStep.mode = value;
+      } else if (key === 'guard') {
+        guardState = { inGuard: true, scope_globs: ['**/*'], max_files: 10, require_clean_git: true, rollback_on: 'test_fail' };
+      } else if (key === 'verify') {
+        currentStep.verify = value;
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (currentStep as any)[key] = value;
+      }
       continue;
     }
-    // Unknown indentation form — ignore.
   }
   flushStep();
 
@@ -331,13 +407,12 @@ export function parseWorkflowYaml(text: string): Workflow {
   if (steps.length === 0) {
     throw new Error('workflow YAML must define at least one step');
   }
-  // Validate the cron eagerly so bad expressions surface at load time.
   parseCron(top.cron);
 
   const wf: Workflow = {
     name: top.name,
     cron: top.cron,
-    steps
+    steps,
   };
   if (typeof top.created === 'string') { wf.created = top.created; }
   if (typeof top.notify === 'boolean') { wf.notify = top.notify; }
@@ -352,12 +427,17 @@ export function loadWorkflow(workflowPath: string): Workflow {
 
 // ----- Run engine ----------------------------------------------------------
 
+export type GuardVerdict = 'applied' | 'rejected_scope' | 'rejected_cap' | 'rejected_dirty' | 'rolled_back' | 'na';
+
 export interface StepResult {
   id: string;
   exitCode: number | null;
   durationMs: number;
   timedOut: boolean;
   skipped?: boolean;
+  mode: StepMode;
+  files_changed: string[];
+  guard_verdict: GuardVerdict;
 }
 
 export interface RunResult {
@@ -367,6 +447,8 @@ export interface RunResult {
   status: 'passed' | 'failed';
   logPath: string;
   steps: StepResult[];
+  guardBlockRejected: number;
+  guardRolledBack: number;
 }
 
 interface RunLogWriter {
@@ -424,6 +506,47 @@ function pickShell(): { cmd: string; args: (run: string) => string[] } {
   return { cmd: '/bin/sh', args: r => ['-c', r] };
 }
 
+/**
+ * Revert a guarded fix-step's changes (AB-2). Tracked modifications are
+ * restored with `git checkout --`; files that were untracked BEFORE the step
+ * but exist now (i.e. the step created them) are removed with `git clean -f`.
+ * Reliable when the step ran against a clean tree (`require_clean_git: true`);
+ * with a dirty tree it is best-effort and never touches paths the step did
+ * not change. Returns true when the revert commands ran without error.
+ */
+function revertChanges(
+  preImageUntracked: string[],
+  cwd: string,
+  log: RunLogWriter
+): boolean {
+  let ok = true;
+  let reverted = 0;
+  // Invoke git DIRECTLY (not through the shell) so file paths are passed as
+  // discrete argv — no cmd.exe / sh quote mangling.
+  const gitLines = (args: string[]): string[] => {
+    const r = spawnSync('git', args, { cwd, env: process.env, timeout: 30_000 });
+    return r.status === 0 && r.stdout ? r.stdout.toString().split(/\r?\n/).filter(Boolean) : [];
+  };
+
+  // Tracked files the step modified → restore to HEAD/index.
+  const trackedModified = gitLines(['diff', '--name-only']);
+  if (trackedModified.length > 0) {
+    const co = spawnSync('git', ['checkout', '--', ...trackedModified], { cwd, env: process.env, timeout: 30_000 });
+    if (co.status !== 0) { ok = false; } else { reverted += trackedModified.length; }
+  }
+
+  // Files the step newly created (untracked now, not untracked before) → remove.
+  const newlyCreated = gitLines(['ls-files', '--others', '--exclude-standard'])
+    .filter(f => !preImageUntracked.includes(f));
+  if (newlyCreated.length > 0) {
+    const cl = spawnSync('git', ['clean', '-f', '--', ...newlyCreated], { cwd, env: process.env, timeout: 30_000 });
+    if (cl.status !== 0) { ok = false; } else { reverted += newlyCreated.length; }
+  }
+
+  log.write(`[ROLLBACK ${reverted} file(s)] ${ok ? 'reverted' : 'reverted with warnings'}\n`);
+  return ok;
+}
+
 async function runStep(
   step: WorkflowStep,
   cwd: string,
@@ -432,14 +555,43 @@ async function runStep(
 ): Promise<StepResult> {
   const startedAt = Date.now();
   const shell = pickShell();
-  log.write(`[STEP ${step.id}] ${step.run}\n`);
+  const mode = step.mode ?? 'report';
+  const guard = step.guard;
+  log.write(`[STEP ${step.id}] mode=${mode} ${step.run}\n`);
+
+  const filesChanged: string[] = [];
+  let guardVerdict: GuardVerdict = 'na';
+
+  // ── Guard: require_clean_git ─────────────────────────────────────────
+  if (mode === 'fix' && guard && guard.require_clean_git) {
+    const gs = spawnSync(shell.cmd, shell.args('git status --porcelain'), { cwd, env: process.env, timeout: timeoutSeconds * 1000 });
+    if (gs.status === 0 && gs.stdout && gs.stdout.toString().trim().length > 0) {
+      guardVerdict = 'rejected_dirty';
+      log.write(`[GUARD REJECTED ${step.id}] dirty working tree, require_clean_git\n`);
+      return {
+        id: step.id, exitCode: null, durationMs: Date.now() - startedAt,
+        timedOut: false, mode, files_changed: [], guard_verdict: guardVerdict,
+      };
+    }
+  }
+
+  // ── Record pre-image for rollback ────────────────────────────────────
+  // Untracked files that exist BEFORE the step runs — so a revert only deletes
+  // files the step itself created, never pre-existing untracked files.
+  let preImageUntracked: string[] = [];
+  if (mode === 'fix' && guard) {
+    const untrackedResult = spawnSync(shell.cmd, shell.args('git ls-files --others --exclude-standard'), { cwd, env: process.env, timeout: 10_000 });
+    if (untrackedResult.status === 0 && untrackedResult.stdout) {
+      preImageUntracked = untrackedResult.stdout.toString().split(/\r?\n/).filter(Boolean);
+    }
+  }
 
   return new Promise<StepResult>(resolve => {
     let timedOut = false;
     let settled = false;
     const child = spawn(shell.cmd, shell.args(step.run), {
       cwd,
-      env: process.env
+      env: process.env,
     });
 
     const timer = setTimeout(() => {
@@ -460,12 +612,79 @@ async function runStep(
           ? `\n[OK ${step.id}] exit=${exitCode}\n`
           : `\n[FAILED ${step.id}] exit=${exitCode}${timedOut ? ' (timeout)' : ''}\n`
       );
-      resolve({
-        id: step.id,
-        exitCode,
-        durationMs: Date.now() - startedAt,
-        timedOut
-      });
+
+      // ── Real files_changed from git diff ──────────────────────────────
+      const filesChangedNow: string[] = [];
+      if (mode === 'fix') {
+        const diffResult = spawnSync(shell.cmd, shell.args('git diff --name-only'), { cwd, env: process.env, timeout: 10_000 });
+        if (diffResult.status === 0 && diffResult.stdout) {
+          filesChangedNow.push(...diffResult.stdout.toString().split(/\r?\n/).filter(Boolean));
+        }
+        const untrackedResult = spawnSync(shell.cmd, shell.args('git ls-files --others --exclude-standard'), { cwd, env: process.env, timeout: 10_000 });
+        if (untrackedResult.status === 0 && untrackedResult.stdout) {
+          filesChangedNow.push(...untrackedResult.stdout.toString().split(/\r?\n/).filter(Boolean));
+        }
+      }
+
+      const done = (code: number | null, verdict: GuardVerdict) => {
+        resolve({
+          id: step.id, exitCode: code, durationMs: Date.now() - startedAt,
+          timedOut, mode, files_changed: filesChangedNow, guard_verdict: verdict,
+        });
+      };
+
+      // ── Guard: max_files cap → revert + reject ────────────────────────
+      if (mode === 'fix' && guard && filesChangedNow.length > guard.max_files) {
+        log.write(`[GUARD REJECTED ${step.id}] files_changed (${filesChangedNow.length}) > max_files (${guard.max_files})\n`);
+        revertChanges(preImageUntracked, cwd, log);
+        done(exitCode, 'rejected_cap');
+        return;
+      }
+
+      // ── Guard: scope_globs → revert + reject ──────────────────────────
+      if (mode === 'fix' && guard && guard.scope_globs && guard.scope_globs.length > 0) {
+        const outOfScope = filesChangedNow.filter(f => {
+          return !guard.scope_globs.some((pattern: string) => {
+            if (pattern === '**/*' || pattern === '**') return true;
+            if (pattern.includes('*')) {
+              const regex = new RegExp('^' + pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*') + '$');
+              return regex.test(f);
+            }
+            return f === pattern || f.startsWith(pattern.replace(/\/$/, ''));
+          });
+        });
+        if (outOfScope.length > 0) {
+          log.write(`[GUARD REJECTED ${step.id}] out-of-scope files: ${outOfScope.join(', ')}\n`);
+          revertChanges(preImageUntracked, cwd, log);
+          done(exitCode, 'rejected_scope');
+          return;
+        }
+      }
+
+      // ── Verify-gated rollback ─────────────────────────────────────────
+      // Guards passed. If the step declares a verify command, run it; on
+      // failure with rollback_on:'test_fail', revert the applied changes.
+      if (mode === 'fix' && guard && step.verify && filesChangedNow.length > 0) {
+        log.write(`[VERIFY ${step.id}] ${step.verify}\n`);
+        const v = spawnSync(shell.cmd, shell.args(step.verify), { cwd, env: process.env, timeout: timeoutSeconds * 1000 });
+        if (v.stdout) { log.write(v.stdout.toString()); }
+        if (v.stderr) { log.write(v.stderr.toString()); }
+        if (v.status !== 0) {
+          if (guard.rollback_on === 'test_fail') {
+            log.write(`[VERIFY FAILED ${step.id}] exit=${v.status} → rolling back\n`);
+            revertChanges(preImageUntracked, cwd, log);
+            done(v.status ?? 1, 'rolled_back');
+            return;
+          }
+          // rollback_on: never — leave changes, but surface the verify failure.
+          log.write(`[VERIFY FAILED ${step.id}] exit=${v.status} (rollback_on: never → changes kept)\n`);
+          done(v.status ?? 1, 'applied');
+          return;
+        }
+        log.write(`[VERIFY OK ${step.id}]\n`);
+      }
+
+      done(exitCode, mode === 'fix' && guard ? 'applied' : 'na');
     };
 
     child.on('error', err => {
@@ -536,7 +755,7 @@ export async function runWorkflow(
   let aborted = false;
   for (const step of wf.steps) {
     if (aborted) {
-      results.push({ id: step.id, exitCode: null, durationMs: 0, timedOut: false, skipped: true });
+      results.push({ id: step.id, exitCode: null, durationMs: 0, timedOut: false, skipped: true, mode: step.mode ?? 'report', files_changed: [], guard_verdict: 'na' });
       log.write(`[SKIPPED ${step.id}] previous step failed\n`);
       continue;
     }
@@ -559,13 +778,18 @@ export async function runWorkflow(
     : DEFAULT_MAX_LOGS_PER_WORKFLOW;
   pruneRunLogs(runsDir, wf.name, keep);
 
+  const guardBlockRejected = results.filter(r => r.guard_verdict === 'rejected_dirty' || r.guard_verdict === 'rejected_scope' || r.guard_verdict === 'rejected_cap').length;
+  const guardRolledBack = results.filter(r => r.guard_verdict === 'rolled_back').length;
+
   return {
     workflow: wf.name,
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
     status: passed ? 'passed' : 'failed',
     logPath,
-    steps: results
+    steps: results,
+    guardBlockRejected,
+    guardRolledBack,
   };
 }
 
