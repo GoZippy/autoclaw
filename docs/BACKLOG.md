@@ -35,7 +35,7 @@ project (github.com/GoZippy/VoidSpec); AutoClaw is the consumer.
 ### Release / process
 | # | Item | Status |
 |---|------|--------|
-| REL-2 | Decide whether to bump `package.json` 3.1.4 → 3.2.0 + CHANGELOG + publish to the marketplaces (separate from the master merge; not yet done). | open |
+| _(all clear)_ | — | — |
 
 ---
 
@@ -46,6 +46,10 @@ When a user files one, copy it here, triage, and respond on the repo.
 ---
 
 ## Done log
+- 2026-06-09 — **REL-2 done**: released **v3.2.0** — bumped `package.json` 3.1.4→3.2.0,
+  CHANGELOG entry, tagged `v3.2.0`, **published to both the VS Code Marketplace and
+  Open VSX** (ZippyTechnologiesLLC.autoclaw v3.2.0). Publish needs `NODE_OPTIONS=--use-system-ca`
+  in this TLS-intercepted environment.
 - 2026-06-09 — **REL-1 done**: promoted `integrate-automate-v3.2` `dev-beta` → `master`
   (merge `549cbca`, pushed). Full suite 877 green on the merged master.
 - 2026-06-08 — Closed the `activate()` coverage gap: `src/test/extensionActivate.test.ts`
