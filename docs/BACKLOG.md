@@ -17,9 +17,21 @@ Accepted-risk residuals; tracked in
 
 | # | Item | Sev | Status |
 |---|------|-----|--------|
-| SEC-1 | Drop `session_id` from the `RelayHeartbeat` wire shape (F3 minimization) | low | open |
-| SEC-2 | Consent modal in `extension.ts` that shows the endpoint + writes `consentAckAt` (F4) | med | open |
-| SEC-3 | Windows ACL on `credentials.enc` / `.keyseed` (chmod 0600 is POSIX-only) (F6) | low | open |
+| SEC-1 | Drop `session_id` from the `RelayHeartbeat` wire shape (F3 minimization) | low | **done** (be80ddb) |
+| SEC-2 | Consent modal in `extension.ts` (show endpoint + write `consentAckAt`) (F4) | med | open — folded into RELAY-WIRE below |
+| SEC-3 | Windows ACL on `credentials.enc` / `.keyseed` via icacls (F6) | low | **done** (be80ddb) |
+
+### RELAY-WIRE — the relay is built but DORMANT (decision needed)
+**Finding (2026-06-09):** `CloudRelay.sendHeartbeats`/`sendInbox`/`flushQueue`
+exist + are fully tested, but **no production code calls them** — the relay is
+not wired into the extension's heartbeat/inbox loops. So the "GA" shipped as
+opt-in *plumbing* that is currently never invoked. To make it actually
+function (when a user opts in) needs a deliberate piece:
+- [ ] call `sendHeartbeats`/`sendInbox` from the heartbeat + inbox flush path (only when `relayIsActive`)
+- [ ] a `flushQueue` timer
+- [ ] **SEC-2** consent modal (show the endpoint, write `consentAckAt`) — the UX that lets a user opt into GA without hand-editing JSON
+This turns on cross-machine data egress, so it's a **product decision**, not
+auto-bundled. Awaiting user go-ahead.
 
 ### VoidSpec integration follow-ups
 Detail + acceptance criteria in
