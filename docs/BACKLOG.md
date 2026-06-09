@@ -35,7 +35,7 @@ project (github.com/GoZippy/VoidSpec); AutoClaw is the consumer.
 ### Release / process
 | # | Item | Status |
 |---|------|--------|
-| REL-1 | Promote `dev-beta` → `master`. v3.2 is merged into `dev-beta` (clean, 874 tests green, pushed); **awaiting user testing + final approval** before the `master` merge. | awaiting-approval |
+| REL-2 | Decide whether to bump `package.json` 3.1.4 → 3.2.0 + CHANGELOG + publish to the marketplaces (separate from the master merge; not yet done). | open |
 
 ---
 
@@ -46,6 +46,8 @@ When a user files one, copy it here, triage, and respond on the repo.
 ---
 
 ## Done log
+- 2026-06-09 — **REL-1 done**: promoted `integrate-automate-v3.2` `dev-beta` → `master`
+  (merge `549cbca`, pushed). Full suite 877 green on the merged master.
 - 2026-06-08 — Closed the `activate()` coverage gap: `src/test/extensionActivate.test.ts`
   drives the real entry point in node (stubbed `vscode`, timers neutralized),
   asserting all 35 commands register without throwing. Full suite 877 green.
