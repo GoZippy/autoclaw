@@ -231,14 +231,19 @@ export function decryptPayload<T = unknown>(env: EncryptedEnvelope, key: Buffer)
 // Wire shapes
 // ---------------------------------------------------------------------------
 
-/** A heartbeat as forwarded to the relay (a low-sensitivity subset). */
+/**
+ * A heartbeat as forwarded to the relay (a low-sensitivity subset).
+ *
+ * SEC-1 (audit F3 minimization): `session_id` is deliberately NOT part of the
+ * wire shape — it's an internal correlation id with no value to the relay and
+ * heartbeats are forwarded in clear, so it must not leave the machine.
+ */
 export interface RelayHeartbeat {
   agent_id: string;
   timestamp: string;
   status: string;
   current_task: string | null;
   sprint: number | null;
-  session_id?: string;
   current_llm?: string;
 }
 
