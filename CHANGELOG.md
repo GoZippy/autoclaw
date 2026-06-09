@@ -1,5 +1,31 @@
 # Changelog
 
+## [3.2.0] - 2026-06-09
+
+The integrate-automate sprint. Four lanes shipped together: self-healing build workflows, the cloud relay reaching general availability behind a security review, the specialized-persona system, and cross-machine fleet awareness.
+
+### Added
+
+- **Cloud relay — general availability** (`src/cloud/relay.ts`, `src/cloud/auth.ts`). The relay that forwards heartbeats and inbox messages between your machines is now a supported, opt-in feature. It stays completely inert by default — it only transmits when you explicitly enable it, set an endpoint, and are logged in. A security review (`reviews/cloud-relay-security-audit.md`) gated the release and two fixes landed from it:
+  - The endpoint must be HTTPS (loopback `http` allowed for local dev), so the access token is never sent over plaintext.
+  - Expired tokens are rejected rather than used, keeping the relay inert until you log in again.
+  - GA is strictly opt-in: it requires `tier: ga` plus a recorded consent acknowledgement on top of the endpoint and token. Per-channel forwarding (heartbeats / inbox) can be turned off individually.
+- **Specialized personas.** A persona is a focused role the orchestrator can hand work to.
+  - **Per-persona memory** (`src/memory/personas.ts`) — each persona keeps its own layered, bi-temporal memory (fresh → recalled → archived) and a human-readable digest. A privacy gate keeps anything project-private or secret-bearing out of the cross-project memory mirror.
+  - **Security-auditor and doc-writer personas** (`skills/security-auditor/`, `skills/doc-writer/`) — one audits a module against a threat model and writes a structured finding report; the other keeps user-facing docs in sync with public-API changes.
+  - **Subcontracting to a persona** — a delegated task can name the persona that should run it; a security-auditor's finding uses the stricter unanimous review rule.
+  - **LLM tools over MCP** (`llm.chat`, `llm.models`, `llm.health`) — gated, audited tools that route through the existing local-first LLM registry.
+- **Cross-machine fleet view** — the fleet panel now groups agents by host and badges where each came from, so a multi-machine setup reads clearly.
+- **Guarded auto-fix for AutoBuild** — a workflow step can run in `fix` mode under a guard (file-scope limits, a clean-tree requirement, and a verify command). If the verify fails, the change is rolled back to the pre-step state instead of being left half-applied.
+
+### Changed
+
+- AutoBuild's guard now enforces its scope/cap/clean-tree checks for real and performs an actual git-level rollback (previously the rollback was recorded but not applied).
+
+### Internal
+
+- Added a node-level activation smoke test that drives the extension's real `activate()` entry point with a stubbed editor API, covering command registration without needing a full editor host.
+
 ## [3.1.4] - 2026-05-29
 
 Panel UX completion over 3.1.3. Ships the review-request decision UI (the "validate each other's work" feature) and the final visual-cleanup pass, closing the panel-ux sprint.
