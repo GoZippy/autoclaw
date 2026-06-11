@@ -160,6 +160,26 @@ export async function readRelayConfig(autoclawDir: string): Promise<RelayConfig>
 }
 
 /**
+ * Write the relay config to `.autoclaw/cloud/relay-config.json`. Used by the
+ * consent flow to record an explicit opt-in (endpoint + `enabled` + `tier:ga`
+ * + `consentAckAt`). Persists only the known fields.
+ */
+export async function writeRelayConfig(autoclawDir: string, cfg: RelayConfig): Promise<void> {
+  const dir = cloudDir(autoclawDir);
+  await fsp.mkdir(dir, { recursive: true });
+  const doc: RelayConfig = {
+    endpoint: typeof cfg.endpoint === 'string' ? cfg.endpoint.trim() : '',
+    enabled: cfg.enabled === true,
+    heartbeatIntervalMs: typeof cfg.heartbeatIntervalMs === 'number' && cfg.heartbeatIntervalMs > 0 ? cfg.heartbeatIntervalMs : CLOUD_HEARTBEAT_INTERVAL_MS,
+    requestTimeoutMs: typeof cfg.requestTimeoutMs === 'number' && cfg.requestTimeoutMs > 0 ? cfg.requestTimeoutMs : 15_000,
+    tier: cfg.tier === 'ga' ? 'ga' : 'preview',
+    consentAckAt: typeof cfg.consentAckAt === 'string' ? cfg.consentAckAt : null,
+    ...(cfg.forward ? { forward: { heartbeats: cfg.forward.heartbeats !== false, inbox: cfg.forward.inbox !== false } } : {}),
+  };
+  await fsp.writeFile(path.join(dir, 'relay-config.json'), JSON.stringify(doc, null, 2) + '\n', 'utf8');
+}
+
+/**
  * True only when the relay is genuinely active: explicitly enabled AND a
  * non-empty endpoint is configured. Every send path checks this first.
  */

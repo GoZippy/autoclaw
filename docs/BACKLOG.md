@@ -18,20 +18,21 @@ Accepted-risk residuals; tracked in
 | # | Item | Sev | Status |
 |---|------|-----|--------|
 | SEC-1 | Drop `session_id` from the `RelayHeartbeat` wire shape (F3 minimization) | low | **done** (be80ddb) |
-| SEC-2 | Consent modal in `extension.ts` (show endpoint + write `consentAckAt`) (F4) | med | open — folded into RELAY-WIRE below |
+| SEC-2 | Consent modal in `extension.ts` (show endpoint + write `consentAckAt`) (F4) | med | **done** — `autoclaw.cloud.enableRelay` |
 | SEC-3 | Windows ACL on `credentials.enc` / `.keyseed` via icacls (F6) | low | **done** (be80ddb) |
 
-### RELAY-WIRE — the relay is built but DORMANT (decision needed)
-**Finding (2026-06-09):** `CloudRelay.sendHeartbeats`/`sendInbox`/`flushQueue`
-exist + are fully tested, but **no production code calls them** — the relay is
-not wired into the extension's heartbeat/inbox loops. So the "GA" shipped as
-opt-in *plumbing* that is currently never invoked. To make it actually
-function (when a user opts in) needs a deliberate piece:
-- [ ] call `sendHeartbeats`/`sendInbox` from the heartbeat + inbox flush path (only when `relayIsActive`)
-- [ ] a `flushQueue` timer
-- [ ] **SEC-2** consent modal (show the endpoint, write `consentAckAt`) — the UX that lets a user opt into GA without hand-editing JSON
-This turns on cross-machine data egress, so it's a **product decision**, not
-auto-bundled. Awaiting user go-ahead.
+### RELAY-WIRE — make the relay live (in progress)
+The relay was built but dormant. Now wired:
+- [x] forward heartbeats from the heartbeat tick (`src/cloud/forwarding.ts` → `forwardHeartbeats`), inert unless `relayIsActive` + token
+- [x] `flushQueue` drained on the same tick
+- [x] **SEC-2** consent modal — `autoclaw.cloud.enableRelay` / `disableRelay` (validates https, names what's forwarded, writes `tier:ga` + `consentAckAt`)
+- [ ] **inbox forwarding** — hook `relay.sendInbox` at the inbox-write site (more invasive; the next RELAY-WIRE step)
+- [ ] stand up the hosted relay + entitlement (see [specs/relay-entitlement.spec.md](specs/relay-entitlement.spec.md)) — only after demand is validated
+
+### Monetization / strategy (planning, local)
+- [docs/MONETIZATION.md](MONETIZATION.md) — open-core + hosted-relay subscription (Tailscale model) + enterprise.
+- [docs/COMPETITIVE_BRIEF.md](COMPETITIVE_BRIEF.md) — positioning vs Cline/Roo/Continue/Cursor/etc.; the multi-agent-conductor niche is unclaimed.
+- [docs/specs/relay-entitlement.spec.md](specs/relay-entitlement.spec.md) — server-side paywall design (client stays open).
 
 ### VoidSpec integration follow-ups
 Detail + acceptance criteria in

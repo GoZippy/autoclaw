@@ -71,6 +71,10 @@ import {
   type CommsLogEntry, type Message,
 } from './comms';
 import {
+  CloudRelay, forwardHeartbeats, readRelayConfig, writeRelayConfig,
+  endpointIsSecure, defaultRelayConfig,
+} from './cloud';
+import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
   readExtensionVersionFromDisk, readGitBranchFromDisk,
@@ -508,6 +512,12 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showErrorMessage(`AutoClaw: VoidSpec sync failed — ${String(err)}`);
       }
     })
+  );
+
+  // Cloud relay consent commands (RELAY-WIRE / SEC-2)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.cloud.enableRelay', () => cloudEnableRelayCommand()),
+    vscode.commands.registerCommand('autoclaw.cloud.disableRelay', () => cloudDisableRelayCommand())
   );
 
   // Orchestrator Dashboard commands — redirect to unified panel
@@ -2141,6 +2151,62 @@ Stay in your assigned scope. Coordinate via messages for cross-scope changes.
 }
 
 // ---------------------------------------------------------------------------
+// Cloud relay consent (SEC-2 / RELAY-WIRE) — explicit opt-in before any
+// cross-machine forwarding. Writes relay-config.json with tier:ga + consentAckAt.
+// ---------------------------------------------------------------------------
+
+async function cloudEnableRelayCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('AutoClaw: open a workspace first.'); return; }
+  const autoclawDir = path.join(workspaceRoot, '.autoclaw');
+  const current = await readRelayConfig(autoclawDir);
+
+  const endpoint = await vscode.window.showInputBox({
+    title: 'Enable AutoClaw Cloud Relay',
+    prompt: 'Relay endpoint URL for cross-machine fleet coordination. Must be https.',
+    value: current.endpoint || 'https://',
+    ignoreFocusOut: true,
+    validateInput: (v) => endpointIsSecure(v.trim()) ? undefined : 'Must be an https:// URL (plain http allowed only for localhost).',
+  });
+  if (!endpoint) { return; }
+  const ep = endpoint.trim();
+
+  // Explicit consent — name exactly what leaves the machine and to where.
+  const choice = await vscode.window.showWarningMessage(
+    `Enable the AutoClaw cloud relay?\n\n` +
+    `When enabled AND you are logged in, AutoClaw forwards to:\n${ep}\n\n` +
+    `• Inbox message bodies are encrypted before leaving this machine.\n` +
+    `• Heartbeats (agent status / current task) are sent in clear.\n` +
+    `• Nothing is sent until you also log in (cloud login).\n\n` +
+    `You can disable this at any time.`,
+    { modal: true },
+    'Enable relay'
+  );
+  if (choice !== 'Enable relay') { return; }
+
+  await writeRelayConfig(autoclawDir, {
+    ...defaultRelayConfig(),
+    endpoint: ep,
+    enabled: true,
+    tier: 'ga',
+    consentAckAt: new Date().toISOString(),
+    forward: { heartbeats: true, inbox: true },
+  });
+  vscode.window.showInformationMessage(
+    'AutoClaw: cloud relay enabled. Run "AutoClaw: Cloud Login" to start forwarding.'
+  );
+}
+
+async function cloudDisableRelayCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('AutoClaw: open a workspace first.'); return; }
+  const autoclawDir = path.join(workspaceRoot, '.autoclaw');
+  const current = await readRelayConfig(autoclawDir);
+  await writeRelayConfig(autoclawDir, { ...current, enabled: false });
+  vscode.window.showInformationMessage('AutoClaw: cloud relay disabled (inert). Your settings are kept — re-enable anytime.');
+}
+
+// ---------------------------------------------------------------------------
 // Heartbeat Ticker — writes real heartbeats for detected agents based on
 // actual VS Code signals (extension installed + active, visible editors,
 // recent file saves, running tasks).
@@ -2163,6 +2229,11 @@ function startHeartbeatTicker(context: vscode.ExtensionContext): void {
   if (!workspaceRoot) { return; }
 
   const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+  const autoclawDir = path.join(workspaceRoot, '.autoclaw');
+  // RELAY-WIRE: one relay client for the session. Every call is a safe no-op
+  // unless the user has explicitly enabled + consented to the cloud relay AND
+  // is logged in (relayIsActive + a stored token). Nothing transmits otherwise.
+  const relay = new CloudRelay({ autoclawDir });
 
   // Track file saves as a proxy for "an agent is actively editing"
   const saveWatcher = vscode.workspace.onDidSaveTextDocument(() => {
@@ -2170,12 +2241,21 @@ function startHeartbeatTicker(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(saveWatcher);
 
-  // Write heartbeats immediately, then every 30s
-  writeAgentHeartbeats(workspaceRoot, commsDir).catch(() => {});
+  const tick = async (): Promise<void> => {
+    await writeAgentHeartbeats(workspaceRoot, commsDir).catch(() => {});
+    // Forward heartbeats + drain the offline queue. Best-effort; a relay
+    // failure must never disrupt the local heartbeat loop.
+    try {
+      await forwardHeartbeats(autoclawDir, relay);
+      await relay.flushQueue();
+    } catch {
+      /* relay is opt-in + best-effort */
+    }
+  };
 
-  heartbeatIntervalId = setInterval(() => {
-    writeAgentHeartbeats(workspaceRoot, commsDir).catch(() => {});
-  }, 30_000);
+  // Write/forward immediately, then every 30s
+  tick();
+  heartbeatIntervalId = setInterval(() => { tick(); }, 30_000);
 
   context.subscriptions.push({
     dispose: () => {

@@ -34,7 +34,9 @@ export {
   CLOUD_HEARTBEAT_INTERVAL_MS,
   defaultRelayConfig,
   readRelayConfig,
+  writeRelayConfig,
   relayIsActive,
+  endpointIsSecure,
   cloudDir,
   queueDepth,
   encryptPayload,
@@ -48,3 +50,6 @@ export type {
   EncryptedEnvelope,
   CloudRelayOptions,
 } from './relay';
+
+// Live forwarding (RELAY-WIRE)
+export { gatherHeartbeatsForRelay, forwardHeartbeats } from './forwarding';
