@@ -9,3 +9,5 @@
 
 export * from './agentTypes';
 export * from './onboarding';
+export * from './routing';
+export * from './governance';
