@@ -28,6 +28,7 @@ export type {
 
 export { RunnerRegistry, TRUST_PRESET_TABLE, translateTrust } from './registry';
 export type { TrustTranslation } from './registry';
+export { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS, type DefaultRegistryOptions } from './defaultRegistry';
 
 export {
   ClaudeCodeRunner,

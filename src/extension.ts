@@ -65,7 +65,7 @@ import {
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
 import {
-  readCommsLog, getAgentStatuses, readRegistry, writeHeartbeat, readHeartbeat,
+  readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
   markMessageReplied, detectAutoclawHostAgent,
   type CommsLogEntry, type Message,
@@ -74,6 +74,11 @@ import {
   CloudRelay, forwardHeartbeats, readRelayConfig, writeRelayConfig,
   endpointIsSecure, defaultRelayConfig,
 } from './cloud';
+import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS } from './runners';
+// NB: import the agent-fabric TAXONOMY via explicit subpaths — `./fabric`
+// (bare) resolves to the pre-existing `src/fabric.ts` message-bus module.
+import { onboardPlatform } from './fabric/onboarding';
+import { defaultAgentTypeForRunner } from './fabric/agentTypes';
 import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
@@ -518,6 +523,11 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.cloud.enableRelay', () => cloudEnableRelayCommand()),
     vscode.commands.registerCommand('autoclaw.cloud.disableRelay', () => cloudDisableRelayCommand())
+  );
+
+  // Fabric onboarding (AF-4b)
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.fabric.onboard', () => fabricOnboardCommand())
   );
 
   // Orchestrator Dashboard commands — redirect to unified panel
@@ -2204,6 +2214,41 @@ async function cloudDisableRelayCommand(): Promise<void> {
   const current = await readRelayConfig(autoclawDir);
   await writeRelayConfig(autoclawDir, { ...current, enabled: false });
   vscode.window.showInformationMessage('AutoClaw: cloud relay disabled (inert). Your settings are kept — re-enable anytime.');
+}
+
+// ---------------------------------------------------------------------------
+// Fabric onboarding (AF-4b) — register a platform agent as a typed fabric worker.
+// ---------------------------------------------------------------------------
+
+async function fabricOnboardCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { vscode.window.showErrorMessage('AutoClaw: open a workspace first.'); return; }
+  const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+
+  const pick = await vscode.window.showQuickPick(
+    BUILTIN_RUNNER_IDS.map(id => ({ label: id, description: `default type: ${defaultAgentTypeForRunner(id)}` })),
+    { placeHolder: 'Onboard which platform agent into the fabric?' }
+  );
+  if (!pick) { return; }
+
+  const registry = createDefaultRunnerRegistry();
+  const entry = registry.get(pick.label);
+  if (!entry) { vscode.window.showErrorMessage(`AutoClaw: unknown runner "${pick.label}".`); return; }
+
+  try {
+    const report = await onboardPlatform({
+      runner: entry.runner,
+      readRegistry: () => readRegistry(commsDir),
+      writeRegistry: (reg) => writeRegistry(commsDir, reg),
+    });
+    if (report.registered) {
+      vscode.window.showInformationMessage(`AutoClaw fabric: ${report.detail}`);
+    } else {
+      vscode.window.showWarningMessage(`AutoClaw fabric: ${report.platform} ${report.detail}`);
+    }
+  } catch (err) {
+    vscode.window.showErrorMessage(`AutoClaw fabric onboarding failed: ${String(err)}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

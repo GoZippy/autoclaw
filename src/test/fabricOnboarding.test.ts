@@ -5,6 +5,7 @@
 import * as assert from 'assert';
 
 import { onboardPlatform, type OnboardOptions } from '../fabric/onboarding';
+import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS } from '../runners/defaultRegistry';
 import type { AgentRegistry } from '../comms';
 
 /** A minimal fake runner exposing just id/detect/health. */
@@ -80,6 +81,18 @@ suite('fabric onboarding (AF-4)', () => {
     assert.strictEqual(report.registered, true);
     assert.match(report.detail, /health check failed/);
     assert.strictEqual(get()!.agents[0].id, 'codex');
+  });
+
+  test('createDefaultRunnerRegistry wires every built-in platform runner', () => {
+    const reg = createDefaultRunnerRegistry();
+    assert.strictEqual(reg.list().length, BUILTIN_RUNNER_IDS.length);
+    for (const id of BUILTIN_RUNNER_IDS) {
+      const entry = reg.get(id);
+      assert.ok(entry, `${id} registered`);
+      assert.strictEqual(entry!.runner.id, id);
+    }
+    // The priority platforms resolve.
+    assert.ok(reg.get('hermes') && reg.get('openclaw'));
   });
 
   test('idempotent: re-onboarding updates the existing entry, no duplicate', async () => {

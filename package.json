@@ -216,6 +216,10 @@
         "title": "AutoClaw: Disable Cloud Relay"
       },
       {
+        "command": "autoclaw.fabric.onboard",
+        "title": "AutoClaw: Onboard Agent into Fabric"
+      },
+      {
         "command": "orchestrator.showDashboard",
         "title": "AutoClaw: Show Orchestrator Dashboard"
       },
