@@ -139,3 +139,17 @@ export function agentTypeForPersona(personaId: string | undefined): AgentType {
   if (!personaId) { return 'coder'; }
   return PERSONA_TYPE[personaId] ?? 'coder';
 }
+
+/**
+ * A sensible DEFAULT agent type for a known platform runner. Most coding-agent
+ * platforms default to `coder`; a personal-assistant platform like Hermes
+ * defaults to `assistant`. This is only a registration default — a
+ * `RegisteredAgent.agent_type` (the instance's role) always wins when set.
+ */
+const RUNNER_DEFAULT_TYPE: Record<string, AgentType> = {
+  hermes: 'assistant',
+};
+
+export function defaultAgentTypeForRunner(runnerId: string): AgentType {
+  return RUNNER_DEFAULT_TYPE[runnerId] ?? 'coder';
+}

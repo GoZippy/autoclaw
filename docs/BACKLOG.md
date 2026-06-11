@@ -45,6 +45,23 @@ project (github.com/GoZippy/VoidSpec); AutoClaw is the consumer.
 | VF-2 | Write the `tasks.yaml` contract doc + cross-link `types.ts` → VoidSpec repo | open |
 | VF-3 | Implement the deferred `runner-voidspec` dispatch runner (`dispatch.ts:56`) | blocked (needs VoidSpec API) |
 
+### Multi-Platform Agent Fabric (the big initiative)
+Extends [docs/DISTRIBUTED_AGENT_FABRIC.md](DISTRIBUTED_AGENT_FABRIC.md); design
+in [docs/rfc/agent-fabric-platforms.md](rfc/agent-fabric-platforms.md).
+**Survey finding:** the per-platform runners already exist (`src/runners/`:
+claude-code/desktop, codex, cursor, kiro, gemini, hermes, openclaw, autogpt) +
+capability routing exists — so this is wire+extend.
+
+| # | Item | Status |
+|---|------|--------|
+| AF-1 | Agent-type taxonomy (`src/fabric/agentTypes.ts`) — coder/runner/auditor/supervisor/assistant/governance + per-type controls | **done** (7af9d3a) |
+| AF-2 | Tag `RegisteredAgent` with `agent_type` + `can_orchestrate`; add `taskType` discriminant to `DispatchOptions` (callable, non-coding dispatch) | **in progress** |
+| AF-3 | Route by type — capability match keys on `AgentType.capabilityTags`; review requests route to the required kind (auditor ⇒ unanimous) | open |
+| AF-4 | Onboarding command `autoclaw fabric onboard <platform>` (detect → skill pack → register w/ type → smoke-check). **OpenClaw + Hermes first.** | open |
+| AF-5 | Governance controls — approval gate before dispatch/merge for governance flows + an audit log every dispatch writes | open |
+| AF-6 | Bring OpenClaw + Hermes fully live as assistant/service workers (runners exist — verify + register + skill packs) | open |
+| AF-7 | Cross-machine routing rides the relay; external A2A agents via the bridge | open |
+
 ### Release / process
 | # | Item | Status |
 |---|------|--------|

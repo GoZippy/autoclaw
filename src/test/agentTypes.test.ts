@@ -58,6 +58,27 @@ suite('fabric agent-type taxonomy', () => {
     assert.strictEqual(consensusRuleForAgentType(agentTypeForPersona('security-auditor')), 'unanimous');
   });
 
+  test('defaultAgentTypeForRunner: hermes ⇒ assistant, others ⇒ coder', () => {
+    const { defaultAgentTypeForRunner } = require('../fabric/agentTypes');
+    assert.strictEqual(defaultAgentTypeForRunner('hermes'), 'assistant');
+    assert.strictEqual(defaultAgentTypeForRunner('claude-code'), 'coder');
+    assert.strictEqual(defaultAgentTypeForRunner('openclaw'), 'coder');
+  });
+
+  test('RegisteredAgent + DispatchOptions accept the new fabric fields (additive)', () => {
+    // Type-level: these must compile. Runtime: the shapes round-trip.
+    const agent: import('../comms').RegisteredAgent = {
+      id: 'a', name: 'A', extension_id: 'x', detected: true,
+      inbox_path: '/i', hooks_supported: false, last_heartbeat: 't', status: 'active',
+      agent_type: 'auditor', can_orchestrate: false,
+    };
+    assert.strictEqual(agent.agent_type, 'auditor');
+    const dispatch: Pick<import('../runners/types').DispatchOptions, 'prompt' | 'trust' | 'workingDir' | 'taskType'> = {
+      prompt: 'audit it', trust: 'off', workingDir: '/w', taskType: 'review',
+    };
+    assert.strictEqual(dispatch.taskType, 'review');
+  });
+
   test('taxonomy is consistent with reviewSla security-tier personas', () => {
     // Every security-tier persona must classify as an auditor (⇒ unanimous),
     // and the two review-rule derivations must agree.
