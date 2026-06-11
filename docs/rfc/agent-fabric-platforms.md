@@ -12,9 +12,13 @@ extends: docs/DISTRIBUTED_AGENT_FABRIC.md
 (the fabric initiative this extends — do NOT spawn a parallel architecture),
 [docs/MONETIZATION.md](../MONETIZATION.md), and the live relay in `src/cloud/`.
 
-> **Section 7 (integration with existing AutoClaw code) is being filled from a
-> code-infra survey in progress.** The requirements + model below come from the
-> product vision and are stable.
+> **Key finding (code survey, 2026-06-09):** the per-platform *runners already
+> exist* — `src/runners/` ships real implementations for claude-code,
+> claude-desktop, codex, cursor, kiro, gemini-cli, hermes (466 lines), openclaw
+> (629 lines), autogpt, plus a loop-service adapter. Capability routing also
+> exists (`orchestrate.ts` `broadcastCapabilityQueries` + a jaccard match). So
+> this is **wire + extend, not build-from-scratch.** The one missing conceptual
+> layer — the agent-TYPE taxonomy — is now implemented (`src/fabric/agentTypes.ts`).
 
 ## 1. Goal
 Turn AutoClaw from "coordinates a few coding agents in one repo" into a
@@ -93,20 +97,39 @@ install its adapter + skills, register it, and run a smoke check.
 - Personal-assistant + governance actors are **human-in-the-loop by default** —
   they propose/approve; they don't silently act outside scope.
 
-## 7. Integration with existing AutoClaw infra
-*(Pending the in-progress code-infra survey — will map adapters onto
-`src/runners/`, the capability router, `src/personas/`, subcontract/reviewSla,
-the comms agent registry, and the A2A bridge, with concrete extension points.)*
+## 7. Integration with existing AutoClaw infra (the real seams)
+Each plug-in point already exists; the fabric layer threads the agent-type
+taxonomy through them.
 
-## 8. Sequencing (smallest reversible first)
-1. Define the **AgentAdapter** interface + a registry (extends `src/runners/`).
-2. Ship **two reference adapters** end-to-end (Claude Code CLI + Kilo — already a
-   peer) to prove the contract.
-3. Add the **agent-type taxonomy** as persona archetypes + capability tags.
-4. Add **OpenClaw + Hermes** adapters (service/HTTP/A2A) — the assistant + service tier.
-5. **Onboarding command** + per-platform skill packs.
-6. **Governance controls** (approval gate before dispatch/merge).
-7. Cursor / Codex adapters fill in.
+| Seam | Where it lives | What it already does | What the fabric adds |
+|---|---|---|---|
+| **Runner registry** | `src/runners/registry.ts` (`RunnerRegistry`, `translateTrust`), `src/runners/types.ts` (`Runner`, `DispatchOptions`) | registers + selects per-platform runners; 9 implemented | tag each runner with an `AgentType`; add a `taskType` discriminant to `DispatchOptions` for non-coding (callable) dispatch |
+| **Agent registry schema** | `src/comms.ts` (`RegisteredAgent` v2: capabilities, machine_id, trust_level, llms_available, human_in_loop_required) | identity + capability advertisement | add `agent_type` + `can_orchestrate` so discovery filters by kind |
+| **Capability routing** | `orchestrate.ts` `broadcastCapabilityQueries` + jaccard match (`required_capabilities`) | "who can do X?" exists | match also on `AgentType.capabilityTags`; route reviews to the required *kind* |
+| **Personas** | `src/personas/types.ts`, `src/personas/loader.ts` | role layer (14 archetypes) | `agentTypeForPersona()` (done) classifies each; add governance/supervisor/assistant archetypes |
+| **Controls** | `src/orchestrator/subcontract.ts` (`persona_id`), `reviewSla.ts` (`SECURITY_TIER_PERSONAS`, `quorumRuleForPersona`) | subcontract phases + unanimous-for-security | `consensusRuleForAgentType()` (done) derives the rule per type; add a governance approval gate before dispatch/merge |
+| **A2A identity** | `docs/specs/agent-card-schema.md`, `/.well-known/agent.json`, `x-autoclaw` ext | A2A v0.2.5 card published | publish `agent_type` in the card; consume external A2A agents via the bridge |
+| **Bridge** | `src/bridge-ws.ts` (WS), `src/bridge.ts` (HTTP `/api/v1/*`) | external agents register + stream (opt-in, local-only) | cross-machine delivery rides the relay / bridge |
+
+**The taxonomy keystone is in:** `src/fabric/agentTypes.ts` —
+`AgentType`, per-type profiles (trust, consensus rule, human-in-loop,
+canOrchestrate, capability tags), `agentTypeForPersona()`, and
+`consensusRuleForAgentType()` (consistent with `reviewSla`).
+
+## 8. Sequencing (revised — adapters already exist)
+1. ✅ **Agent-type taxonomy** (`src/fabric/agentTypes.ts`) — the missing layer.
+2. **Tag runners + RegisteredAgent with `agent_type`**; add `taskType` to
+   `DispatchOptions` so runners can be dispatched as callable tasks, not just prompts.
+3. **Route by type** — capability match also keys on `AgentType.capabilityTags`;
+   review requests route to the required *kind* (auditor ⇒ unanimous, etc.).
+4. **Onboarding command** — `autoclaw fabric onboard <platform>`: detect runner,
+   install its skill pack, register with `agent_type`, smoke-check. (Runners +
+   skill libraries exist; this wires them.)
+5. **Governance controls** — an approval gate before dispatch/merge for
+   `governance`-classified flows + an audit log every dispatch writes.
+6. **OpenClaw + Hermes** brought fully live as `assistant`/`service` workers
+   (their runners exist — verify + register + skill packs).
+7. Cross-machine routing rides the relay; A2A agents via the bridge.
 
 ## 9. Open questions (for the user)
 - Transport for push-to-agent: reuse the relay, adopt A2A (clawbridge-a2a), or both?
