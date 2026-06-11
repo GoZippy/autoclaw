@@ -57,7 +57,8 @@ capability routing exists — so this is wire+extend.
 | AF-1 | Agent-type taxonomy (`src/fabric/agentTypes.ts`) — coder/runner/auditor/supervisor/assistant/governance + per-type controls | **done** (7af9d3a) |
 | AF-2 | Tag `RegisteredAgent` with `agent_type` + `can_orchestrate`; add `taskType` discriminant to `DispatchOptions` (callable, non-coding dispatch) | **in progress** |
 | AF-3 | Route by type — capability match keys on `AgentType.capabilityTags`; review requests route to the required kind (auditor ⇒ unanimous) | open |
-| AF-4 | Onboarding command `autoclaw fabric onboard <platform>` (detect → skill pack → register w/ type → smoke-check). **OpenClaw + Hermes first.** | open |
+| AF-4a | Onboarding **core** `onboardPlatform()` (`src/fabric/onboarding.ts`) — detect → health → register a typed agent; idempotent; 6 tests | **done** |
+| AF-4b | Onboarding **command** `autoclaw fabric onboard <platform>` — **blocked on a `createDefaultRunnerRegistry()`**: the runners exist but are NOT wired into `extension.ts` (no RunnerRegistry instance at activation; runner constructors aren't uniform). Build the registry-builder, then the command + per-platform skill packs. OpenClaw + Hermes first. | open |
 | AF-5 | Governance controls — approval gate before dispatch/merge for governance flows + an audit log every dispatch writes | open |
 | AF-6 | Bring OpenClaw + Hermes fully live as assistant/service workers (runners exist — verify + register + skill packs) | open |
 | AF-7 | Cross-machine routing rides the relay; external A2A agents via the bridge | open |

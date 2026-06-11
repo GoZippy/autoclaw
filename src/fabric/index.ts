@@ -8,3 +8,4 @@
  */
 
 export * from './agentTypes';
+export * from './onboarding';
