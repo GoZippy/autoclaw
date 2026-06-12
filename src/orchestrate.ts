@@ -14,6 +14,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 // Fabric agent-type tags (AF-8 §4). Explicit subpath keeps the bus out of the planner.
 import { agentTypeProfile, type AgentType } from './fabric/agentTypes';
 
@@ -35,6 +36,34 @@ export type EffortSize = 'S' | 'M' | 'L' | 'XL';
  */
 export type TaskCriticality = 1 | 2 | 3;
 
+/** A phase hint for tier-aware routing (feature B). */
+export type TaskPhase = 'plan' | 'execute' | 'review' | 'grade';
+
+/**
+ * A machine-checkable acceptance criterion for a task (feature C). The review
+ * gate runs `command` and checks the result against `expect`.
+ */
+export interface AcceptanceCheck {
+  /** Shell command to run, e.g. "npm test", "go vet ./...". */
+  command: string;
+  /**
+   * Pass condition. Default 'exit_zero'. `{ exit_code }` matches a specific
+   * code; `{ stdout_matches }` is a regex tested against captured stdout.
+   */
+  expect?: 'exit_zero' | { exit_code: number } | { stdout_matches: string };
+  /** Per-command wall-clock cap; the runner SIGKILLs the process on overrun. */
+  timeout_seconds?: number;
+}
+
+/** Outcome of running one AcceptanceCheck (recorded on ConsensusResult.gate_checks). */
+export interface GateCheckResult {
+  command: string;
+  exit_code: number;
+  passed: boolean;
+  duration_ms: number;
+  stdout_excerpt?: string;
+}
+
 export interface ManifestTask {
   id: string;
   name: string;
@@ -54,6 +83,19 @@ export interface ManifestTask {
    * Defaults to 2 (MAJOR, 2/3 majority) when omitted.
    */
   criticality?: TaskCriticality;
+  /**
+   * Optional machine-checkable acceptance commands (C). The review gate runs
+   * these orchestrator-side and a failure becomes a non-overridable block —
+   * votes cannot approve over a red check. Opt-in: absent ⇒ votes-only.
+   * See orchestrate-gates-and-routing.spec.md (C).
+   */
+  acceptance?: AcceptanceCheck[];
+  /**
+   * Optional phase hint for the tier-aware router (B): 'plan'/'review' prefer a
+   * strong model, 'execute' a mid model, 'grade' a cheap model. Absent ⇒ tier
+   * is not considered (scoring unchanged).
+   */
+  phase?: TaskPhase;
 }
 
 /**
@@ -441,6 +483,13 @@ export interface ScorableAgent {
    * byte-identical to before — existing fleets are unaffected.
    */
   agent_type?: AgentType;
+  /**
+   * Models the agent can run, advertised on its agent card (e.g.
+   * ["claude-opus-4-8","claude-sonnet-4-6"]). Used by the tier-aware router (B)
+   * to prefer the right model tier for the task's phase. Absent ⇒ tier is not
+   * considered (scoring unchanged). See orchestrate-gates-and-routing.spec.md (B).
+   */
+  llms_available?: string[];
 }
 
 /** Compute the Jaccard index between two arrays treated as sets. */
@@ -466,6 +515,43 @@ export function trustWeight(level?: ScorableAgent['trust_level']): number {
 }
 
 /**
+ * Model tier ranks (higher = stronger). Unknown models map to 0 and are
+ * treated as neutral (never penalized). Tier-aware routing — feature B.
+ */
+export const MODEL_TIER: Record<string, number> = {
+  'claude-fable-5': 4, 'claude-mythos-5': 4,
+  'claude-opus-4-8': 3, 'claude-opus-4-7': 3, 'claude-opus-4-6': 3, 'claude-opus-4-5': 3,
+  'claude-sonnet-4-6': 2, 'claude-sonnet-4-5': 2,
+  'claude-haiku-4-5': 1,
+};
+
+/** Preferred tier band per phase: strong for plan/review, mid for execute, cheap for grade. */
+export const PHASE_PREF: Record<TaskPhase, number> = {
+  plan: 3, review: 3, execute: 2, grade: 1,
+};
+
+/**
+ * Soft multiplier in (0,1] expressing how well an agent's *best* available
+ * model matches the phase's preferred tier. Returns 1.0 (no effect) when the
+ * phase is absent or the agent advertises no known model — so single-tier
+ * fleets and phase-less manifests score exactly as before. `penalty` is the
+ * per-tier-step cost (default 0.5); the factor is clamped so it never reaches 0
+ * (a single-tier fleet still gets work). Feature B.
+ */
+export function tierFactor(
+  llmsAvailable: string[] | undefined,
+  phase: TaskPhase | undefined,
+  penalty = 0.5
+): number {
+  if (!phase || !llmsAvailable || llmsAvailable.length === 0) { return 1.0; }
+  const known = llmsAvailable.map(m => MODEL_TIER[m] ?? 0).filter(t => t > 0);
+  if (known.length === 0) { return 1.0; }
+  const best = Math.max(...known);
+  const distance = Math.abs(best - PHASE_PREF[phase]); // 0..3
+  return Math.max(0.1, 1 - penalty * (distance / 3));
+}
+
+/**
  * Score an agent for a task per the Phase 3 fabric formula:
  *
  *   capability_match = jaccard(agent.capabilities, task.required_capabilities)
@@ -473,7 +559,9 @@ export function trustWeight(level?: ScorableAgent['trust_level']): number {
  *   trust_score      = trustWeight(agent.trust_level)
  *   idle_factor      = max(0, max_parallel - in_flight) / max_parallel
  *   estimated_cost   = max(0.01, effort_hours × hourly_usd)
- *   score            = capability_match × trust_score × idle_factor / estimated_cost
+ *   tier_factor      = phase/model-tier fit ∈ (0,1] (B); 1.0 when phase or
+ *                      llms_available absent — see tierFactor()
+ *   score            = capability_match × trust_score × idle_factor × tier_factor / estimated_cost
  *
  * Returns a non-negative number; higher = better fit. A score of 0
  * indicates the agent is either fully trust-blocked, fully busy, or
@@ -516,7 +604,11 @@ export function scoreAgent(agent: ScorableAgent, task: PlannedTask): number {
   const hourlyUsd = agent.cost_budget?.hourly_usd ?? 1.0;
   const estimatedCost = Math.max(0.01, hours * hourlyUsd);
 
-  return (capabilityMatch * trustScore * idleFactor) / estimatedCost;
+  // Tier × phase fit (B). 1.0 (no effect) unless the task has a phase AND the
+  // agent advertises a known model — keeps phase-less/single-tier scoring intact.
+  const tier = tierFactor(agent.llms_available, task.phase);
+
+  return (capabilityMatch * trustScore * idleFactor * tier) / estimatedCost;
 }
 
 /**
@@ -678,6 +770,7 @@ export function planSprints(
                   max_parallel_tasks: entry.max_parallel_tasks,
                   languages_supported: entry.languages_supported,
                   agent_type: entry.agent_type, // AF-8 §4 (absent ⇒ no boost)
+                  llms_available: entry.llms_available, // tier routing (B); absent ⇒ tierFactor 1.0
                   in_flight: slot.taskCount,
                 }
               : { in_flight: slot.taskCount };
@@ -1246,6 +1339,14 @@ export interface AgentRegistryEntry {
    * legacy round-robin fleet onto the scorer path.
    */
   agent_type?: AgentType;
+  /**
+   * Models the agent advertises (mirrored from the comms registry /
+   * agent card). Feeds `tierFactor` in `scoreAgent` (B). Like `agent_type`,
+   * deliberately NOT part of the `useScorer` gate — an entry with only
+   * `llms_available` set will NOT flip a legacy round-robin fleet onto the
+   * scorer path, and absent `task.phase` the factor is 1.0 anyway.
+   */
+  llms_available?: string[];
 }
 
 export async function writeAgentRegistry(
@@ -1283,6 +1384,222 @@ export async function readAgentRegistry(
 export function resolveAgentId(waSlot: string, agents: AgentRegistryEntry[]): string {
   const idx = parseInt(waSlot.replace('WA-', ''), 10) - 1;
   return agents[idx]?.platform ?? waSlot;
+}
+
+// ---------------------------------------------------------------------------
+// Manifest gate fields — scoped YAML reader (no external dependency)
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-task gate/routing fields the review step reads straight from the
+ * manifest: `criticality` (consensus threshold), `phase` (tier routing, B) and
+ * `acceptance` (evidence gate, C). Full manifest parsing remains with the
+ * skill prompt (the AI constructs the `Manifest` object — see toYAML's note);
+ * this scoped reader exists so the extension's review command can gate
+ * consensus without a YAML dependency. See orchestrate-gates-and-routing.spec.md.
+ */
+export interface ManifestTaskGateFields {
+  id: string;
+  criticality?: TaskCriticality;
+  phase?: TaskPhase;
+  acceptance?: AcceptanceCheck[];
+}
+
+const TASK_PHASES: readonly TaskPhase[] = ['plan', 'execute', 'review', 'grade'];
+
+/** Strip matching outer quotes from a YAML scalar. */
+function unquoteScalar(value: string): string {
+  const v = value.trim();
+  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+    return v.slice(1, -1);
+  }
+  return v;
+}
+
+/**
+ * Parse the gate/routing fields out of a manifest YAML document. Scoped to
+ * exactly the subset this module needs (same approach as autobuild's workflow
+ * loader): the top-level `tasks:` block list, and within each task the `id`,
+ * `criticality`, `phase` and `acceptance` keys. Other keys and nested lists
+ * (subtasks, scope, …) are skipped. Invalid values are dropped with a warning
+ * rather than failing the parse — the gate is opt-in, so a malformed field
+ * must never block review. Only full-line comments are stripped (commands may
+ * legitimately contain `#`).
+ */
+export function parseManifestGateFields(text: string): {
+  tasks: ManifestTaskGateFields[];
+  warnings: string[];
+} {
+  const tasks: ManifestTaskGateFields[] = [];
+  const warnings: string[] = [];
+
+  let inTasks = false;
+  let taskIndent = -1;                                  // indent of each task's "- " marker
+  let current: ManifestTaskGateFields | null = null;
+  let acceptance: AcceptanceCheck[] | null = null;      // open acceptance list (current task)
+  let acceptanceKeyIndent = -1;                         // indent of the "acceptance:" key
+  let acceptanceItemIndent = -1;                        // indent of "- command:" items
+  let currentCheck: Partial<AcceptanceCheck> | null = null;
+
+  const flushCheck = () => {
+    if (!currentCheck) { return; }
+    if (typeof currentCheck.command === 'string' && currentCheck.command.trim().length > 0) {
+      acceptance?.push(currentCheck as AcceptanceCheck);
+    } else {
+      warnings.push(`task ${current?.id ?? '?'}: acceptance check missing a non-empty "command" — skipped`);
+    }
+    currentCheck = null;
+  };
+
+  const closeAcceptance = () => {
+    flushCheck();
+    acceptanceKeyIndent = -1;
+    acceptanceItemIndent = -1;
+  };
+
+  const flushTask = () => {
+    closeAcceptance();
+    if (current) {
+      if (acceptance && acceptance.length > 0) { current.acceptance = acceptance; }
+      if (current.id) { tasks.push(current); }
+      current = null;
+    }
+    acceptance = null;
+  };
+
+  // Apply one `key: value` pair belonging to the open acceptance check.
+  const applyCheckKey = (key: string, rawValue: string) => {
+    if (!currentCheck) { return; }
+    const value = unquoteScalar(rawValue);
+    if (key === 'command') {
+      currentCheck.command = value;
+    } else if (key === 'expect') {
+      if (value === 'exit_zero') {
+        currentCheck.expect = 'exit_zero';
+      } else if (value.startsWith('{') && value.endsWith('}')) {
+        // Inline flow map: { exit_code: 1 } / { stdout_matches: "..." }
+        const em = value.match(/exit_code\s*:\s*(-?\d+)/);
+        const sm = value.match(/stdout_matches\s*:\s*(.+?)\s*\}/);
+        if (em) { currentCheck.expect = { exit_code: parseInt(em[1], 10) }; }
+        else if (sm) { currentCheck.expect = { stdout_matches: unquoteScalar(sm[1]) }; }
+        else { warnings.push(`task ${current?.id ?? '?'}: unrecognised acceptance expect "${value}" — ignored`); }
+      } else if (value.length > 0) {
+        warnings.push(`task ${current?.id ?? '?'}: unrecognised acceptance expect "${value}" — ignored`);
+      }
+      // empty value ⇒ block form; exit_code / stdout_matches arrive as nested keys
+    } else if (key === 'exit_code') {
+      const n = parseInt(value, 10);
+      if (Number.isFinite(n)) { currentCheck.expect = { exit_code: n }; }
+    } else if (key === 'stdout_matches') {
+      currentCheck.expect = { stdout_matches: value };
+    } else if (key === 'timeout_seconds') {
+      const n = parseInt(value, 10);
+      if (Number.isFinite(n) && n > 0) { currentCheck.timeout_seconds = n; }
+      else { warnings.push(`task ${current?.id ?? '?'}: acceptance timeout_seconds "${value}" is not a positive integer — ignored`); }
+    }
+    // unknown keys: skipped (scoped reader)
+  };
+
+  // Apply one `key: value` pair belonging to the open task.
+  const applyTaskKey = (key: string, rawValue: string, indent: number) => {
+    if (!current) { return; }
+    const value = unquoteScalar(rawValue);
+    if (key === 'id') {
+      current.id = value;
+    } else if (key === 'criticality') {
+      const n = parseInt(value, 10);
+      if (n === 1 || n === 2 || n === 3) { current.criticality = n; }
+      else { warnings.push(`task ${current.id || '?'}: criticality "${value}" is not 1|2|3 — ignored`); }
+    } else if (key === 'phase') {
+      if ((TASK_PHASES as readonly string[]).includes(value)) { current.phase = value as TaskPhase; }
+      else { warnings.push(`task ${current.id || '?'}: phase "${value}" is not one of ${TASK_PHASES.join('|')} — ignored`); }
+    } else if (key === 'acceptance') {
+      acceptance = acceptance ?? [];
+      acceptanceKeyIndent = indent;
+      acceptanceItemIndent = -1;
+    }
+    // unknown keys: skipped (scoped reader)
+  };
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+$/, '');
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith('#')) { continue; }
+    const indent = line.length - line.trimStart().length;
+
+    // Top-level key: enters/leaves the tasks block.
+    if (indent === 0) {
+      flushTask();
+      inTasks = /^tasks\s*:/.test(trimmed);
+      continue;
+    }
+    if (!inTasks) { continue; }
+
+    // List-item marker: "  - id: RV-1" / "      - command: npm test" / nested text items.
+    const item = line.match(/^(\s*)-\s*(.*)$/);
+    if (item) {
+      const itemIndent = item[1].length;
+      if (taskIndent === -1) { taskIndent = itemIndent; }   // first task item fixes the indent
+      if (itemIndent === taskIndent) {
+        flushTask();
+        current = { id: '' };
+        const kv = item[2].match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+        if (kv) { applyTaskKey(kv[1], kv[2], itemIndent + 2); }
+      } else if (acceptanceKeyIndent !== -1 && itemIndent > acceptanceKeyIndent &&
+                 (acceptanceItemIndent === -1 || itemIndent === acceptanceItemIndent)) {
+        flushCheck();
+        currentCheck = {};
+        acceptanceItemIndent = itemIndent;
+        const kv = item[2].match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+        if (kv) { applyCheckKey(kv[1], kv[2]); }
+      }
+      // other nested lists (subtasks, scope, …): skipped
+      continue;
+    }
+
+    // Plain "key: value" line.
+    const kv = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+    if (!kv) { continue; }
+    if (currentCheck && acceptanceItemIndent !== -1 && indent > acceptanceItemIndent) {
+      applyCheckKey(kv[1], kv[2]);
+    } else if (current && indent > taskIndent) {
+      if (acceptanceKeyIndent !== -1 && indent <= acceptanceKeyIndent) { closeAcceptance(); }
+      applyTaskKey(kv[1], kv[2], indent);
+    }
+  }
+  flushTask();
+
+  return { tasks, warnings };
+}
+
+/**
+ * Read the gate fields for every task defined across the manifests in
+ * `manifestDir`. A missing directory or unreadable file yields an empty map —
+ * the gate is opt-in, so the absence of a manifest must never block review.
+ * The first definition of a task id wins; parse warnings from every file are
+ * concatenated, prefixed with the filename.
+ */
+export async function readManifestTaskGates(manifestDir: string): Promise<{
+  tasks: Map<string, ManifestTaskGateFields>;
+  warnings: string[];
+}> {
+  const byId = new Map<string, ManifestTaskGateFields>();
+  const warnings: string[] = [];
+  let files: string[] = [];
+  try {
+    files = (await fsPromises.readdir(manifestDir)).filter(f => /\.ya?ml$/i.test(f)).sort();
+  } catch { return { tasks: byId, warnings }; }
+  for (const f of files) {
+    let text: string;
+    try { text = await fsPromises.readFile(path.join(manifestDir, f), 'utf8'); }
+    catch { continue; }
+    const parsed = parseManifestGateFields(text);
+    for (const w of parsed.warnings) { warnings.push(`${f}: ${w}`); }
+    for (const t of parsed.tasks) {
+      if (!byId.has(t.id)) { byId.set(t.id, t); }
+    }
+  }
+  return { tasks: byId, warnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -1342,6 +1659,19 @@ export interface ConsensusResult {
    * compatibility with consumers written before Phase 0.
    */
   merged_findings?: ValidationFinding[];
+  /**
+   * Agent ids whose self-votes were excluded from the tally because they
+   * authored the task under review (verifier independence — a fresh-context
+   * verifier beats self-critique). Omitted when no author context was provided
+   * or the author did not vote. See `orchestrate-gates-and-routing.spec.md` (A).
+   */
+  excluded_self_review?: string[];
+  /**
+   * Results of the task's acceptance commands run by the review gate (C). A
+   * failing entry forces a non-overridable block via applyAcceptanceGate().
+   * Omitted when the task declares no acceptance checks.
+   */
+  gate_checks?: GateCheckResult[];
   consensus_threshold: number;
   timestamp: string;
 }
@@ -1392,6 +1722,38 @@ export function consensusConfigForTask(
 }
 
 /**
+ * Public entry point for consensus evaluation.
+ *
+ * Identical to the core algorithm, plus optional **verifier independence**:
+ * when `ctx.author_agent_id` is set, the task author's own vote(s) are excluded
+ * before tallying (a fresh-context verifier outperforms self-critique). The
+ * full, unfiltered vote list is preserved on `result.votes` for audit, and the
+ * excluded author id(s) are recorded on `result.excluded_self_review`. Omit
+ * `ctx` (or pass no `author_agent_id`) for the original behavior — byte-identical
+ * to pre-change callers. See `orchestrate-gates-and-routing.spec.md` (A).
+ */
+export function evaluateConsensus(
+  votes: ValidationVote[],
+  round: number,
+  config: ConsensusConfig = DEFAULT_CONSENSUS_CONFIG,
+  ctx?: { author_agent_id?: string }
+): ConsensusResult {
+  const author = ctx?.author_agent_id;
+  if (!author) {
+    return evaluateConsensusCore(votes, round, config);
+  }
+  // Drop the author's self-vote(s) before tallying; keep the full list for audit.
+  const excluded = [...new Set(votes.filter(v => v.agent_id === author).map(v => v.agent_id))];
+  const effective = votes.filter(v => v.agent_id !== author);
+  const result = evaluateConsensusCore(effective, round, config);
+  result.votes = votes; // restore the full, unfiltered vote list for the record
+  if (excluded.length > 0) {
+    result.excluded_self_review = excluded;
+  }
+  return result;
+}
+
+/**
  * Evaluate whether consensus has been reached from a set of validation votes.
  *
  * Rules:
@@ -1401,7 +1763,7 @@ export function consensusConfigForTask(
  * 4. Otherwise, `approval_threshold` fraction of non-abstain votes must be 'approved'.
  * 5. If threshold not met after `max_rounds`, status is 'deadlocked'.
  */
-export function evaluateConsensus(
+function evaluateConsensusCore(
   votes: ValidationVote[],
   round: number,
   config: ConsensusConfig = DEFAULT_CONSENSUS_CONFIG
@@ -1522,6 +1884,109 @@ export function evaluateConsensus(
     consensus_threshold: config.approval_threshold,
     timestamp: new Date().toISOString(),
   };
+}
+
+/**
+ * Run a task's acceptance checks (feature C). Each command runs in `cwd`; the
+ * result is matched against the check's `expect` (default: exit code 0). The
+ * command runner is injectable via `opts.exec` (for tests); the default uses a
+ * shell child process with a per-command timeout (SIGKILL on overrun). Returns
+ * one GateCheckResult per check — the *instrument*; the pure pass/fail decision
+ * lives in applyAcceptanceGate(). See orchestrate-gates-and-routing.spec.md (C).
+ */
+export async function runAcceptanceChecks(
+  checks: AcceptanceCheck[],
+  opts: {
+    cwd?: string;
+    defaultTimeoutSeconds?: number;
+    exec?: (command: string, o: { cwd?: string; timeoutMs: number }) => Promise<{ exit_code: number; stdout: string }>;
+  } = {}
+): Promise<GateCheckResult[]> {
+  const exec = opts.exec ?? defaultAcceptanceExec;
+  const results: GateCheckResult[] = [];
+  for (const check of checks) {
+    const timeoutMs = Math.max(1, check.timeout_seconds ?? opts.defaultTimeoutSeconds ?? 600) * 1000;
+    const started = Date.now();
+    let exit_code = -1;
+    let stdout = '';
+    try {
+      const r = await exec(check.command, { cwd: opts.cwd, timeoutMs });
+      exit_code = r.exit_code;
+      stdout = r.stdout;
+    } catch (e) {
+      stdout = e instanceof Error ? e.message : String(e);
+      exit_code = -1;
+    }
+    results.push({
+      command: check.command,
+      exit_code,
+      passed: acceptanceMet(check.expect, exit_code, stdout),
+      duration_ms: Date.now() - started,
+      stdout_excerpt: stdout.length > 500 ? `${stdout.slice(0, 500)} …` : (stdout || undefined),
+    });
+  }
+  return results;
+}
+
+/** Evaluate an AcceptanceCheck's pass condition. Default: exit code 0. */
+export function acceptanceMet(
+  expect: AcceptanceCheck['expect'],
+  exitCode: number,
+  stdout: string
+): boolean {
+  if (expect === undefined || expect === 'exit_zero') { return exitCode === 0; }
+  if ('exit_code' in expect) { return exitCode === expect.exit_code; }
+  if ('stdout_matches' in expect) {
+    try { return new RegExp(expect.stdout_matches).test(stdout); } catch { return false; }
+  }
+  return false;
+}
+
+/** Default command runner for runAcceptanceChecks: shell child process + hard timeout. */
+function defaultAcceptanceExec(
+  command: string,
+  o: { cwd?: string; timeoutMs: number }
+): Promise<{ exit_code: number; stdout: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(command, { cwd: o.cwd, shell: true });
+    let stdout = '';
+    const onData = (d: Buffer) => { stdout += d.toString(); };
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    const killer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already exited */ } }, o.timeoutMs);
+    child.on('close', (code) => { clearTimeout(killer); resolve({ exit_code: code ?? -1, stdout }); });
+    child.on('error', (err) => { clearTimeout(killer); resolve({ exit_code: -1, stdout: stdout + String(err) }); });
+  });
+}
+
+/**
+ * Apply the acceptance gate to a consensus result (feature C). Attaches the
+ * gate-check results and, if ANY check failed, forces a non-overridable block —
+ * votes cannot approve over a red check. CRITICAL tasks (criticality 1) become
+ * 'blocked'; all others 'needs_changes', each with a synthetic critical finding.
+ * No-op (just attaches `gate_checks`) when every check passed. Pure: does not
+ * run commands. See orchestrate-gates-and-routing.spec.md (C).
+ */
+export function applyAcceptanceGate(
+  result: ConsensusResult,
+  gateChecks: GateCheckResult[],
+  opts: { criticality?: TaskCriticality } = {}
+): ConsensusResult {
+  result.gate_checks = gateChecks;
+  const failed = gateChecks.filter(g => !g.passed);
+  if (failed.length === 0) { return result; }
+
+  const syntheticFindings: ValidationFinding[] = failed.map(g => ({
+    category: 'test_gap',
+    severity: 'critical',
+    description: `acceptance check failed: ${g.command} (exit ${g.exit_code})`,
+  }));
+
+  result.final_verdict = opts.criticality === 1 ? 'blocked' : 'needs_changes';
+  result.status = 'consensus_pending';
+  result.unresolved_findings = [...syntheticFindings, ...result.unresolved_findings];
+  result.merged_findings = [...syntheticFindings, ...(result.merged_findings ?? [])];
+  return result;
 }
 
 /**

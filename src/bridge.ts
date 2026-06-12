@@ -8,7 +8,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import {
   sendMessage, readInbox, readSharedInbox, appendCommsLog,
-  writeHeartbeat, readRegistry, getAgentStatuses,
+  writeHeartbeat, readRegistry, getAgentStatuses, readClaimAuthor,
   type Message, type Heartbeat,
 } from './comms';
 import {
@@ -312,7 +312,9 @@ export function createBridgeServer(
           const body = await readBody(req).catch(() => '');
           let round = 1;
           try { const parsed = JSON.parse(body || '{}'); if (typeof parsed.round === 'number') { round = parsed.round; } } catch { /* default round */ }
-          const result = evaluateConsensus(votes, round, DEFAULT_CONSENSUS_CONFIG);
+          // Verifier independence: drop the task author's self-vote from the tally.
+          const author = await readClaimAuthor(config.commsDir, tid);
+          const result = evaluateConsensus(votes, round, DEFAULT_CONSENSUS_CONFIG, { author_agent_id: author });
           result.task_id = tid;
           await appendCommsLog(config.commsDir, {
             timestamp: new Date().toISOString(),

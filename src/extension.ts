@@ -58,16 +58,19 @@ import {
   toYAML,
   writeAgentRegistry,
   evaluateConsensus,
-  DEFAULT_CONSENSUS_CONFIG,
+  consensusConfigForTask,
+  runAcceptanceChecks,
+  applyAcceptanceGate,
+  readManifestTaskGates,
   broadcastCapabilityQueries,
   resolveCapabilityOffers,
 } from './orchestrate';
-import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask } from './orchestrate';
+import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
-  markMessageReplied, detectAutoclawHostAgent,
+  markMessageReplied, detectAutoclawHostAgent, readClaimAuthor,
   type CommsLogEntry, type Message,
 } from './comms';
 import {
@@ -2765,14 +2768,30 @@ async function orchestrateAssignNextCommand(): Promise<void> {
     const registryPath = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'agents.json');
     const state = await readStateFile(path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'state.json'));
     const sprint = state?.current_sprint ?? null;
+    const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
 
-    const entries: AgentRegistryEntry[] = detected.map((a, i) => ({
-      id: `WA-${i + 1}`,
-      platform: a.id,
-      inbox: `.autoclaw/orchestrator/comms/inboxes/${a.id}/`,
-      sprint,
-      assigned_at: new Date().toISOString(),
-    }));
+    // Tier-aware routing (B): mirror each agent's advertised llms_available
+    // from the comms registry (registered-agent-v2) onto its WA-N row so the
+    // planner's scoreAgent can weigh model tier against task phase. Agents
+    // that advertise no models are written unchanged (tierFactor stays 1.0).
+    const commsReg = await readRegistry(commsDir);
+    const llmsByAgent = new Map<string, string[]>();
+    for (const a of commsReg?.agents ?? []) {
+      if (a.llms_available && a.llms_available.length > 0) { llmsByAgent.set(a.id, a.llms_available); }
+    }
+
+    const entries: AgentRegistryEntry[] = detected.map((a, i) => {
+      const entry: AgentRegistryEntry = {
+        id: `WA-${i + 1}`,
+        platform: a.id,
+        inbox: `.autoclaw/orchestrator/comms/inboxes/${a.id}/`,
+        sprint,
+        assigned_at: new Date().toISOString(),
+      };
+      const llms = llmsByAgent.get(a.id);
+      if (llms) { entry.llms_available = llms; }
+      return entry;
+    });
 
     await writeAgentRegistry(registryPath, entries);
     channel.appendLine(`[orchestrate] Agent registry written (${entries.length} agents): ${entries.map(e => `${e.id}=${e.platform}`).join(', ')}`);
@@ -2783,7 +2802,6 @@ async function orchestrateAssignNextCommand(): Promise<void> {
     // re-deriving heartbeat ages itself.
     const cfg = vscode.workspace.getConfiguration('autoclaw.orchestrate');
     const stallSeconds = cfg.get<number>('heartbeatStallSeconds', 300);
-    const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
     const liveStatuses = await getAgentStatuses(commsDir);
     const stalled: string[] = [];
     for (const e of entries) {
@@ -2871,10 +2889,42 @@ async function orchestrateReviewCommand(): Promise<void> {
   }
 
   const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+
+  // Gate/routing fields (criticality, acceptance) for the tasks under review,
+  // read straight from the manifests. Missing manifest or unknown task ⇒
+  // votes-only with the default config, exactly as before.
+  const manifestDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'manifests');
+  const { tasks: gateFields, warnings: gateWarnings } = await readManifestTaskGates(manifestDir);
+  for (const w of gateWarnings) {
+    channel.appendLine(`[orchestrate] Manifest warning: ${w}`);
+  }
+
   let allApproved = true;
   for (const [taskId, votes] of votesByTask) {
-    const result = evaluateConsensus(votes, 1, DEFAULT_CONSENSUS_CONFIG);
+    const taskDef = gateFields.get(taskId);
+
+    // Acceptance gate (C): run the task's declared checks orchestrator-side
+    // BEFORE evaluating — votes cannot approve over a red check.
+    let gateChecks: GateCheckResult[] | undefined;
+    if (taskDef?.acceptance && taskDef.acceptance.length > 0) {
+      channel.appendLine(`[orchestrate] Task ${taskId}: running ${taskDef.acceptance.length} acceptance check(s)...`);
+      gateChecks = await runAcceptanceChecks(taskDef.acceptance, { cwd: workspaceRoot });
+      for (const g of gateChecks) {
+        channel.appendLine(`   ${g.passed ? '✅' : '❌'} acceptance: ${g.command} → exit ${g.exit_code} (${g.duration_ms}ms)`);
+      }
+    }
+
+    // Verifier independence: drop the task author's self-vote from the tally.
+    const author = await readClaimAuthor(commsDir, taskId);
+    // Criticality-aware threshold: unanimous for tier 1, simple majority for
+    // tier 3; unknown task / no criticality ⇒ the default 2/3 config.
+    const result = evaluateConsensus(votes, 1, consensusConfigForTask(taskDef?.criticality), { author_agent_id: author });
     result.task_id = taskId;
+    if (gateChecks) {
+      // Attaches gate_checks to the result (the consensus_result broadcast
+      // below spreads it along) and forces a non-overridable block on any red check.
+      applyAcceptanceGate(result, gateChecks, { criticality: taskDef?.criticality });
+    }
     const icon = result.status === 'consensus_reached' ? '✅' : result.status === 'deadlocked' ? '🔴' : '⏳';
     channel.appendLine(`${icon} Task ${taskId}: ${result.status} — verdict: ${result.final_verdict} (${votes.length} vote${votes.length === 1 ? '' : 's'})`);
 

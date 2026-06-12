@@ -1,5 +1,53 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Verifier independence in consensus** (`src/orchestrate.ts`) — `evaluateConsensus()`
+  gains an optional 4th arg `ctx?: { author_agent_id?: string }`. When set, the
+  task author's own vote(s) are excluded before the tally (a fresh-context
+  verifier outperforms self-critique); the full vote list is preserved on the
+  result and excluded author ids are recorded on the new
+  `ConsensusResult.excluded_self_review`. Omitting `ctx` is byte-identical to the
+  previous 3-arg behavior — existing callers (`bridge.ts`, `extension.ts`) are
+  unchanged. Pilot slice (A) of `docs/specs/orchestrate-gates-and-routing.spec.md`.
+  +4 tests (106 orchestrate tests passing).
+- **Verifier independence wired to live call sites** (`src/comms.ts`, `src/bridge.ts`,
+  `src/extension.ts`) — new `readClaimAuthor(commsDir, taskId)` reads the task's
+  claimant from `comms/claims/<task-id>.json`; the bridge `/consensus/{tid}/evaluate`
+  endpoint and the orchestrate review command now pass it as `author_agent_id` so
+  an author's self-vote is excluded on the live path. (`computeReviewers` already
+  excluded the author from review-request targeting.) Spec step 2. +1 test.
+- **Acceptance-command gate** (`src/orchestrate.ts`) — `AcceptanceCheck`/`GateCheckResult`
+  types, `ManifestTask.acceptance?`, `ConsensusResult.gate_checks?`, and
+  `runAcceptanceChecks()` (injectable runner; shell default with SIGKILL timeout) +
+  `acceptanceMet()` + `applyAcceptanceGate()`. A failed declared check forces a
+  non-overridable `needs_changes` (or `blocked` for CRITICAL) with a synthetic
+  critical finding — votes cannot approve over a red check. Opt-in; absent ⇒
+  votes-only. Spec feature C. +5 tests.
+- **Tier × phase routing** (`src/orchestrate.ts`) — `ScorableAgent.llms_available?`,
+  `ManifestTask.phase?`, `MODEL_TIER`/`PHASE_PREF`, and a soft `tierFactor()`
+  multiplier folded into `scoreAgent` (strong model for plan/review, mid for
+  execute, cheap for grade). Returns 1.0 (no-op) when phase or `llms_available` is
+  absent/unknown and never reaches 0, so single-tier/phase-less scoring is
+  byte-identical. Spec feature B. +4 tests.
+- **Gates + routing live activation** — the orchestrate review command now loads
+  per-task gate fields via the new scoped manifest reader
+  (`parseManifestGateFields`/`readManifestTaskGates` — parses `id`/`criticality`/
+  `phase`/`acceptance` only; validates, warns and drops invalid values, never
+  throws), runs `runAcceptanceChecks` (cwd = workspace root) with per-check
+  logging, selects `consensusConfigForTask(criticality)` instead of the flat
+  default, and applies `applyAcceptanceGate`; `gate_checks` rides the existing
+  `consensus_result` broadcast. `AgentRegistryEntry.llms_available` is threaded
+  into `planSprints`' scorer mapping and the assign command mirrors
+  `llms_available` from the comms registry onto WA-N rows. Missing manifest/
+  unknown task/absent fields ⇒ byte-identical behavior. +6 tests (256 passing
+  across orchestrate/comms/bridge/manifest-probe/extension). Known follow-up:
+  the bridge `/consensus/{tid}/evaluate` endpoint is deliberately not gated yet
+  (needs an explicit `workspaceRoot` on `BridgeConfig` — running manifest shell
+  commands from a remote-triggered endpoint on a guessed root is unsafe).
+
 ## [3.3.0] - 2026-06-12
 
 The agent-fabric release. AutoClaw becomes a control plane for many kinds of

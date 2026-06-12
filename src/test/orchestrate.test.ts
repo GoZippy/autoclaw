@@ -612,12 +612,19 @@ import {
   mergeFindings,
   DEFAULT_CONSENSUS_CONFIG,
   consensusConfigForTask,
+  runAcceptanceChecks,
+  applyAcceptanceGate,
+  acceptanceMet,
+  tierFactor,
+  parseManifestGateFields,
+  readManifestTaskGates,
 } from '../orchestrate';
 import type {
   ValidationVote,
   ValidationFinding,
   ConsensusConfig,
   TaskCriticality,
+  TaskPhase,
 } from '../orchestrate';
 
 // ---------------------------------------------------------------------------
@@ -756,6 +763,58 @@ suite('Orchestrate — Consensus Validation', () => {
     ];
     const result = evaluateConsensus(votes, 1, config);
     assert.strictEqual(result.final_verdict, 'needs_changes');
+  });
+});
+
+suite('Orchestrate — Verifier Independence (reviewer ≠ author)', () => {
+  test('author self-vote is excluded from the tally and can flip the outcome', () => {
+    // Author "A" approves own work; reviewers split 1 approve / 1 needs_changes.
+    // Counting the author (3 votes): 2/3 approvals ≥ 0.66 → consensus_reached.
+    // Excluding the author (2 votes): 1/2 = 0.5 < 0.66 → not reached.
+    const votes = [
+      makeVote('A', 'fable', 'approved'),
+      makeVote('B', 'opus', 'approved'),
+      makeVote('C', 'sonnet', 'needs_changes'),
+    ];
+
+    const counted = evaluateConsensus(votes, 1);
+    assert.strictEqual(counted.status, 'consensus_reached', 'sanity: counting the author reaches consensus');
+
+    const excluded = evaluateConsensus(votes, 1, DEFAULT_CONSENSUS_CONFIG, { author_agent_id: 'A' });
+    assert.strictEqual(excluded.status, 'consensus_pending', 'excluding the author drops below threshold');
+    assert.strictEqual(excluded.final_verdict, 'needs_changes');
+    assert.deepStrictEqual(excluded.excluded_self_review, ['A']);
+    assert.strictEqual(excluded.votes.length, 3, 'full vote list preserved on the result for audit');
+  });
+
+  test('an author who is the sole voter cannot self-approve', () => {
+    const votes = [makeVote('A', 'fable', 'approved')];
+    const result = evaluateConsensus(votes, 1, DEFAULT_CONSENSUS_CONFIG, { author_agent_id: 'A' });
+    assert.strictEqual(result.status, 'consensus_pending', '0 independent voters → cannot reach consensus');
+    assert.deepStrictEqual(result.excluded_self_review, ['A']);
+  });
+
+  test('omitting author ctx is byte-identical to the 3-arg call (no-op)', () => {
+    const votes = [
+      makeVote('A', 'fable', 'approved'),
+      makeVote('B', 'opus', 'approved'),
+    ];
+    const baseline = evaluateConsensus(votes, 1);
+    const withEmptyCtx = evaluateConsensus(votes, 1, DEFAULT_CONSENSUS_CONFIG, {});
+    // Timestamps are generated per call; normalize before structural compare.
+    baseline.timestamp = withEmptyCtx.timestamp = 'NORMALIZED';
+    assert.deepStrictEqual(withEmptyCtx, baseline);
+    assert.strictEqual(withEmptyCtx.excluded_self_review, undefined, 'no excluded field when no author given');
+  });
+
+  test('a non-author author_agent_id excludes nobody', () => {
+    const votes = [
+      makeVote('A', 'fable', 'approved'),
+      makeVote('B', 'opus', 'approved'),
+    ];
+    const result = evaluateConsensus(votes, 1, DEFAULT_CONSENSUS_CONFIG, { author_agent_id: 'Z' });
+    assert.strictEqual(result.status, 'consensus_reached');
+    assert.strictEqual(result.excluded_self_review, undefined, 'author not among voters → nothing excluded');
   });
 });
 
@@ -1004,6 +1063,240 @@ suite('Orchestrate — jaccardIndex / trustWeight helpers', () => {
   });
 });
 
+suite('Orchestrate — Acceptance Gate (C)', () => {
+  test('acceptanceMet: exit_zero / exit_code / stdout_matches', () => {
+    assert.strictEqual(acceptanceMet(undefined, 0, ''), true);
+    assert.strictEqual(acceptanceMet('exit_zero', 1, ''), false);
+    assert.strictEqual(acceptanceMet({ exit_code: 2 }, 2, ''), true);
+    assert.strictEqual(acceptanceMet({ exit_code: 2 }, 0, ''), false);
+    assert.strictEqual(acceptanceMet({ stdout_matches: 'PASS\\b' }, 0, 'all PASS here'), true);
+    assert.strictEqual(acceptanceMet({ stdout_matches: 'PASS\\b' }, 0, 'nope'), false);
+  });
+
+  test('runAcceptanceChecks uses the injected runner and maps results', async () => {
+    const exec = async (command: string) =>
+      command.includes('fail') ? { exit_code: 1, stdout: 'boom' } : { exit_code: 0, stdout: 'ok' };
+    const results = await runAcceptanceChecks([{ command: 'do pass' }, { command: 'do fail' }], { exec });
+    assert.strictEqual(results.length, 2);
+    assert.strictEqual(results[0].passed, true);
+    assert.strictEqual(results[1].passed, false);
+    assert.strictEqual(results[1].exit_code, 1);
+  });
+
+  test('a failing acceptance check blocks an otherwise-approved result', () => {
+    const result = evaluateConsensus([
+      makeVote('B', 'opus', 'approved'),
+      makeVote('C', 'sonnet', 'approved'),
+    ], 1);
+    assert.strictEqual(result.status, 'consensus_reached');
+    const gated = applyAcceptanceGate(result, [
+      { command: 'npm test', exit_code: 1, passed: false, duration_ms: 12 },
+    ]);
+    assert.strictEqual(gated.final_verdict, 'needs_changes');
+    assert.notStrictEqual(gated.status, 'consensus_reached');
+    assert.strictEqual(gated.gate_checks!.length, 1);
+    assert.ok(gated.unresolved_findings.some(f => f.severity === 'critical' && f.category === 'test_gap'));
+  });
+
+  test('CRITICAL task with a failing check becomes blocked', () => {
+    const result = evaluateConsensus([
+      makeVote('B', 'opus', 'approved'),
+      makeVote('C', 'sonnet', 'approved'),
+    ], 1);
+    const gated = applyAcceptanceGate(
+      result,
+      [{ command: 'go vet', exit_code: 1, passed: false, duration_ms: 5 }],
+      { criticality: 1 },
+    );
+    assert.strictEqual(gated.final_verdict, 'blocked');
+  });
+
+  test('all checks passing leaves the verdict intact (gate_checks attached)', () => {
+    const result = evaluateConsensus([
+      makeVote('B', 'opus', 'approved'),
+      makeVote('C', 'sonnet', 'approved'),
+    ], 1);
+    const gated = applyAcceptanceGate(result, [
+      { command: 'npm test', exit_code: 0, passed: true, duration_ms: 9 },
+    ]);
+    assert.strictEqual(gated.final_verdict, 'approved');
+    assert.strictEqual(gated.status, 'consensus_reached');
+    assert.strictEqual(gated.gate_checks!.length, 1);
+  });
+});
+
+suite('Orchestrate — Tier × phase routing (B)', () => {
+  const base: ScorableAgent = { capabilities: ['code'], trust_level: 'high', max_parallel_tasks: 1 };
+  function task(phase?: TaskPhase): PlannedTask {
+    return {
+      id: 't', name: 't', depends_on: [], scope: ['internal/t/**'],
+      effort: 'M', subtasks: [], required_capabilities: ['code'], phase,
+    };
+  }
+
+  test('tierFactor is a no-op (1.0) when phase or llms_available is absent/unknown', () => {
+    assert.strictEqual(tierFactor(undefined, 'review'), 1.0);
+    assert.strictEqual(tierFactor(['claude-opus-4-8'], undefined), 1.0);
+    assert.strictEqual(tierFactor([], 'review'), 1.0);
+    assert.strictEqual(tierFactor(['totally-unknown-model'], 'review'), 1.0);
+  });
+
+  test('tierFactor peaks when the best model matches the phase preference', () => {
+    assert.strictEqual(tierFactor(['claude-opus-4-8'], 'review'), 1.0); // opus(3) == review pref(3)
+    assert.strictEqual(tierFactor(['claude-haiku-4-5'], 'grade'), 1.0);  // haiku(1) == grade pref(1)
+    assert.ok(tierFactor(['claude-haiku-4-5'], 'review') < 1.0);         // haiku for review → penalized
+    assert.ok(tierFactor(['claude-haiku-4-5'], 'review') >= 0.1);        // never reaches 0
+  });
+
+  test('grade prefers the cheap-tier agent; review prefers the strong-tier agent', () => {
+    const haikuAgent: ScorableAgent = { ...base, llms_available: ['claude-haiku-4-5'] };
+    const opusAgent: ScorableAgent = { ...base, llms_available: ['claude-opus-4-8'] };
+    assert.ok(scoreAgent(haikuAgent, task('grade')) > scoreAgent(opusAgent, task('grade')), 'grade → cheap wins');
+    assert.ok(scoreAgent(opusAgent, task('review')) > scoreAgent(haikuAgent, task('review')), 'review → strong wins');
+  });
+
+  test('phase unset → tier has no effect (identical scores across tiers)', () => {
+    const haikuAgent: ScorableAgent = { ...base, llms_available: ['claude-haiku-4-5'] };
+    const opusAgent: ScorableAgent = { ...base, llms_available: ['claude-opus-4-8'] };
+    assert.strictEqual(scoreAgent(haikuAgent, task()), scoreAgent(opusAgent, task()));
+  });
+});
+
+suite('Orchestrate — Manifest gate fields (scoped reader)', () => {
+  test('parses criticality, phase and acceptance from a realistic manifest', () => {
+    const yaml = [
+      'manifest_version: "1.0"',
+      'project: demo',
+      '',
+      'constraints:',
+      '  mutual_exclusion:',
+      '    - group: [A, B]',
+      '',
+      'tasks:',
+      '',
+      '  # lane one',
+      '  - id: A',
+      '    name: "Task A"',
+      '    effort: M',
+      '    depends_on: []',
+      '    scope:',
+      '      - "src/a/**"',
+      '    criticality: 1',
+      '    phase: review',
+      '    acceptance:',
+      '      - command: "npm test"',
+      '        expect: exit_zero',
+      '        timeout_seconds: 120',
+      '      - command: "npm run lint"',
+      '        expect:',
+      '          stdout_matches: "0 problems"',
+      '    subtasks:',
+      '      - "do the thing: carefully"',
+      '',
+      '  - id: B',
+      '    name: "Task B"',
+      '    effort: S',
+      '    depends_on: [A]',
+      '    scope:',
+      '      - "src/b/**"',
+    ].join('\n');
+    const { tasks, warnings } = parseManifestGateFields(yaml);
+    assert.deepStrictEqual(warnings, []);
+    assert.strictEqual(tasks.length, 2);
+    const a = tasks.find(t => t.id === 'A')!;
+    assert.strictEqual(a.criticality, 1);
+    assert.strictEqual(a.phase, 'review');
+    assert.deepStrictEqual(a.acceptance, [
+      { command: 'npm test', expect: 'exit_zero', timeout_seconds: 120 },
+      { command: 'npm run lint', expect: { stdout_matches: '0 problems' } },
+    ]);
+    const b = tasks.find(t => t.id === 'B')!;
+    assert.strictEqual(b.criticality, undefined);
+    assert.strictEqual(b.phase, undefined);
+    assert.strictEqual(b.acceptance, undefined);
+  });
+
+  test('zero-config manifest → no gate fields and no warnings', () => {
+    const yaml = [
+      'tasks:',
+      '  - id: plain',
+      '    name: "no opt-in fields here"',
+      '    depends_on: []',
+    ].join('\n');
+    const { tasks, warnings } = parseManifestGateFields(yaml);
+    assert.deepStrictEqual(warnings, []);
+    assert.strictEqual(tasks.length, 1);
+    assert.deepStrictEqual(tasks[0], { id: 'plain' });
+  });
+
+  test('invalid phase/criticality are ignored with a warning; commandless checks are skipped', () => {
+    const yaml = [
+      'tasks:',
+      '  - id: C',
+      '    phase: deploy',
+      '    criticality: 7',
+      '    acceptance:',
+      '      - expect: exit_zero',
+      '      - command: ""',
+      '      - command: "go vet ./..."',
+    ].join('\n');
+    const { tasks, warnings } = parseManifestGateFields(yaml);
+    const c = tasks.find(t => t.id === 'C')!;
+    assert.strictEqual(c.phase, undefined);
+    assert.strictEqual(c.criticality, undefined);
+    assert.deepStrictEqual(c.acceptance, [{ command: 'go vet ./...' }]);
+    assert.ok(warnings.some(w => w.includes('phase "deploy"')), `phase warning missing: ${warnings}`);
+    assert.ok(warnings.some(w => w.includes('criticality "7"')), `criticality warning missing: ${warnings}`);
+    assert.strictEqual(warnings.filter(w => w.includes('missing a non-empty "command"')).length, 2);
+  });
+
+  test('expect supports inline flow maps and block exit_code', () => {
+    const yaml = [
+      'tasks:',
+      '  - id: D',
+      '    acceptance:',
+      '      - command: "run-it"',
+      '        expect: { exit_code: 3 }',
+      '      - command: "check-out"',
+      '        expect:',
+      '          exit_code: 0',
+    ].join('\n');
+    const { tasks, warnings } = parseManifestGateFields(yaml);
+    assert.deepStrictEqual(warnings, []);
+    assert.deepStrictEqual(tasks.find(t => t.id === 'D')!.acceptance, [
+      { command: 'run-it', expect: { exit_code: 3 } },
+      { command: 'check-out', expect: { exit_code: 0 } },
+    ]);
+  });
+
+  test('readManifestTaskGates merges files (first id wins) and tolerates a missing dir', async () => {
+    const missing = await readManifestTaskGates(path.join(os.tmpdir(), 'autoclaw-no-such-dir-xyz'));
+    assert.strictEqual(missing.tasks.size, 0);
+    assert.deepStrictEqual(missing.warnings, []);
+
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-manifests-'));
+    fs.writeFileSync(path.join(dir, 'a-first.yaml'), [
+      'tasks:',
+      '  - id: T1',
+      '    phase: grade',
+      '  - id: T2',
+      '    phase: nonsense',
+    ].join('\n'), 'utf8');
+    fs.writeFileSync(path.join(dir, 'b-second.yaml'), [
+      'tasks:',
+      '  - id: T1',
+      '    phase: review',
+    ].join('\n'), 'utf8');
+
+    const { tasks, warnings } = await readManifestTaskGates(dir);
+    assert.strictEqual(tasks.size, 2);
+    assert.strictEqual(tasks.get('T1')!.phase, 'grade', 'first definition (sorted filename) wins');
+    assert.strictEqual(tasks.get('T2')!.phase, undefined);
+    assert.ok(warnings.some(w => w.startsWith('a-first.yaml:') && w.includes('nonsense')),
+      `expected filename-prefixed warning, got: ${warnings}`);
+  });
+});
+
 suite('Orchestrate — scoreAgent', () => {
   function makePlanned(
     id: string,
@@ -1186,6 +1479,33 @@ suite('Orchestrate — planSprints with capability-aware registry', () => {
     const assignedAgent = flat.find(a => a.tasks.some(t => t.id === 'go-task'))!.agent;
     assert.strictEqual(assignedAgent, 'WA-2',
       `expected go-task to land on WA-2 (go-capable), got ${assignedAgent}`);
+  });
+
+  test('llms_available on the registry entry routes a grade-phase task to the cheap tier', () => {
+    // Equal capability/trust/idle; only the advertised models differ. WA-1
+    // (opus) would win the tie-break, so WA-2 winning proves tierFactor ran.
+    const tasks: ManifestTask[] = [{ ...taskWithCaps('grader', ['code']), phase: 'grade' }];
+    const dag = buildDAG(tasks);
+    topologicalSort(dag);
+    const agents = [
+      { id: 'WA-1', platform: 'kilocode', inbox: '.autoclaw/orchestrator/comms/inboxes/kilocode/',
+        sprint: null, assigned_at: '2026-06-12T00:00:00Z',
+        capabilities: ['code'], trust_level: 'high' as const, max_parallel_tasks: 1,
+        llms_available: ['claude-opus-4-8'] },
+      { id: 'WA-2', platform: 'claude-code', inbox: '.autoclaw/orchestrator/comms/inboxes/claude-code/',
+        sprint: null, assigned_at: '2026-06-12T00:00:00Z',
+        capabilities: ['code'], trust_level: 'high' as const, max_parallel_tasks: 1,
+        llms_available: ['claude-haiku-4-5'] },
+    ];
+    const sprints = planSprints(
+      dag,
+      { ...DEFAULT_PLANNER_CONFIG, work_agents: 2, max_tasks_per_agent: 1 },
+      undefined,
+      agents
+    );
+    const winner = sprints.flatMap(s => s.assignments)
+      .find(a => a.tasks.some(t => t.id === 'grader'))!.agent;
+    assert.strictEqual(winner, 'WA-2', 'grade phase should prefer the haiku-advertising slot');
   });
 
   test('high-trust agent gets the security task over low-trust on equal capability fit', () => {

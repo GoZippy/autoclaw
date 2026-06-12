@@ -363,6 +363,27 @@ export function redactErrorMessage(s: string): string {
   return out;
 }
 
+/**
+ * Read the claiming agent id for a task from `claims/<taskId>.json`.
+ *
+ * Used by the consensus gate to feed `evaluateConsensus(..., { author_agent_id })`
+ * so an author's self-vote is excluded (verifier independence). Tolerates a
+ * missing file, a leading BOM, or malformed JSON — all return `undefined`, in
+ * which case consensus is unchanged (backward-compatible).
+ *
+ * The canonical claim field is `claimed_by` (written by the claim MCP tool);
+ * `agent` is accepted as a legacy fallback (cf. boardWriter's claim reader).
+ */
+export async function readClaimAuthor(commsDir: string, taskId: string): Promise<string | undefined> {
+  try {
+    const raw = (await fsPromises.readFile(
+      path.join(commsDir, 'claims', `${path.basename(taskId)}.json`), 'utf8'
+    )).replace(/^﻿/, '');
+    const claim = JSON.parse(raw) as { claimed_by?: string; agent?: string };
+    return claim.claimed_by ?? claim.agent ?? undefined;
+  } catch { return undefined; }
+}
+
 export async function readRegistry(commsDir: string): Promise<AgentRegistry | null> {
   try {
     return JSON.parse((await fsPromises.readFile(path.join(commsDir, 'registry.json'), 'utf8')).replace(/^﻿/, ''));

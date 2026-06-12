@@ -11,7 +11,7 @@ import {
   generateMessageId,
   redactErrorMessage,
   readMessageState, markMessageRead, markMessageReplied, markMessageArchived,
-  getInboxSummary,
+  getInboxSummary, readClaimAuthor,
   type Message, type Heartbeat, type AgentRegistry, type RegisteredAgent,
 } from '../comms';
 
@@ -507,5 +507,32 @@ suite('Comms — inbox state machine', () => {
     // m1 requires_response and not replied → 1 awaiting; m2 requires + replied → not awaiting
     assert.strictEqual(sum.awaiting_response, 1);
     assert.strictEqual(sum.archived, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Claim author (verifier independence — GR-2)
+// ---------------------------------------------------------------------------
+
+suite('Comms — readClaimAuthor', () => {
+  test('returns claimed_by for a written claim, undefined for missing/malformed', async () => {
+    const dir = makeTmpDir();
+    const claimsDir = path.join(dir, 'claims');
+    fs.mkdirSync(claimsDir, { recursive: true });
+
+    // Canonical claim: claimed_by is the author.
+    fs.writeFileSync(
+      path.join(claimsDir, 'T1.json'),
+      JSON.stringify({ task_id: 'T1', claimed_by: 'claude-code', claimed_at: new Date().toISOString() }),
+      'utf8'
+    );
+    assert.strictEqual(await readClaimAuthor(dir, 'T1'), 'claude-code');
+
+    // Missing claim → undefined (no filtering, backward-compatible).
+    assert.strictEqual(await readClaimAuthor(dir, 'NOPE'), undefined);
+
+    // Malformed JSON → undefined.
+    fs.writeFileSync(path.join(claimsDir, 'BAD.json'), '{ not json', 'utf8');
+    assert.strictEqual(await readClaimAuthor(dir, 'BAD'), undefined);
   });
 });
