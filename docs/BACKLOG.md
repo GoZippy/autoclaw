@@ -64,9 +64,14 @@ routing, governance). What remains is wiring that logic into the live planner
 | AF-4a | Onboarding core `onboardPlatform()` — detect → health → register a typed agent; idempotent | **done** (4eede7b) |
 | AF-4b | `createDefaultRunnerRegistry()` (wires the 9 runners) + `autoclaw.fabric.onboard` command | **done** (4266f01) |
 | AF-5 | Governance — `gateDispatch(type, controlLevel)` approval gate + append-only audit log (`src/fabric/governance.ts`) | **done (logic)** (aa092bc) |
-| AF-6 | OpenClaw + Hermes fully live — onboard command now registers them as typed agents; remaining = per-platform skill packs + verify real dispatch | open |
-| AF-7 | Cross-machine routing rides the relay + external A2A agents via the bridge; **includes RELAY-WIRE inbox forwarding** (needs the routing/dedup model — don't hack in) | open |
-| AF-8 | **Wire the logic into the live planner/paths**: have `orchestrate.ts` use `rankAgentsForCapabilities`/`selectReviewers`; enforce `gateDispatch` + write `appendAuditLog` on the real dispatch path. (Logic is tested; this is the production integration.) | open |
+| AF-6 | OpenClaw + Hermes skill packs (typed fabric workers) — `skills/openclaw`, `skills/hermes` (mateam Fable coder) | **done** (555012f) |
+| AF-7 | Live inbox forwarding to the relay + per-message `forwarded_at` dedup (`gatherInboxForRelay`/`forwardInbox`, wired into the tick). **Cross-machine `fetchInbox` (Phase 2) + A2A still open.** | **done (phase 1)** (8ef5317) |
+| AF-8 §1 | Live review path derives consensus rule by persona — security reviews now UNANIMOUS for real (was dormant) | **done** (e911740) |
+| AF-8 §2 | Security reviews routed to live auditors (full-pool fallback) | **done** (e911740) |
+| AF-8 §3 | Governance gate + audit log on the live `dispatchWork` path (human-in-loop types held) | **done** (ee478bb) |
+| AF-8 §4 | Planner capability scoring is agent-type-aware (boost-only, non-regressive) | **done** (cb02499, awaiting push) |
+| AF-7b | Cross-machine `CloudRelay.fetchInbox` (pull remote messages) + external A2A agents via the bridge | open |
+| AF-9 | Consolidate the `fabric.ts` (message-bus) vs `fabric/` (taxonomy) naming collision | open |
 
 ### Release / process
 | # | Item | Status |
