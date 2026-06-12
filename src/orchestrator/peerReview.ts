@@ -42,6 +42,8 @@ export interface ReviewerCandidate {
   status?: 'active' | 'idle' | 'offline' | 'stalled' | 'overloaded' | 'halted' | 'unknown';
   /** When true, agent has opted out of being a reviewer (e.g. human-in-loop). */
   opt_out?: boolean;
+  /** Fabric agent type (AF-8). Absent ⇒ 'coder'. Routes security reviews to auditors. */
+  agent_type?: string;
 }
 
 /** Minimal shape of a `task_complete` we read from the shared inbox. */
