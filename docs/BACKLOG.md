@@ -76,7 +76,9 @@ routing, governance). What remains is wiring that logic into the live planner
 **Fabric client side is complete (AF-1…AF-9 + AF-7b).** Remaining is external:
 | # | Item | Status |
 |---|------|--------|
-| AF-10 | Hosted relay **server** (serve `GET /v1/inbox`, entitlement per [specs/relay-entitlement.spec.md](specs/relay-entitlement.spec.md)) — server-side, separate infra | open (external) |
+| AF-10 | **Self-hostable relay server** (`src/relay-server/`) — store-and-forward matching the client contract; `npm run relay:serve`; [docs/relay-server.md](relay-server.md) | **done** (289e5aa) |
+| AF-10b | **Hosted (paid) relay** = AF-10 server + subscription check at `resolveAccount` (entitlement spec) + deploy infra | open |
+| AF-10c | Cross-machine **fleet view** — wire the client to `GET /v1/heartbeat` + a flush/pull tick (server already serves it) | open |
 | AF-11 | A2A-bridge ingest of external A2A agents (consume `/.well-known/agent.json`-advertised agents) | open |
 
 ### Release / process
