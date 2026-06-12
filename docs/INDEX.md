@@ -1,6 +1,6 @@
 # AutoClaw Doc Index
 
-_Last updated: 2026-05-23. Maintained by the **architect** persona —
+_Last updated: 2026-06-12. Maintained by the **architect** persona —
 edit this file when you add or supersede any doc under `docs/`._
 
 This is the canonical, **first** doc to load when working on AutoClaw.
@@ -14,6 +14,7 @@ Everything else is reachable from here.
 |---|---|
 | [V3_PLAN.md](V3_PLAN.md) | v3.0 plan — Wake & Sleep model, runner/bridge dispatch table, MCP install hero. Authoritative for v3.0 scope. |
 | [V3_1_ROADMAP.md](V3_1_ROADMAP.md) | v3.1 plan — governance, four phases (architect → LLM providers → security-auditor → doc-writer + peer slots). Where v3.1 contradicts an earlier doc, this wins. |
+| [V4_PLAN.md](V4_PLAN.md) | v4 blueprint (2026-06-12) — "agent dev organization in a box": onboarding (ONB), org model (ORG), fleet visibility (VIS), federation (FED), reputation routing (REP), memory overhaul (MEM), trigger hooks (HKS), quality substrate (QLT). Governs the arc after v3.x; V3_1 still rules in-flight work. |
 | [AGENT_SESSION_PROTOCOL.md](AGENT_SESSION_PROTOCOL.md) | Six-phase cross-agent coordination contract (REGISTER→SYNC→CLAIM→WORK→REPORT→LOOP). Read this *before* writing anything that touches `.autoclaw/orchestrator/`. |
 
 ## RFCs
@@ -36,6 +37,8 @@ Everything else is reachable from here.
 | Doc | Date | Status |
 |---|---|---|
 | [research/2026-05-22-cross-project-survey.md](research/2026-05-22-cross-project-survey.md) | 2026-05-22 | active — informs v3.1 roadmap |
+| [research/2026-06-11-fable-5-agent-patterns.md](research/2026-06-11-fable-5-agent-patterns.md) | 2026-06-11 | active — informs V4_PLAN P5–P8 + the gates spec |
+| [research/2026-06-11-loss-function-development.md](research/2026-06-11-loss-function-development.md) | 2026-06-11 | active — rubric/harness design playbook; informs QLT epics |
 | [research/distributed-orchestration-prior-art.md](research/distributed-orchestration-prior-art.md) | 2026-05-09 | historical — folded into V3_PLAN |
 | [research/knowledge-graph-stack.md](research/knowledge-graph-stack.md) | 2026-05-09 | historical |
 | Older `phase-*-execution-report.md` and `v2-*-report.md` files | various | **archive candidates** — per [survey §4 don't-do #1](research/2026-05-22-cross-project-survey.md), consolidate into a rolling `IDEAS_LOG.md` and move dated reports to `docs/research/archive/`. Phase A task. |
@@ -46,6 +49,8 @@ Everything else is reachable from here.
 |---|---|
 | [specs/_template.spec.md](specs/_template.spec.md) | Spec-as-contract template. Use for every Phase-A onward feature. |
 | `specs/<feature>/spec.md` | One per feature. Written by the architect persona; consumed by implementer personas. |
+| [specs/orchestrate-gates-and-routing.spec.md](specs/orchestrate-gates-and-routing.spec.md) | Evidence-grounded review gates (reviewer≠author, acceptance commands) + tier×phase routing. Status: pilot — A live, C/B lib landed. |
+| [specs/agent-trigger-hooks.spec.md](specs/agent-trigger-hooks.spec.md) | Event→action hooks (wake agents on comms/build events) + fleet HALT kill switch + audit. Status: draft (V4 HKS pillar). |
 
 ## Reviews
 

@@ -380,3 +380,161 @@ User flagged: "we are at 2.1.3 already in other chats and builds."
   `DISTRIBUTED_AGENT_FABRIC.md` (or replaces a phase).
 - Anything that gets killed stays here with a "killed: <date> because <X>"
   line — preserves the reasoning trail.
+
+## L. External validation — Fable 5 agent patterns (2026-06-11)
+
+User flagged @0xCodez's "Build self-improving agent system with Fable 5 in
+14 steps: loops, dynamic workflows, routines" and later pasted the full
+article text. Full synthesis + 14-step→surface map + gap-analysis in
+`research/2026-06-11-fable-5-agent-patterns.md`. It largely *validates*
+AutoClaw's shape (orchestrate→delegate→verify→persist) rather than
+introducing new architecture.
+
+Core reframe: **self-improving ≠ self-learning** — the model is stateless;
+the *system around it* compounds (memory + skills + state files + eval
+loops). The 4-layer compound stack (Primitives → Orchestration → Memory →
+Self-improvement) maps 1:1 onto AutoClaw's layers; what's thin is the
+"write the graded lesson back" arc that closes the loop. Net-new discipline:
+
+- **4-tier model routing** as a first-class decision (route by complexity,
+  not default): orchestrator → Fable 5 / Opus 4.8; high-volume workers →
+  **Sonnet 4.6**; verifier/grader sub-agents → **Haiku 4.5**; classifier-
+  block fallback → **Opus 4.8**. Fable ≈ 5× Opus per token of real work.
+  Record tier + cost budget in the capability advert (ties to §A.2). [P0]
+- **Checkable rubrics** (command + pass-condition) per task; review gate
+  *runs* them before consensus — votes grounded in evidence, not opinion. [P0]
+- **Fresh-context verifier sub-agents** (reviewer ≠ author session); order:
+  deterministic checks → adversarial review → human gate on irreversible
+  actions. [P1]
+- **STATE.md discipline** — read-at-start / write-at-end in spawned +
+  cross-agent cycles; `Verified-by:` provenance on consolidated memories
+  (the 5-stage Fail→Investigate→Verify→Distill→Consult progression). [P1]
+- **Default parallel sub-agents to worktree isolation** (Agent tool already
+  supports `isolation: worktree`) instead of scope-honesty. [P1]
+- **Refusal/fallback + 30-day-retention handling** on any Fable call site
+  (cyber/bio/chem/distillation classifiers fall back to Opus 4.8). [P1]
+- **Routines fire goal-loops, not one-shots** (autobuild/schedule → rubric
+  loop). [P2]
+- **Compounding skills** — write confirmed lessons back into AutoClaw's own
+  skill files (Known-failure-modes / Anti-patterns sections). [P2]
+- **Vision-verify gate** for UI-producing tasks (screenshot vs design
+  tokens). [P2]
+- **Spawned-agent prompt library** — ship Anthropic's authoritative Fable/
+  Opus behavioral fragments (anti-overplanning, no-tidying, grounded
+  progress, boundaries, async sub-agents, memory, autonomous-loop guard,
+  send_to_user) as reusable system-prompt blocks. [P2]
+
+None require a rewrite — refinements to existing surfaces.
+
+**Companion (2026-06-11): Loss-Function Development.** User also flagged
+@elvissun's "/goal + Loss Functions" playbook (full text pasted). Synthesis
+in `research/2026-06-11-loss-function-development.md`. Where the Fable piece
+says "use checkable rubrics," this is the manual for writing a rubric an
+*optimizing* agent can't game — directly upgrades our review-gate/consensus
+design. Net-new:
+
+- **Spec-driven (finite, "make tests pass") → loss-function (descend toward a
+  1,000-case eval, never "done").** AutoClaw does the inner test-pass loop;
+  the outer outcome-metric loop is the gap. [P2]
+- **The 4-part loss function = the task/gate template:** target (large +
+  *blind the answer key*) · constraints (time / money / surface / methodology)
+  · instruments (a runnable CLI per constraint — "a constraint without an
+  instrument is a vibe") · forced entropy (overfit-reflection each cycle;
+  non-obvious jump on stall; iteration log). [P0 template]
+- **Reward-hacking is a bug in the target, not the agent** — the 3-cheats→
+  fences saga (memorize eval → blind it; learn-by-miss → widen; enumerate →
+  hard caps). Bake a reward-hacking checklist into the gate; blind the grader.
+  [P0/P2]
+- **Constraints need instruments** → concrete schema for cost-cap + per-step
+  token/$/time telemetry the agent can *query*; add wall-clock + spend HALT
+  ceilings (agents have no sense of time). [P1]
+- **Strategic:** distillation moved to prompt-time (public artifacts only);
+  the new moat is **information asymmetry** — the private eval set / edge-case
+  list / ground truth nobody else can score against (cal.com went closed in
+  Apr 2026 citing exactly this). Keep AutoClaw's eval/ground-truth private
+  even where code is open; note for security-review + MONETIZATION framing.
+- **Tool to study:** `github.com/elvisun/loss-function-development` (`/lfd-
+  design` generates the harness+goal) — model for an AutoClaw rubric/harness-
+  designer skill. [P2]
+
+**Comment harvest (read live from X via CDP-attached Chrome).** Folded into
+the two research-doc addenda. Keepers:
+- **Phase × model × effort routing** (practitioners @daniel_mac8, @cjzafir):
+  Fable orchestrator (Max) + Opus reasoning phases; or Fable-high plan →
+  Codex-xhigh execute → Fable-max review. Route *per phase*; workers can be
+  cross-vendor (Codex). Sharpens the [P0] routing item.
+- **@steipete orchestrator recipe:** orchestrator skill + triage + autoreview +
+  computer-use skills, **wake every 5 min, dispatch to threads** — AutoClaw's
+  shape as a recipe. Adds: fixed wake cadence + composable specialist skills.
+- **Two reference repos:** `serenakeyitan/awesome-agent-loops` (nested-loop
+  arch — "timer outside, condition inside, skill innermost") and
+  `yucai0302/memory-loop` (productized STATE.md: hot/cold `.claude/memory/`,
+  SessionStart/Stop hooks, `/save` + `/compress` at ~8K chars — near-drop-in
+  reference for kdream; adopt auto hot/cold compaction). [P2 refs]
+- **Bounded-autonomy add (@ToolRadarAI):** ship **audit logs + diffs + a kill
+  switch** (operator stop for the whole fleet, beyond cycle-ceiling HALT). [P1]
+- **Unverified rumor:** "Mythos system prompt leak" (Fable = agentic harness,
+  not raw model) — do not build on; noted only as it echoes the thesis.
+
+**Verified current-state + spec (2026-06-12).** Two read-only code sweeps
+confirmed the gaps are real (not speculation): router scores
+capability×trust×idle/cost but ignores model tier (`orchestrate.ts:482`);
+`evaluateConsensus` (`:1404`) is votes-only — quality-gate commands not wired;
+no reviewer≠author rule (`:1310`); heartbeat-v2 budgets specced but not
+implemented; no fleet kill switch / `max_cycles` not runtime-enforced; kdream
+has read/write discipline but no provenance/hot-cold; no per-task work-state
+resume; no worktree isolation; no goal/outcome loop. **Verdict:** the articles
+aren't a better *architecture* (ours is right, in places richer) — they're the
+*operating discipline* to finish what we spec'd + ~3 net-new ideas (goal loop,
+reward-hacking fences, work-state resume).
+
+**The top-3 (lowest-effort/highest-ROI) are now specced:**
+`docs/specs/orchestrate-gates-and-routing.spec.md` (draft) — (A) reviewer≠author
+self-vote exclusion, (B) tier×phase routing as a soft multiplier on the existing
+scorer, (C) acceptance-command gate that blocks green votes over a red check.
+All opt-in / backward-compatible.
+
+**Pilot (A) LANDED 2026-06-12** (dev-beta, not yet committed). `evaluateConsensus`
+now takes optional `ctx?:{author_agent_id?}`; author self-votes are excluded
+from the tally (fresh-context verifier), full list preserved on result +
+`excluded_self_review`. Spec → status `pilot`, step 1 done. +4 tests, 106
+orchestrate tests green, `tsc` clean, CHANGELOG `[Unreleased]` entry added.
+Next: spec step 2 (wire callers in `bridge.ts`/`extension.ts` to pass the
+claimant as `author_agent_id` + exclude the author from review-request
+targeting), then features (C) acceptance-command gate and (B) tier×phase routing.
+
+**Steps 2 + C + B LANDED 2026-06-12** (dev-beta, uncommitted) — ran concurrently
+via the mateam pattern: a background `Agent` subagent did GR-2 (disjoint files:
+`comms.ts`+`bridge.ts`+`extension.ts`) while the main agent did GR-C+GR-B in
+`orchestrate.ts`. Dogfooded the comms tree: `task_assign`→`inboxes/shared`,
+`task_complete`→shared, `review_request`→kilocode; mateam scratch at
+`.autoclaw/mateam/scratch/2026-06-12-orchestrate-gates/`.
+- **GR-2 (live):** `readClaimAuthor` in comms.ts; both consensus call sites pass
+  `author_agent_id`; `computeReviewers` already excluded the author.
+- **GR-C (lib):** `runAcceptanceChecks`/`acceptanceMet`/`applyAcceptanceGate` +
+  `AcceptanceCheck`/`GateCheckResult`/`gate_checks` — red check blocks green votes.
+- **GR-B (lib):** `MODEL_TIER`/`PHASE_PREF`/`tierFactor` soft multiplier in
+  `scoreAgent`; no-op when phase/llms absent.
+- **Verified:** `tsc` clean; **197 tests passing** (+13 new). Spec steps 2/3/4
+  marked DONE/LIB-DONE.
+- **Remaining (next slice):** live activation of B/C — populate `task.phase`, map
+  registry `llms_available` into the planner's ScorableAgent, invoke the gate
+  (`runAcceptanceChecks`→`applyAcceptanceGate`) at the review call sites.
+
+## M. V4 vision + plan (2026-06-12)
+
+User steering (captured in memory `project_v4_vision_steering`): onboarding for
+all skill levels; dev-team org model; heterogeneous fleet visibility;
+**delegated autonomy, not hub-and-spoke**; reputation-based spawning; memory
+overhaul. Clarified: `/loop`+`/schedule` are Claude Code natives — AutoClaw
+supplies prompts/config for them, never reimplements.
+
+Deliverables this wave:
+- **`docs/V4_PLAN.md`** — 8 pillars (ONB/ORG/VIS/FED/REP/MEM/HKS/QLT) with
+  epics, grounded in a full repo inventory (FleetPanel, 9 runners, subcontract
+  machine, personas, tiered bi-temporal memory all already exist — v4 is mostly
+  closing loops between existing systems). Sequenced v3.4 → v3.5/3.6 → v4.0.
+- **`docs/specs/agent-trigger-hooks.spec.md`** — event→action hooks (wake agents
+  on comms/build events) + fleet HALT kill switch + audit + no-self-amplification.
+- INDEX.md + BACKLOG.md updated (v3.4 wave: QLT-0, HKS-1..3, REP-1, ONB-2, MEM-1).
+- GR-LIVE (live activation of gates+routing) running via background subagent.
