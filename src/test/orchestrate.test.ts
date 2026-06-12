@@ -1052,6 +1052,21 @@ suite('Orchestrate — scoreAgent', () => {
     assert.strictEqual(score, 0);
   });
 
+  // AF-8 §4: agent_type tags can only BOOST capability_match, never lower it.
+  test('agent_type never lowers a score, and boosts when a type tag matches', () => {
+    const baseAgent: ScorableAgent = { capabilities: ['code'], trust_level: 'high', max_parallel_tasks: 1 };
+    const typedAgent: ScorableAgent = { ...baseAgent, agent_type: 'auditor' };
+
+    // Non-regression: on a task it already matches perfectly, the type adds nothing (max preserves 1.0).
+    const t1 = makePlanned('t1', ['code']);
+    assert.strictEqual(scoreAgent(typedAgent, t1), scoreAgent(baseAgent, t1), 'type never lowers a perfect match');
+
+    // Boost: the task requires 'security-review' (an auditor type tag the agent didn't declare).
+    const t2 = makePlanned('t2', ['security-review']);
+    assert.strictEqual(scoreAgent(baseAgent, t2), 0, 'untyped agent has no overlap');
+    assert.ok(scoreAgent(typedAgent, t2) > 0, 'auditor type lends the security-review capability');
+  });
+
   test('higher trust agent outscores lower trust on identical capability fit', () => {
     const high: ScorableAgent = {
       capabilities: ['go'], trust_level: 'high', max_parallel_tasks: 1,
