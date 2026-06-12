@@ -70,8 +70,14 @@ routing, governance). What remains is wiring that logic into the live planner
 | AF-8 §2 | Security reviews routed to live auditors (full-pool fallback) | **done** (e911740) |
 | AF-8 §3 | Governance gate + audit log on the live `dispatchWork` path (human-in-loop types held) | **done** (ee478bb) |
 | AF-8 §4 | Planner capability scoring is agent-type-aware (boost-only, non-regressive) | **done** (cb02499, awaiting push) |
-| AF-7b | Cross-machine `CloudRelay.fetchInbox` (pull remote messages) + external A2A agents via the bridge | open |
-| AF-9 | Consolidate the `fabric.ts` (message-bus) vs `fabric/` (taxonomy) naming collision | open |
+| AF-7b | Cross-machine pull — `CloudRelay.fetchInbox` + `applyFetchedToInboxes` (client side, idempotent) | **done** (745216e) |
+| AF-9 | Consolidated `fabric.ts` → `fabric/bus.ts` (one fabric namespace) | **done** (44dd7a2) |
+
+**Fabric client side is complete (AF-1…AF-9 + AF-7b).** Remaining is external:
+| # | Item | Status |
+|---|------|--------|
+| AF-10 | Hosted relay **server** (serve `GET /v1/inbox`, entitlement per [specs/relay-entitlement.spec.md](specs/relay-entitlement.spec.md)) — server-side, separate infra | open (external) |
+| AF-11 | A2A-bridge ingest of external A2A agents (consume `/.well-known/agent.json`-advertised agents) | open |
 
 ### Release / process
 | # | Item | Status |
