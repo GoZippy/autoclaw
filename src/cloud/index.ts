@@ -51,5 +51,5 @@ export type {
   CloudRelayOptions,
 } from './relay';
 
-// Live forwarding (RELAY-WIRE)
-export { gatherHeartbeatsForRelay, forwardHeartbeats } from './forwarding';
+// Live forwarding (RELAY-WIRE / AF-7)
+export { gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox } from './forwarding';

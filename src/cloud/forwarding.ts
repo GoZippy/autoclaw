@@ -14,11 +14,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import type { CloudRelay, RelayHeartbeat, RelaySendResult } from './relay';
+import { getState, markForwarded } from '../comms/inboxState';
 
 const fsp = fs.promises;
 
 function heartbeatsDir(autoclawDir: string): string {
   return path.join(autoclawDir, 'orchestrator', 'comms', 'heartbeats');
+}
+
+function inboxesDir(autoclawDir: string): string {
+  return path.join(autoclawDir, 'orchestrator', 'comms', 'inboxes');
 }
 
 /**
@@ -70,4 +75,75 @@ export async function gatherHeartbeatsForRelay(autoclawDir: string): Promise<Rel
 export async function forwardHeartbeats(autoclawDir: string, relay: CloudRelay): Promise<RelaySendResult> {
   const heartbeats = await gatherHeartbeatsForRelay(autoclawDir);
   return relay.sendHeartbeats(heartbeats);
+}
+
+// ---------------------------------------------------------------------------
+// Inbox forwarding (AF-7) — forward each inbox/shared message to the relay once.
+// ---------------------------------------------------------------------------
+
+/** A message pending relay, plus where its `forwarded_at` marker lives. */
+interface PendingInboxItem {
+  msg: { id: string; to: string; from: string; type: string; timestamp: string; payload: unknown };
+  inboxPath: string;
+  stem: string;
+}
+
+/**
+ * Collect inbox + shared messages that have NOT yet been forwarded (no
+ * `forwarded_at` in their `_state/`). Oldest first, capped. Dedup is per-message
+ * (a marker), not a watermark — messages arrive out of order across clients.
+ */
+export async function gatherInboxForRelay(autoclawDir: string, cap = 100): Promise<PendingInboxItem[]> {
+  const root = inboxesDir(autoclawDir);
+  let agentDirs: string[];
+  try {
+    agentDirs = (await fsp.readdir(root, { withFileTypes: true })).filter(e => e.isDirectory()).map(e => e.name);
+  } catch {
+    return [];
+  }
+  const items: PendingInboxItem[] = [];
+  for (const agent of agentDirs) {
+    const inboxPath = path.join(root, agent);
+    let files: string[];
+    try { files = await fsp.readdir(inboxPath); } catch { continue; }
+    for (const fn of files) {
+      if (!fn.endsWith('.json')) { continue; }
+      const stem = fn.slice(0, -5);
+      const state = await getState(inboxPath, stem, { strict: true });
+      if (state?.forwarded_at) { continue; } // already relayed
+      let raw: string;
+      try { raw = await fsp.readFile(path.join(inboxPath, fn), 'utf8'); } catch { continue; }
+      let m: Record<string, unknown>;
+      try { m = JSON.parse(raw.replace(/^﻿/, '')) as Record<string, unknown>; } catch { continue; }
+      if (typeof m.id !== 'string' || typeof m.timestamp !== 'string') { continue; }
+      items.push({
+        msg: {
+          id: m.id, timestamp: m.timestamp,
+          to: typeof m.to === 'string' ? m.to : agent,
+          from: typeof m.from === 'string' ? m.from : '',
+          type: typeof m.type === 'string' ? m.type : '',
+          payload: m.payload,
+        },
+        inboxPath, stem,
+      });
+    }
+  }
+  items.sort((a, b) => new Date(a.msg.timestamp).getTime() - new Date(b.msg.timestamp).getTime());
+  return items.slice(0, cap);
+}
+
+/**
+ * Forward un-forwarded inbox messages through the relay. A no-op when the relay
+ * is inert. Messages are marked `forwarded_at` ONLY when the relay actually
+ * transmitted OR queued them (i.e. `result.skipped` is unset) — so a disabled/
+ * unauthenticated relay forwards them later instead of dropping them.
+ */
+export async function forwardInbox(autoclawDir: string, relay: CloudRelay): Promise<RelaySendResult> {
+  const items = await gatherInboxForRelay(autoclawDir);
+  if (items.length === 0) { return { ok: true, detail: 'no inbox messages to forward' }; }
+  const res = await relay.sendInbox(items.map(i => i.msg));
+  if (!res.skipped) {
+    for (const it of items) { await markForwarded(it.inboxPath, it.stem); }
+  }
+  return res;
 }

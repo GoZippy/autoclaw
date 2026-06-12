@@ -71,7 +71,7 @@ import {
   type CommsLogEntry, type Message,
 } from './comms';
 import {
-  CloudRelay, forwardHeartbeats, readRelayConfig, writeRelayConfig,
+  CloudRelay, forwardHeartbeats, forwardInbox, readRelayConfig, writeRelayConfig,
   endpointIsSecure, defaultRelayConfig,
 } from './cloud';
 import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS } from './runners';
@@ -2286,15 +2286,22 @@ function startHeartbeatTicker(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(saveWatcher);
 
+  let relayTickInFlight = false;
   const tick = async (): Promise<void> => {
     await writeAgentHeartbeats(workspaceRoot, commsDir).catch(() => {});
-    // Forward heartbeats + drain the offline queue. Best-effort; a relay
-    // failure must never disrupt the local heartbeat loop.
+    // Forward heartbeats + inbox messages + drain the offline queue. Best-effort;
+    // a relay failure must never disrupt the local heartbeat loop. The in-flight
+    // guard stops a slow send from overlapping the next 30s tick.
+    if (relayTickInFlight) { return; }
+    relayTickInFlight = true;
     try {
       await forwardHeartbeats(autoclawDir, relay);
+      await forwardInbox(autoclawDir, relay);
       await relay.flushQueue();
     } catch {
       /* relay is opt-in + best-effort */
+    } finally {
+      relayTickInFlight = false;
     }
   };
 

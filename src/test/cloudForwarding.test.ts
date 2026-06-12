@@ -8,7 +8,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { gatherHeartbeatsForRelay, forwardHeartbeats } from '../cloud/forwarding';
+import { gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox } from '../cloud/forwarding';
+import { getState } from '../comms/inboxState';
 import { CloudRelay, readRelayConfig, writeRelayConfig, defaultRelayConfig } from '../cloud/relay';
 
 function makeWorkspace(): string {
@@ -83,6 +84,56 @@ suite('RELAY-WIRE — forwardHeartbeats is inert unless opted-in', () => {
     const res = await forwardHeartbeats(dir, relay);
     assert.strictEqual(res.ok, true);
     assert.strictEqual(res.skipped, 'no_token');
+  });
+});
+
+function writeInboxMsg(autoclawDir: string, agent: string, file: string, msg: Record<string, unknown>): void {
+  const dir = path.join(autoclawDir, 'orchestrator', 'comms', 'inboxes', agent);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, file), JSON.stringify(msg));
+}
+
+async function storeToken(autoclawDir: string, store: MemoryStore): Promise<void> {
+  const { resolveInstallationId } = await import('../cloud/auth');
+  const id = await resolveInstallationId(autoclawDir);
+  await store.set(`token:${id}`, JSON.stringify({
+    token: 'tok', installation_id: id, source: 'pat', issued_at: new Date().toISOString(), rotation: 0,
+  }));
+}
+
+suite('AF-7 — inbox forwarding', () => {
+  const baseActive = { endpoint: 'https://relay.example', enabled: true, heartbeatIntervalMs: 60_000, requestTimeoutMs: 1_000, tier: 'ga' as const, consentAckAt: '2026-06-11T00:00:00Z' };
+
+  test('gatherInboxForRelay returns unforwarded messages oldest-first, skips _state', async () => {
+    const dir = makeWorkspace();
+    writeInboxMsg(dir, 'kilocode', 'm2.json', { id: 'm2', to: 'kilocode', from: 'a', type: 'question', timestamp: '2026-06-11T00:00:02Z', payload: { q: 2 } });
+    writeInboxMsg(dir, 'kilocode', 'm1.json', { id: 'm1', to: 'kilocode', from: 'a', type: 'question', timestamp: '2026-06-11T00:00:01Z', payload: { q: 1 } });
+    // a state file must not be treated as a message
+    fs.mkdirSync(path.join(dir, 'orchestrator', 'comms', 'inboxes', 'kilocode', '_state'), { recursive: true });
+    const items = await gatherInboxForRelay(dir);
+    assert.deepStrictEqual(items.map(i => i.msg.id), ['m1', 'm2'], 'oldest first, _state ignored');
+  });
+
+  test('inert relay ⇒ skipped ⇒ messages NOT marked (re-tried later)', async () => {
+    const dir = makeWorkspace();
+    writeInboxMsg(dir, 'kiro', 'm1.json', { id: 'm1', to: 'kiro', from: 'a', type: 'question', timestamp: '2026-06-11T00:00:01Z', payload: {} });
+    const relay = new CloudRelay({ autoclawDir: dir, secretStore: new MemoryStore() }); // no config ⇒ inert
+    const res = await forwardInbox(dir, relay);
+    assert.strictEqual(res.skipped, 'relay_disabled');
+    assert.strictEqual((await gatherInboxForRelay(dir)).length, 1, 'still pending — not marked');
+  });
+
+  test('active relay (queues on network fail) ⇒ marked forwarded once, then drained', async () => {
+    const dir = makeWorkspace();
+    const store = new MemoryStore();
+    await storeToken(dir, store);
+    writeInboxMsg(dir, 'kiro', 'm1.json', { id: 'm1', to: 'kiro', from: 'a', type: 'question', timestamp: '2026-06-11T00:00:01Z', payload: { secret: 'x' } });
+    const relay = new CloudRelay({ autoclawDir: dir, secretStore: store, config: baseActive });
+    const res = await forwardInbox(dir, relay);
+    assert.strictEqual(res.skipped, undefined, 'transmitted or queued (not skipped)');
+    const st = await getState(path.join(dir, 'orchestrator', 'comms', 'inboxes', 'kiro'), 'm1', { strict: true });
+    assert.ok(st?.forwarded_at, 'message marked forwarded');
+    assert.strictEqual((await gatherInboxForRelay(dir)).length, 0, 'no longer pending — no double-send');
   });
 });
 

@@ -90,6 +90,7 @@ export async function markRead(inboxPath: string, msgId: string): Promise<void> 
     read_at: now,
     replied_at: existing?.replied_at ?? null,
     archived_at: existing?.archived_at ?? null,
+    forwarded_at: existing?.forwarded_at ?? null,
   });
 }
 
@@ -107,6 +108,7 @@ export async function markReplied(inboxPath: string, msgId: string): Promise<voi
     read_at: existing?.read_at ?? now,
     replied_at: now,
     archived_at: existing?.archived_at ?? null,
+    forwarded_at: existing?.forwarded_at ?? null,
   });
 }
 
@@ -124,6 +126,26 @@ export async function archive(inboxPath: string, msgId: string): Promise<void> {
     read_at: existing?.read_at ?? null,
     replied_at: existing?.replied_at ?? null,
     archived_at: now,
+    forwarded_at: existing?.forwarded_at ?? null,
+  });
+}
+
+/**
+ * Mark a message as forwarded to the cloud relay (AF-7). Idempotent: an
+ * existing `forwarded_at` is preserved. Preserves all other state fields.
+ */
+export async function markForwarded(inboxPath: string, msgId: string): Promise<void> {
+  const fp = stateFilePath(inboxPath, msgId);
+  const existing = await readStateFile(fp);
+  if (existing?.forwarded_at) { return; }
+  const now = new Date().toISOString();
+  await writeStateFile(fp, {
+    msg_id: msgId,
+    received_at: existing?.received_at ?? now,
+    read_at: existing?.read_at ?? null,
+    replied_at: existing?.replied_at ?? null,
+    archived_at: existing?.archived_at ?? null,
+    forwarded_at: now,
   });
 }
 
