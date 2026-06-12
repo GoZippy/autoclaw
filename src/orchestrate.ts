@@ -14,6 +14,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+// Fabric agent-type tags (AF-8 §4). Explicit subpath keeps the bus out of the planner.
+import { agentTypeProfile, type AgentType } from './fabric/agentTypes';
 
 const fsPromises = fs.promises;
 
@@ -433,6 +435,12 @@ export interface ScorableAgent {
    * uncertain" default in the spec).
    */
   languages_supported?: string[];
+  /**
+   * Fabric agent type (AF-8 §4). When set, the type's capability tags can only
+   * BOOST capability_match (via `max`), never lower it. Absent ⇒ scoring is
+   * byte-identical to before — existing fleets are unaffected.
+   */
+  agent_type?: AgentType;
 }
 
 /** Compute the Jaccard index between two arrays treated as sets. */
@@ -477,7 +485,13 @@ export function scoreAgent(agent: ScorableAgent, task: PlannedTask): number {
 
   // Capability match: Jaccard, then dampened if languages_supported is
   // missing OR known to not overlap with the task's required caps.
-  const jaccard = jaccardIndex(agentCaps, required);
+  let jaccard = jaccardIndex(agentCaps, required);
+  // AF-8 §4: an agent's TYPE tags can only BOOST the match (via max), never
+  // lower it. Guarded on `agent_type` being set so untyped fleets are unchanged.
+  if (agent.agent_type && required.length > 0) {
+    const effective = [...new Set([...agentCaps, ...agentTypeProfile(agent.agent_type).capabilityTags])];
+    jaccard = Math.max(jaccard, jaccardIndex(effective, required));
+  }
   let langFactor = 0.5;
   if (agent.languages_supported && agent.languages_supported.length > 0) {
     if (required.length === 0) {
@@ -663,6 +677,7 @@ export function planSprints(
                   cost_budget: entry.cost_budget,
                   max_parallel_tasks: entry.max_parallel_tasks,
                   languages_supported: entry.languages_supported,
+                  agent_type: entry.agent_type, // AF-8 §4 (absent ⇒ no boost)
                   in_flight: slot.taskCount,
                 }
               : { in_flight: slot.taskCount };
@@ -1224,6 +1239,13 @@ export interface AgentRegistryEntry {
   cost_budget?: { hourly_usd?: number; daily_usd?: number; per_task_usd?: number };
   max_parallel_tasks?: number;
   languages_supported?: string[];
+  /**
+   * Fabric agent type (AF-8 §4). Deliberately NOT part of the `useScorer` gate
+   * (orchestrate.ts:549) — it only boosts capability_match once the scorer is
+   * already active, so an entry with only `agent_type` set will NOT flip a
+   * legacy round-robin fleet onto the scorer path.
+   */
+  agent_type?: AgentType;
 }
 
 export async function writeAgentRegistry(

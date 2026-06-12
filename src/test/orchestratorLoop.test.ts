@@ -315,6 +315,37 @@ suite('dispatchWork', () => {
     assert.strictEqual(record.vendor, 'kilocode');
   });
 
+  test('AF-8 §3: dispatch to an assistant-typed agent is GATED (no sidecar, audit allowed:false)', async () => {
+    const root = makeTmp('dispatch-gated');
+    const commsDir = path.join(root, '.autoclaw', 'orchestrator', 'comms');
+    fs.mkdirSync(commsDir, { recursive: true });
+    fs.writeFileSync(path.join(commsDir, 'registry.json'), JSON.stringify({
+      agents: [{ id: 'cursor', agent_type: 'assistant' }], ide: 'x', provisioned_at: 't',
+    }));
+    const pkg: WorkPackage = {
+      type: 'work_package', taskId: 'G1', taskName: 'assistant task', description: '', filePaths: [],
+      successCriteria: ['pass'], sprint: 1, assignToVendor: 'cursor', priority: 'low', timeBudgetMs: 0,
+    };
+    const res = await dispatchWork(root, pkg);
+    assert.strictEqual(res, null, 'human-in-loop type ⇒ gated, no dispatch');
+    const { readAuditLog } = await import('../fabric/governance');
+    const rows = await readAuditLog(path.join(root, '.autoclaw'));
+    assert.ok(rows.some(r => r.task_id === 'G1' && r.allowed === false), 'allowed:false audit row written');
+  });
+
+  test('AF-8 §3: dispatch to a coder agent proceeds + writes an allowed:true audit row', async () => {
+    const root = makeTmp('dispatch-allowed');
+    const pkg: WorkPackage = {
+      type: 'work_package', taskId: 'G2', taskName: 'coder task', description: '', filePaths: [],
+      successCriteria: ['pass'], sprint: 1, assignToVendor: 'kilocode', priority: 'low', timeBudgetMs: 0,
+    };
+    const res = await dispatchWork(root, pkg); // no registry agent_type ⇒ coder ⇒ allowed
+    assert.ok(res !== null);
+    const { readAuditLog } = await import('../fabric/governance');
+    const rows = await readAuditLog(path.join(root, '.autoclaw'));
+    assert.ok(rows.some(r => r.task_id === 'G2' && r.allowed === true), 'allowed:true audit row written');
+  });
+
   test('writes task_claim to shared inbox', async () => {
     const root = makeTmp('dispatch-claim');
     const pkg: WorkPackage = {

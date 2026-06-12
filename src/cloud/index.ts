@@ -34,7 +34,9 @@ export {
   CLOUD_HEARTBEAT_INTERVAL_MS,
   defaultRelayConfig,
   readRelayConfig,
+  writeRelayConfig,
   relayIsActive,
+  endpointIsSecure,
   cloudDir,
   queueDepth,
   encryptPayload,
@@ -45,6 +47,15 @@ export type {
   RelayHeartbeat,
   RelayInboxMessage,
   RelaySendResult,
+  RelayFetchResult,
   EncryptedEnvelope,
   CloudRelayOptions,
 } from './relay';
+
+// Live forwarding (RELAY-WIRE / AF-7) + cross-machine pull (AF-7b/AF-10c)
+export {
+  gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox,
+  applyFetchedToInboxes, type FetchedMessage,
+  applyFetchedHeartbeats, readRemoteHeartbeats, fetchAndCacheHeartbeats, type RemoteFleetHeartbeat,
+} from './forwarding';
+export type { FleetHeartbeatRow, RelayHeartbeatFetchResult } from './relay';

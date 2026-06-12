@@ -160,6 +160,26 @@ export async function readRelayConfig(autoclawDir: string): Promise<RelayConfig>
 }
 
 /**
+ * Write the relay config to `.autoclaw/cloud/relay-config.json`. Used by the
+ * consent flow to record an explicit opt-in (endpoint + `enabled` + `tier:ga`
+ * + `consentAckAt`). Persists only the known fields.
+ */
+export async function writeRelayConfig(autoclawDir: string, cfg: RelayConfig): Promise<void> {
+  const dir = cloudDir(autoclawDir);
+  await fsp.mkdir(dir, { recursive: true });
+  const doc: RelayConfig = {
+    endpoint: typeof cfg.endpoint === 'string' ? cfg.endpoint.trim() : '',
+    enabled: cfg.enabled === true,
+    heartbeatIntervalMs: typeof cfg.heartbeatIntervalMs === 'number' && cfg.heartbeatIntervalMs > 0 ? cfg.heartbeatIntervalMs : CLOUD_HEARTBEAT_INTERVAL_MS,
+    requestTimeoutMs: typeof cfg.requestTimeoutMs === 'number' && cfg.requestTimeoutMs > 0 ? cfg.requestTimeoutMs : 15_000,
+    tier: cfg.tier === 'ga' ? 'ga' : 'preview',
+    consentAckAt: typeof cfg.consentAckAt === 'string' ? cfg.consentAckAt : null,
+    ...(cfg.forward ? { forward: { heartbeats: cfg.forward.heartbeats !== false, inbox: cfg.forward.inbox !== false } } : {}),
+  };
+  await fsp.writeFile(path.join(dir, 'relay-config.json'), JSON.stringify(doc, null, 2) + '\n', 'utf8');
+}
+
+/**
  * True only when the relay is genuinely active: explicitly enabled AND a
  * non-empty endpoint is configured. Every send path checks this first.
  */
@@ -231,14 +251,19 @@ export function decryptPayload<T = unknown>(env: EncryptedEnvelope, key: Buffer)
 // Wire shapes
 // ---------------------------------------------------------------------------
 
-/** A heartbeat as forwarded to the relay (a low-sensitivity subset). */
+/**
+ * A heartbeat as forwarded to the relay (a low-sensitivity subset).
+ *
+ * SEC-1 (audit F3 minimization): `session_id` is deliberately NOT part of the
+ * wire shape — it's an internal correlation id with no value to the relay and
+ * heartbeats are forwarded in clear, so it must not leave the machine.
+ */
 export interface RelayHeartbeat {
   agent_id: string;
   timestamp: string;
   status: string;
   current_task: string | null;
   sprint: number | null;
-  session_id?: string;
   current_llm?: string;
 }
 
@@ -373,6 +398,36 @@ async function postJson(
       status: 0,
       detail: `network error: ${err instanceof Error ? err.message : String(err)}`,
     };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * GET JSON from `{endpoint}{pathSuffix}` with bearer auth (AF-7b pull). The
+ * token rides ONLY in the Authorization header. Returns the parsed body, or
+ * `status: 0` on a network error.
+ */
+async function getJson(
+  endpoint: string,
+  pathSuffix: string,
+  token: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; body: unknown; detail: string }> {
+  const url = endpoint.replace(/\/+$/, '') + pathSuffix;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    let body: unknown = null;
+    try { body = await resp.json(); } catch { body = null; }
+    return { ok: resp.ok, status: resp.status, body, detail: resp.ok ? 'ok' : `relay returned HTTP ${resp.status}` };
+  } catch (err) {
+    return { ok: false, status: 0, body: null, detail: `network error: ${err instanceof Error ? err.message : String(err)}` };
   } finally {
     clearTimeout(timer);
   }
@@ -610,6 +665,90 @@ export class CloudRelay {
       detail: `flushed ${sent} sent, ${dropped} dropped, ${remaining} remaining`,
     };
   }
+
+  /**
+   * `GET /v1/inbox` — AF-7b cross-machine PULL. Fetch messages the relay holds
+   * for the given agent ids (or all of this installation's), decrypting each
+   * payload locally. A no-op (`skipped`) when the relay is inert. The caller
+   * applies the returned messages to local inboxes (see
+   * `forwarding.applyFetchedToInboxes`).
+   */
+  async fetchInbox(agentIds?: string[]): Promise<RelayFetchResult> {
+    const cfg = await this.config();
+    if (!relayIsActive(cfg)) {
+      return { ok: true, skipped: 'relay_disabled', messages: [], detail: 'cloud relay is disabled (inert)' };
+    }
+    const cred = await this.credentials();
+    if (!cred.ok) {
+      return { ok: true, skipped: cred.skipped, messages: [], detail: cred.detail };
+    }
+    const q = agentIds && agentIds.length > 0 ? `?to=${encodeURIComponent(agentIds.join(','))}` : '';
+    const res = await getJson(cfg.endpoint, `/v1/inbox${q}`, cred.token, cfg.requestTimeoutMs);
+    if (!res.ok) {
+      return { ok: false, status: res.status, messages: [], detail: res.detail };
+    }
+    const wire = (res.body as { messages?: RelayInboxMessage[] })?.messages ?? [];
+    const messages: RelayFetchResult['messages'] = [];
+    for (const m of wire) {
+      let payload: unknown;
+      try { payload = decryptPayload(m.encrypted, cred.key); } catch { continue; } // skip undecryptable
+      messages.push({ id: m.id, to: m.to, from: m.from, type: m.type, timestamp: m.timestamp, payload });
+    }
+    return { ok: true, status: res.status, messages, detail: `${messages.length} message(s) fetched` };
+  }
+
+  /**
+   * `GET /v1/heartbeat` — AF-10c. Pull the account's heartbeats (this machine's
+   * + every other machine's) for a cross-machine fleet view. Heartbeats are in
+   * clear (no decryption). A no-op when the relay is inert.
+   */
+  async fetchHeartbeats(): Promise<RelayHeartbeatFetchResult> {
+    const cfg = await this.config();
+    if (!relayIsActive(cfg)) {
+      return { ok: true, skipped: 'relay_disabled', heartbeats: [], detail: 'cloud relay is disabled (inert)' };
+    }
+    const cred = await this.credentials();
+    if (!cred.ok) {
+      return { ok: true, skipped: cred.skipped, heartbeats: [], detail: cred.detail };
+    }
+    const res = await getJson(cfg.endpoint, '/v1/heartbeat', cred.token, cfg.requestTimeoutMs);
+    if (!res.ok) {
+      return { ok: false, status: res.status, heartbeats: [], detail: res.detail };
+    }
+    const heartbeats = (res.body as { heartbeats?: FleetHeartbeatRow[] })?.heartbeats ?? [];
+    return { ok: true, status: res.status, heartbeats, detail: `${heartbeats.length} heartbeat(s) fetched`, localInstallationId: cred.installationId };
+  }
+}
+
+/** A heartbeat row as served by the relay (clear; carries its origin machine). */
+export interface FleetHeartbeatRow {
+  agent_id: string;
+  timestamp: string;
+  status: string;
+  current_task: string | null;
+  sprint: number | null;
+  current_llm?: string;
+  installation_id: string;
+}
+
+/** Outcome of a {@link CloudRelay.fetchHeartbeats} pull. */
+export interface RelayHeartbeatFetchResult {
+  ok: boolean;
+  skipped?: RelaySendResult['skipped'];
+  status?: number;
+  heartbeats: FleetHeartbeatRow[];
+  /** This machine's installation id, so callers can drop their own rows. */
+  localInstallationId?: string;
+  detail: string;
+}
+
+/** Outcome of a {@link CloudRelay.fetchInbox} pull. */
+export interface RelayFetchResult {
+  ok: boolean;
+  skipped?: RelaySendResult['skipped'];
+  status?: number;
+  messages: Array<{ id: string; to: string; from: string; type: string; timestamp: string; payload: unknown }>;
+  detail: string;
 }
 
 /** Delete a file, ignoring "already gone". */

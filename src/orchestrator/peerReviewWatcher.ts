@@ -24,6 +24,8 @@ import {
   type ReviewerCandidate,
   type TaskCompleteLike,
 } from './peerReview';
+import { quorumRuleForPersona } from './reviewSla';
+import { agentTypeForPersona } from '../fabric/agentTypes';
 
 const fsp = fs.promises;
 
@@ -96,10 +98,14 @@ async function readSharedTaskCompletes(workspaceRoot: string): Promise<TaskCompl
 
 /** Read registry + heartbeats and build the reviewer candidate pool. */
 async function readReviewerPool(workspaceRoot: string): Promise<ReviewerCandidate[]> {
-  const reg = await readJsonIfExists<{ agents?: Array<{ id: string }> }>(registryPath(workspaceRoot));
+  const reg = await readJsonIfExists<{ agents?: Array<{ id: string; agent_type?: string }> }>(registryPath(workspaceRoot));
   const ids = new Set<string>();
+  const typeById = new Map<string, string>();
   for (const a of reg?.agents ?? []) {
-    if (typeof a?.id === 'string' && a.id.length > 0) { ids.add(a.id); }
+    if (typeof a?.id === 'string' && a.id.length > 0) {
+      ids.add(a.id);
+      if (typeof a.agent_type === 'string') { typeById.set(a.id, a.agent_type); }
+    }
   }
 
   // Also pull from heartbeat filenames so an agent that wrote a heartbeat
@@ -129,6 +135,7 @@ async function readReviewerPool(workspaceRoot: string): Promise<ReviewerCandidat
       agent_id: id,
       last_heartbeat_at: hb?.timestamp ?? null,
       status: (hb?.status as ReviewerCandidate['status']) ?? 'unknown',
+      ...(typeById.has(id) ? { agent_type: typeById.get(id) } : {}),
     });
   }
   return out;
@@ -222,7 +229,7 @@ export async function promotePendingTaskCompletes(
       throw err;
     }
 
-    const reviewers = computeReviewers(tc.from, pool, { now: now.getTime() });
+    let reviewers = computeReviewers(tc.from, pool, { now: now.getTime() });
     if (reviewers.length === 0) {
       // No eligible peers right now — release the ledger so a future tick can retry.
       await ledgerFd.close();
@@ -231,9 +238,22 @@ export async function promotePendingTaskCompletes(
       continue;
     }
 
+    // AF-8 §1+§2: derive the consensus rule + route security reviews to auditors.
+    const personaId = typeof tc.payload?.persona_id === 'string' ? tc.payload.persona_id : undefined;
+    const rule = quorumRuleForPersona(personaId);
+    if (agentTypeForPersona(personaId) === 'auditor') {
+      // Prefer live auditors, but never stall a review if none are online.
+      const auditorReviewers = computeReviewers(
+        tc.from,
+        pool.filter(c => c.agent_type === 'auditor'),
+        { now: now.getTime() },
+      );
+      if (auditorReviewers.length > 0) { reviewers = auditorReviewers; }
+    }
+
     // Write the consensus stub first so the vote-collection target exists
     // before any reviewer sees the request.
-    const stub = buildConsensusStub(tc, reviewers, { now });
+    const stub = buildConsensusStub(tc, reviewers, { now, rule });
     const stubPath = path.join(consensusActiveDir(workspaceRoot), `${stub.task_id}.json`);
     await fsp.writeFile(stubPath, JSON.stringify(stub, null, 2), 'utf8');
 

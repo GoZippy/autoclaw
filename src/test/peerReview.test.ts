@@ -262,4 +262,45 @@ suite('peerReviewWatcher — promotePendingTaskCompletes', () => {
       rmrf(ws);
     }
   });
+
+  // AF-8 §1: the consensus rule is derived from the task's persona — security
+  // work is UNANIMOUS on the live path (previously hardcoded 'majority').
+  test('security-auditor task_complete yields an UNANIMOUS consensus stub', async () => {
+    const ws = mkTempWorkspace();
+    try {
+      const securityTC: TaskCompleteLike = { ...TC, id: 'msg-tc-sec', task_id: 'SEC9', payload: { persona_id: 'security-auditor' } };
+      const pool: ReviewerCandidate[] = [
+        candidate({ agent_id: 'kilocode', agent_type: 'auditor' }),
+        candidate({ agent_id: 'kiro' }), // coder
+      ];
+      const res = await promotePendingTaskCompletes({
+        workspaceRoot: ws, now: new Date(now), reviewerPoolOverride: pool, taskCompletesOverride: [securityTC],
+      });
+      assert.strictEqual(res.promoted, 1);
+      const stub = JSON.parse(fs.readFileSync(
+        path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active', 'SEC9.json'), 'utf8'));
+      assert.strictEqual(stub.rule, 'unanimous', 'security review is unanimous');
+      // AF-8 §2: the live auditor is preferred as the reviewer.
+      assert.deepStrictEqual(stub.reviewers, ['kilocode'], 'auditor preferred for a security review');
+    } finally {
+      rmrf(ws);
+    }
+  });
+
+  // A non-security task keeps the majority default + the full reviewer pool.
+  test('a normal task_complete stays majority with the full pool', async () => {
+    const ws = mkTempWorkspace();
+    try {
+      const pool: ReviewerCandidate[] = [candidate({ agent_id: 'kilocode' }), candidate({ agent_id: 'kiro' })];
+      await promotePendingTaskCompletes({
+        workspaceRoot: ws, now: new Date(now), reviewerPoolOverride: pool, taskCompletesOverride: [TC],
+      });
+      const stub = JSON.parse(fs.readFileSync(
+        path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active', 'B5.json'), 'utf8'));
+      assert.strictEqual(stub.rule, 'majority');
+      assert.deepStrictEqual(stub.reviewers.sort(), ['kilocode', 'kiro']);
+    } finally {
+      rmrf(ws);
+    }
+  });
 });

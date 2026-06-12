@@ -29,6 +29,10 @@ import * as crypto from 'crypto';
 import type { Heartbeat, Message } from './comms';
 import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
 import { writeBoard } from './orchestrator/boardWriter';
+// Fabric governance (AF-8 §3) — gate + audit the real dispatch path. Explicit
+// subpath keeps the message-bus/bridge out of the loop module.
+import { gateDispatch, appendAuditLog, type ControlLevel } from './fabric/governance';
+import type { AgentType } from './fabric/agentTypes';
 
 const fsPromises = fs.promises;
 
@@ -446,10 +450,39 @@ export async function discoverWork(
 
 export async function dispatchWork(
   workspaceRoot: string,
-  pkg: WorkPackage
+  pkg: WorkPackage,
+  controlLevel: ControlLevel = 'individual'
 ): Promise<string | null> {
   const commsDirAbs = commsDir(workspaceRoot);
   const sidecarDir = path.join(workspaceRoot, LOOP_SIDE_CAR_DIR);
+  const autoclawDir = path.join(workspaceRoot, '.autoclaw');
+
+  // AF-8 §3: resolve the target agent's fabric type and gate the dispatch.
+  // Absent agent_type ⇒ 'coder' ⇒ allowed, so existing fleets are unchanged;
+  // only human-in-loop (assistant/governance) types or a governance control
+  // level are held for approval.
+  let agentType: AgentType = 'coder';
+  try {
+    const reg = JSON.parse(
+      (await fsPromises.readFile(path.join(commsDirAbs, 'registry.json'), 'utf8')).replace(/^﻿/, '')
+    ) as { agents?: Array<{ id: string; agent_type?: string }> };
+    const match = reg.agents?.find(a => a.id === pkg.assignToVendor);
+    if (match?.agent_type) { agentType = match.agent_type as AgentType; }
+  } catch {
+    /* no registry ⇒ default coder */
+  }
+  const gate = gateDispatch(agentType, controlLevel);
+  if (!gate.allowed) {
+    await appendAuditLog(autoclawDir, {
+      actor: 'orchestrator-loop', agent_type: agentType, action: 'dispatch',
+      task_id: pkg.taskId, control_level: controlLevel, allowed: false, detail: gate.reason,
+    });
+    await writeLoopJournal(workspaceRoot, {
+      at: new Date().toISOString(), tick: 0, phase: 'dispatch',
+      action: 'dispatch_gated', detail: { taskId: pkg.taskId, vendor: pkg.assignToVendor, reason: gate.reason },
+    });
+    return null;
+  }
 
   const record = {
     at: new Date().toISOString(),
@@ -493,6 +526,12 @@ export async function dispatchWork(
   await writeLoopJournal(workspaceRoot, {
     at: new Date().toISOString(), tick: 0, phase: 'dispatch',
     action: 'work_dispatched', detail: { taskId: pkg.taskId, vendor: pkg.assignToVendor },
+  });
+
+  // AF-8 §3: audit the allowed dispatch.
+  await appendAuditLog(autoclawDir, {
+    actor: 'orchestrator-loop', agent_type: agentType, action: 'dispatch',
+    task_id: pkg.taskId, control_level: controlLevel, allowed: true,
   });
 
   return sidecarPath;

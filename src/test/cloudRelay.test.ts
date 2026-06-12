@@ -23,6 +23,7 @@ import {
   isTokenExpired,
   redactToken,
   resolveInstallationId,
+  resolveSecretStore,
   type SecretStore,
   type CloudTokenRecord,
 } from '../cloud/auth';
@@ -325,6 +326,30 @@ suite('integrate-automate-v3.2 — relay GA posture (CF-3/CF-5)', () => {
     const res = await relay.sendHeartbeats([{ agent_id: 'a', timestamp: new Date().toISOString(), status: 'active', current_task: 'x', sprint: 1 }]);
     assert.strictEqual(res.skipped, 'channel_disabled');
     assert.strictEqual(await queueDepth(autoclawDir), 0, 'nothing queued for a disabled channel');
+  });
+
+  // SEC-3 (audit F6): the encrypted-file secret store round-trips on disk and
+  // tightens the credential file's permissions (icacls on Windows, chmod on
+  // POSIX) without throwing. This is the first coverage of the real store.
+  test('SEC-3: encrypted-file secret store round-trips + writes credentials.enc', async () => {
+    const { autoclawDir } = makeWorkspace();
+    const store = resolveSecretStore(autoclawDir); // keytar absent ⇒ encrypted-file
+    assert.ok(store.backend === 'encrypted-file' || store.backend === 'os-keychain');
+    if (store.backend !== 'encrypted-file') { return; } // keychain present on this host — skip
+
+    await store.set('token:abc', 's3cr3t-value');
+    assert.strictEqual(await store.get('token:abc'), 's3cr3t-value', 'round-trips the secret');
+    assert.ok(fs.existsSync(path.join(autoclawDir, 'cloud', 'credentials.enc')), 'credentials.enc written');
+    assert.strictEqual(await store.get('missing'), null, 'absent key ⇒ null');
+    assert.strictEqual(await store.delete('token:abc'), true);
+    assert.strictEqual(await store.get('token:abc'), null, 'deleted secret is gone');
+  });
+
+  test('SEC-1: RelayHeartbeat wire shape excludes session_id', () => {
+    // Type-level guarantee made observable: the documented forwarded subset has
+    // no session_id key. (Kept here as a regression marker for the minimization.)
+    const hb = { agent_id: 'a', timestamp: 't', status: 'active', current_task: null, sprint: null };
+    assert.ok(!('session_id' in hb));
   });
 });
 

@@ -39,4 +39,7 @@ export interface InboxStateEntry {
   replied_at: string | null;
   /** ISO timestamp when the agent archived the message; null = not archived. */
   archived_at: string | null;
+  /** ISO timestamp when the message was forwarded to the cloud relay (AF-7);
+   *  null/absent = not yet forwarded. Dedup marker so a message is relayed once. */
+  forwarded_at?: string | null;
 }

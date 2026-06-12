@@ -12,6 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import type { AgentType } from './fabric/agentTypes';
 
 const fsPromises = fs.promises;
 
@@ -186,6 +187,14 @@ export interface RegisteredAgent {
   skills_loaded?: string[];
   /** When true, the agent will not auto-execute tool calls. */
   human_in_loop_required?: boolean;
+  /**
+   * What KIND of worker this agent is (fabric taxonomy: coder/runner/auditor/
+   * supervisor/assistant/governance). Drives how work is directed to it and how
+   * its output is reviewed. Absent ⇒ treated as 'coder'.
+   */
+  agent_type?: AgentType;
+  /** True when this agent may spawn + manage other agents (supervisor/governance). */
+  can_orchestrate?: boolean;
   /** Pointer to the canonical Agent Card on disk. */
   agent_card_path?: string;
   /** SPIFFE ID, populated only when SPIRE is configured (Phase 4). */

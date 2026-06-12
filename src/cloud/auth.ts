@@ -33,6 +33,7 @@
  */
 
 import * as crypto from 'crypto';
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -273,9 +274,22 @@ class EncryptedFileSecretStore implements SecretStore {
   }
 }
 
-/** Best-effort chmod 0600 on POSIX; a no-op on Windows. Never throws. */
+/**
+ * Restrict a credential file to the current user. Best-effort; never throws.
+ *  - POSIX: `chmod 0600`.
+ *  - Windows (SEC-3, audit F6): `chmod` is a no-op, so use `icacls` to drop
+ *    inherited ACEs and grant only the owner full control. Previously the
+ *    Windows branch did nothing, leaving `credentials.enc` / `.keyseed` with
+ *    default (inherited) ACLs.
+ */
 async function chmod600(file: string): Promise<void> {
   if (process.platform === 'win32') {
+    try {
+      const user = os.userInfo().username;
+      spawnSync('icacls', [file, '/inheritance:r', '/grant:r', `${user}:F`], { timeout: 10_000, stdio: 'ignore' });
+    } catch {
+      // best-effort — a failed ACL tighten leaves the prior (inherited) ACL.
+    }
     return;
   }
   try {

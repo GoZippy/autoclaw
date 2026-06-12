@@ -198,9 +198,19 @@ export interface ScopeDeclaration {
 /**
  * Everything a runner needs to turn a prompt into work (RFC §2).
  */
+/**
+ * What KIND of dispatch this is (fabric layer). `code` is the default coding
+ * prompt; `execution` is a callable task agent (a runner) that returns a
+ * structured result rather than file edits; `review` asks an agent (e.g. an
+ * auditor) to assess submitted work. Absent ⇒ `code` (back-compatible).
+ */
+export type DispatchTaskType = 'code' | 'execution' | 'review';
+
 export interface DispatchOptions {
   /** The prompt to execute. For a resumed session this is the follow-up. */
   prompt: string;
+  /** The kind of dispatch — coding prompt vs callable execution vs review. Defaults to `code`. */
+  taskType?: DispatchTaskType;
   /** Resume an existing thread when set; otherwise a new session is created. */
   sessionId?: string;
   /** Trust preset for this dispatch. */
