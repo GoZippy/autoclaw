@@ -1,5 +1,52 @@
 # Changelog
 
+## [3.3.0] - 2026-06-12
+
+The agent-fabric release. AutoClaw becomes a control plane for many kinds of
+agents across many machines: it can direct work to and request reviews from the
+agents you already run, coordinate them across machines through a relay you can
+host yourself, and apply organizational controls per the kind of agent.
+
+### Added
+
+- **Multi-Platform Agent Fabric.** A layer on top of the existing per-platform
+  runners (Claude Code, Codex, Cursor, Kiro, Gemini, Hermes, OpenClaw, …) that
+  classifies agents by *what they do* and routes work + reviews accordingly.
+  - **Agent types** — `coder`, `runner` (a callable one-shot task agent),
+    `auditor` (security/quality review), `supervisor` (manages other agents),
+    `assistant` (personal-assistant, human-in-the-loop), and `governance`
+    (org-level approver). Each carries a default trust level, a review rule, and
+    whether a human must confirm its actions.
+  - **Onboarding** — **AutoClaw: Onboard Agent into Fabric** detects a platform,
+    registers it as a typed worker, and health-checks it. Skill packs for
+    **OpenClaw** (coder) and **Hermes** (assistant) ship with it.
+  - **Routing + governance** — work and reviews route to the right *kind* of
+    agent: security reviews now require an **auditor** and are reviewed
+    **unanimously** (previously this rule was defined but never applied on the
+    live path); a dispatch to a human-in-the-loop agent is held for approval and
+    every dispatch is written to an audit log.
+- **Cross-machine coordination (opt-in).** The cloud relay now actively forwards
+  this machine's heartbeats and inbox messages and pulls messages + other
+  machines' agent presence — so two machines on a shared relay account exchange
+  work and see each other's agents. Inbox forwarding de-duplicates per message.
+  Everything stays completely inert until you enable the relay and log in.
+- **Self-hostable relay server** (`src/relay-server/`, run with
+  `npm run relay:serve`). A small, dependency-free store-and-forward server you
+  can run yourself for free — the open-core, self-hosted path. It **never
+  decrypts your message bodies** (they are encrypted by the sending machine) and
+  isolates accounts from one another. See [docs/relay-server.md](docs/relay-server.md).
+
+### Changed
+
+- Planner agent selection is now agent-type-aware: an agent's type can only
+  *raise* its capability match, never lower it, so existing fleets are unaffected.
+
+### Security
+
+- Dropped `session_id` from forwarded heartbeats (it never needs to leave the
+  machine) and tightened the encrypted-credential file's permissions on Windows
+  (an `icacls` lock-down where `chmod` was previously a no-op).
+
 ## [3.2.0] - 2026-06-09
 
 The integrate-automate sprint. Four lanes shipped together: self-healing build workflows, the cloud relay reaching general availability behind a security review, the specialized-persona system, and cross-machine fleet awareness.
