@@ -29,7 +29,7 @@
  * plain Mocha. Anything VS Code-specific lives in extension.ts.
  */
 
-import { BridgeEventBus } from './bridge';
+import { BridgeEventBus } from '../bridge';
 
 // ---------------------------------------------------------------------------
 // Types

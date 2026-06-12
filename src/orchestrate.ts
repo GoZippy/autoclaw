@@ -14,8 +14,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-// Fabric agent-type tags (AF-8 §4). Explicit subpath: bare './fabric' resolves
-// to the fabric.ts message-bus module.
+// Fabric agent-type tags (AF-8 §4). Explicit subpath keeps the bus out of the planner.
 import { agentTypeProfile, type AgentType } from './fabric/agentTypes';
 
 const fsPromises = fs.promises;

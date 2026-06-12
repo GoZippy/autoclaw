@@ -11,3 +11,6 @@ export * from './agentTypes';
 export * from './onboarding';
 export * from './routing';
 export * from './governance';
+// The cross-agent message bus (Phase 2B) — moved here from src/fabric.ts (AF-9)
+// so `./fabric` is a single namespace (no more file-vs-dir collision).
+export * from './bus';

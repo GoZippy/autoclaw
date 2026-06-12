@@ -30,7 +30,7 @@ import type { Heartbeat, Message } from './comms';
 import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
 import { writeBoard } from './orchestrator/boardWriter';
 // Fabric governance (AF-8 §3) — gate + audit the real dispatch path. Explicit
-// subpaths: bare './fabric' resolves to the fabric.ts message-bus module.
+// subpath keeps the message-bus/bridge out of the loop module.
 import { gateDispatch, appendAuditLog, type ControlLevel } from './fabric/governance';
 import type { AgentType } from './fabric/agentTypes';
 

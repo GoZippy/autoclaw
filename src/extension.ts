@@ -75,8 +75,8 @@ import {
   endpointIsSecure, defaultRelayConfig,
 } from './cloud';
 import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS } from './runners';
-// NB: import the agent-fabric TAXONOMY via explicit subpaths — `./fabric`
-// (bare) resolves to the pre-existing `src/fabric.ts` message-bus module.
+// Agent-fabric taxonomy via explicit subpaths (keeps the message-bus + bridge
+// out of modules that only need the taxonomy).
 import { onboardPlatform } from './fabric/onboarding';
 import { defaultAgentTypeForRunner } from './fabric/agentTypes';
 import {
