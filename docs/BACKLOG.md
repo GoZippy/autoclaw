@@ -84,7 +84,7 @@ routing, governance). What remains is wiring that logic into the live planner
 ### Release / process
 | # | Item | Status |
 |---|------|--------|
-| _(all clear)_ | — | — |
+| REL-3 | **v3.3.0 shipped** — agent fabric + cross-machine relay + relay server; promoted dev-beta→master (a008e44, tag v3.3.0), published to both registries. Kilo validated (cycle 5). | **done** (2026-06-12) |
 
 ---
 
