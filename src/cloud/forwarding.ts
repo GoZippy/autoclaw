@@ -147,3 +147,35 @@ export async function forwardInbox(autoclawDir: string, relay: CloudRelay): Prom
   }
   return res;
 }
+
+/** A message pulled from the relay (AF-7b), ready to land in a local inbox. */
+export interface FetchedMessage {
+  id: string; to: string; from: string; type: string; timestamp: string; payload: unknown;
+}
+
+/**
+ * Write relay-pulled messages into their recipients' local inboxes (AF-7b).
+ * Idempotent: a message already present (by id) is skipped, so repeated pulls
+ * never duplicate. Returns how many were written vs skipped.
+ */
+export async function applyFetchedToInboxes(
+  autoclawDir: string,
+  messages: readonly FetchedMessage[],
+): Promise<{ written: number; skipped: number }> {
+  let written = 0;
+  let skipped = 0;
+  for (const m of messages) {
+    if (!m?.id || !m?.to) { skipped++; continue; }
+    const dir = path.join(inboxesDir(autoclawDir), m.to);
+    await fsp.mkdir(dir, { recursive: true });
+    const file = path.join(dir, `fetched-${m.id.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+    try {
+      await fsp.access(file);
+      skipped++; // already landed — dedup
+      continue;
+    } catch { /* not present — write it */ }
+    await fsp.writeFile(file, JSON.stringify(m), 'utf8');
+    written++;
+  }
+  return { written, skipped };
+}

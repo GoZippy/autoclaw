@@ -403,6 +403,36 @@ async function postJson(
   }
 }
 
+/**
+ * GET JSON from `{endpoint}{pathSuffix}` with bearer auth (AF-7b pull). The
+ * token rides ONLY in the Authorization header. Returns the parsed body, or
+ * `status: 0` on a network error.
+ */
+async function getJson(
+  endpoint: string,
+  pathSuffix: string,
+  token: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; body: unknown; detail: string }> {
+  const url = endpoint.replace(/\/+$/, '') + pathSuffix;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: { accept: 'application/json', authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    let body: unknown = null;
+    try { body = await resp.json(); } catch { body = null; }
+    return { ok: resp.ok, status: resp.status, body, detail: resp.ok ? 'ok' : `relay returned HTTP ${resp.status}` };
+  } catch (err) {
+    return { ok: false, status: 0, body: null, detail: `network error: ${err instanceof Error ? err.message : String(err)}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Relay client
 // ---------------------------------------------------------------------------
@@ -635,6 +665,46 @@ export class CloudRelay {
       detail: `flushed ${sent} sent, ${dropped} dropped, ${remaining} remaining`,
     };
   }
+
+  /**
+   * `GET /v1/inbox` — AF-7b cross-machine PULL. Fetch messages the relay holds
+   * for the given agent ids (or all of this installation's), decrypting each
+   * payload locally. A no-op (`skipped`) when the relay is inert. The caller
+   * applies the returned messages to local inboxes (see
+   * `forwarding.applyFetchedToInboxes`).
+   */
+  async fetchInbox(agentIds?: string[]): Promise<RelayFetchResult> {
+    const cfg = await this.config();
+    if (!relayIsActive(cfg)) {
+      return { ok: true, skipped: 'relay_disabled', messages: [], detail: 'cloud relay is disabled (inert)' };
+    }
+    const cred = await this.credentials();
+    if (!cred.ok) {
+      return { ok: true, skipped: cred.skipped, messages: [], detail: cred.detail };
+    }
+    const q = agentIds && agentIds.length > 0 ? `?to=${encodeURIComponent(agentIds.join(','))}` : '';
+    const res = await getJson(cfg.endpoint, `/v1/inbox${q}`, cred.token, cfg.requestTimeoutMs);
+    if (!res.ok) {
+      return { ok: false, status: res.status, messages: [], detail: res.detail };
+    }
+    const wire = (res.body as { messages?: RelayInboxMessage[] })?.messages ?? [];
+    const messages: RelayFetchResult['messages'] = [];
+    for (const m of wire) {
+      let payload: unknown;
+      try { payload = decryptPayload(m.encrypted, cred.key); } catch { continue; } // skip undecryptable
+      messages.push({ id: m.id, to: m.to, from: m.from, type: m.type, timestamp: m.timestamp, payload });
+    }
+    return { ok: true, status: res.status, messages, detail: `${messages.length} message(s) fetched` };
+  }
+}
+
+/** Outcome of a {@link CloudRelay.fetchInbox} pull. */
+export interface RelayFetchResult {
+  ok: boolean;
+  skipped?: RelaySendResult['skipped'];
+  status?: number;
+  messages: Array<{ id: string; to: string; from: string; type: string; timestamp: string; payload: unknown }>;
+  detail: string;
 }
 
 /** Delete a file, ignoring "already gone". */

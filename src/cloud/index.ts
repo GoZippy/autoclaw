@@ -47,9 +47,13 @@ export type {
   RelayHeartbeat,
   RelayInboxMessage,
   RelaySendResult,
+  RelayFetchResult,
   EncryptedEnvelope,
   CloudRelayOptions,
 } from './relay';
 
-// Live forwarding (RELAY-WIRE / AF-7)
-export { gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox } from './forwarding';
+// Live forwarding (RELAY-WIRE / AF-7) + cross-machine pull (AF-7b)
+export {
+  gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox,
+  applyFetchedToInboxes, type FetchedMessage,
+} from './forwarding';

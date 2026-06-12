@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox } from '../cloud/forwarding';
+import { gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox, applyFetchedToInboxes } from '../cloud/forwarding';
 import { getState } from '../comms/inboxState';
 import { CloudRelay, readRelayConfig, writeRelayConfig, defaultRelayConfig } from '../cloud/relay';
 
@@ -134,6 +134,42 @@ suite('AF-7 — inbox forwarding', () => {
     const st = await getState(path.join(dir, 'orchestrator', 'comms', 'inboxes', 'kiro'), 'm1', { strict: true });
     assert.ok(st?.forwarded_at, 'message marked forwarded');
     assert.strictEqual((await gatherInboxForRelay(dir)).length, 0, 'no longer pending — no double-send');
+  });
+});
+
+suite('AF-7b — cross-machine pull (fetchInbox + applyFetchedToInboxes)', () => {
+  test('fetchInbox is inert (no fetch) when the relay is disabled', async () => {
+    const dir = makeWorkspace();
+    const relay = new CloudRelay({ autoclawDir: dir, secretStore: new MemoryStore() });
+    const res = await relay.fetchInbox(['kilocode']);
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.skipped, 'relay_disabled');
+    assert.deepStrictEqual(res.messages, []);
+  });
+
+  test('fetchInbox is inert (no_token) when enabled but not logged in', async () => {
+    const dir = makeWorkspace();
+    const relay = new CloudRelay({
+      autoclawDir: dir, secretStore: new MemoryStore(),
+      config: { endpoint: 'https://relay.example', enabled: true, heartbeatIntervalMs: 60_000, requestTimeoutMs: 1_000, tier: 'ga', consentAckAt: '2026-06-11T00:00:00Z' },
+    });
+    const res = await relay.fetchInbox();
+    assert.strictEqual(res.skipped, 'no_token');
+  });
+
+  test('applyFetchedToInboxes writes to recipient inboxes and dedups by id', async () => {
+    const dir = makeWorkspace();
+    const msgs = [
+      { id: 'r1', to: 'kilocode', from: 'a', type: 'question', timestamp: '2026-06-11T00:00:01Z', payload: { q: 1 } },
+      { id: 'r2', to: 'kiro', from: 'a', type: 'answer', timestamp: '2026-06-11T00:00:02Z', payload: { a: 2 } },
+    ];
+    const first = await applyFetchedToInboxes(dir, msgs);
+    assert.deepStrictEqual(first, { written: 2, skipped: 0 });
+    assert.ok(fs.existsSync(path.join(dir, 'orchestrator', 'comms', 'inboxes', 'kilocode', 'fetched-r1.json')));
+    assert.ok(fs.existsSync(path.join(dir, 'orchestrator', 'comms', 'inboxes', 'kiro', 'fetched-r2.json')));
+    // Re-applying the same pull is idempotent — no duplicates.
+    const second = await applyFetchedToInboxes(dir, msgs);
+    assert.deepStrictEqual(second, { written: 0, skipped: 2 });
   });
 });
 
