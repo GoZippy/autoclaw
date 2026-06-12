@@ -81,3 +81,7 @@ docs/V3_PLAN.md
 docs/V3_1_ROADMAP.md
 docs/AGENT_DAEMON_CRITIQUE.md
 docs/rfc/llm-provider-abstraction.md
+
+# Relay server (AF-10) — a separate self-hostable deployable, not extension code
+out/relay-server/**
+src/relay-server/**
