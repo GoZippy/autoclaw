@@ -696,6 +696,50 @@ export class CloudRelay {
     }
     return { ok: true, status: res.status, messages, detail: `${messages.length} message(s) fetched` };
   }
+
+  /**
+   * `GET /v1/heartbeat` — AF-10c. Pull the account's heartbeats (this machine's
+   * + every other machine's) for a cross-machine fleet view. Heartbeats are in
+   * clear (no decryption). A no-op when the relay is inert.
+   */
+  async fetchHeartbeats(): Promise<RelayHeartbeatFetchResult> {
+    const cfg = await this.config();
+    if (!relayIsActive(cfg)) {
+      return { ok: true, skipped: 'relay_disabled', heartbeats: [], detail: 'cloud relay is disabled (inert)' };
+    }
+    const cred = await this.credentials();
+    if (!cred.ok) {
+      return { ok: true, skipped: cred.skipped, heartbeats: [], detail: cred.detail };
+    }
+    const res = await getJson(cfg.endpoint, '/v1/heartbeat', cred.token, cfg.requestTimeoutMs);
+    if (!res.ok) {
+      return { ok: false, status: res.status, heartbeats: [], detail: res.detail };
+    }
+    const heartbeats = (res.body as { heartbeats?: FleetHeartbeatRow[] })?.heartbeats ?? [];
+    return { ok: true, status: res.status, heartbeats, detail: `${heartbeats.length} heartbeat(s) fetched`, localInstallationId: cred.installationId };
+  }
+}
+
+/** A heartbeat row as served by the relay (clear; carries its origin machine). */
+export interface FleetHeartbeatRow {
+  agent_id: string;
+  timestamp: string;
+  status: string;
+  current_task: string | null;
+  sprint: number | null;
+  current_llm?: string;
+  installation_id: string;
+}
+
+/** Outcome of a {@link CloudRelay.fetchHeartbeats} pull. */
+export interface RelayHeartbeatFetchResult {
+  ok: boolean;
+  skipped?: RelaySendResult['skipped'];
+  status?: number;
+  heartbeats: FleetHeartbeatRow[];
+  /** This machine's installation id, so callers can drop their own rows. */
+  localInstallationId?: string;
+  detail: string;
 }
 
 /** Outcome of a {@link CloudRelay.fetchInbox} pull. */

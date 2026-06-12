@@ -71,8 +71,8 @@ import {
   type CommsLogEntry, type Message,
 } from './comms';
 import {
-  CloudRelay, forwardHeartbeats, forwardInbox, readRelayConfig, writeRelayConfig,
-  endpointIsSecure, defaultRelayConfig,
+  CloudRelay, forwardHeartbeats, forwardInbox, applyFetchedToInboxes, fetchAndCacheHeartbeats,
+  readRelayConfig, writeRelayConfig, endpointIsSecure, defaultRelayConfig,
 } from './cloud';
 import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS } from './runners';
 // Agent-fabric taxonomy via explicit subpaths (keeps the message-bus + bridge
@@ -2298,6 +2298,10 @@ function startHeartbeatTicker(context: vscode.ExtensionContext): void {
       await forwardHeartbeats(autoclawDir, relay);
       await forwardInbox(autoclawDir, relay);
       await relay.flushQueue();
+      // AF-7b/AF-10c: pull cross-machine messages + remote heartbeats.
+      const fetched = await relay.fetchInbox();
+      if (fetched.messages.length > 0) { await applyFetchedToInboxes(autoclawDir, fetched.messages); }
+      await fetchAndCacheHeartbeats(autoclawDir, relay);
     } catch {
       /* relay is opt-in + best-effort */
     } finally {

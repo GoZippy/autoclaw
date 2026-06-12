@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox, applyFetchedToInboxes } from '../cloud/forwarding';
+import { gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox, applyFetchedToInboxes, applyFetchedHeartbeats, readRemoteHeartbeats } from '../cloud/forwarding';
 import { getState } from '../comms/inboxState';
 import { CloudRelay, readRelayConfig, writeRelayConfig, defaultRelayConfig } from '../cloud/relay';
 
@@ -170,6 +170,42 @@ suite('AF-7b — cross-machine pull (fetchInbox + applyFetchedToInboxes)', () =>
     // Re-applying the same pull is idempotent — no duplicates.
     const second = await applyFetchedToInboxes(dir, msgs);
     assert.deepStrictEqual(second, { written: 0, skipped: 2 });
+  });
+});
+
+suite('AF-10c — cross-machine fleet heartbeats', () => {
+  const hb = (agent: string, inst: string, ts: string) => ({ agent_id: agent, timestamp: ts, status: 'active', current_task: null, sprint: null, installation_id: inst });
+
+  test('fetchHeartbeats is inert when the relay is disabled', async () => {
+    const dir = makeWorkspace();
+    const relay = new CloudRelay({ autoclawDir: dir, secretStore: new MemoryStore() });
+    const res = await relay.fetchHeartbeats();
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.skipped, 'relay_disabled');
+    assert.deepStrictEqual(res.heartbeats, []);
+  });
+
+  test('applyFetchedHeartbeats caches REMOTE rows (drops own machine), latest per agent/host', async () => {
+    const dir = makeWorkspace();
+    const rows = [
+      hb('claude-code', 'me', '2026-06-11T00:00:05Z'),     // own machine — dropped
+      hb('kilocode', 'machine-B', '2026-06-11T00:00:01Z'),
+      hb('kilocode', 'machine-B', '2026-06-11T00:00:09Z'), // newer wins
+      hb('kiro', 'machine-C', '2026-06-11T00:00:02Z'),
+    ];
+    const n = await applyFetchedHeartbeats(dir, rows, 'me');
+    assert.strictEqual(n, 2, 'two remote machines, own dropped');
+    const cached = await readRemoteHeartbeats(dir);
+    assert.strictEqual(cached.length, 2);
+    const kilo = cached.find(c => c.agent_id === 'kilocode')!;
+    assert.strictEqual(kilo.host, 'machine-B');
+    assert.strictEqual(kilo.origin, 'relay');
+    assert.strictEqual(kilo.timestamp, '2026-06-11T00:00:09Z', 'latest kept');
+    assert.ok(!cached.some(c => c.agent_id === 'claude-code'), 'own machine excluded');
+  });
+
+  test('readRemoteHeartbeats is [] when nothing cached', async () => {
+    assert.deepStrictEqual(await readRemoteHeartbeats(makeWorkspace()), []);
   });
 });
 

@@ -13,7 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import type { CloudRelay, RelayHeartbeat, RelaySendResult } from './relay';
+import type { CloudRelay, RelayHeartbeat, RelaySendResult, FleetHeartbeatRow } from './relay';
 import { getState, markForwarded } from '../comms/inboxState';
 
 const fsp = fs.promises;
@@ -146,6 +146,72 @@ export async function forwardInbox(autoclawDir: string, relay: CloudRelay): Prom
     for (const it of items) { await markForwarded(it.inboxPath, it.stem); }
   }
   return res;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-machine fleet heartbeats (AF-10c) — pull remote heartbeats + cache them
+// for the fleet view (CF-1/CF-2 already render origin:'relay' rows).
+// ---------------------------------------------------------------------------
+
+/** A remote machine's heartbeat, cached for the fleet view. */
+export interface RemoteFleetHeartbeat {
+  agent_id: string; timestamp: string; status: string;
+  current_task: string | null; sprint: number | null; current_llm?: string;
+  /** Origin machine (the remote installation id). */
+  host: string;
+  origin: 'relay';
+}
+
+function remoteHeartbeatsFile(autoclawDir: string): string {
+  return path.join(autoclawDir, 'cloud', 'remote-heartbeats.json');
+}
+
+/**
+ * Cache the relay's heartbeats as the fleet view's remote rows. Drops this
+ * machine's own rows (by installation id) so only OTHER machines show as
+ * remote, keeps the latest per (agent, host), and overwrites the cache each
+ * pull (the relay returns the full current snapshot).
+ */
+export async function applyFetchedHeartbeats(
+  autoclawDir: string,
+  heartbeats: readonly FleetHeartbeatRow[],
+  localInstallationId?: string,
+): Promise<number> {
+  const byKey = new Map<string, RemoteFleetHeartbeat>();
+  for (const h of heartbeats) {
+    if (!h?.agent_id || !h.installation_id) { continue; }
+    if (localInstallationId && h.installation_id === localInstallationId) { continue; } // not "remote"
+    const row: RemoteFleetHeartbeat = {
+      agent_id: h.agent_id, timestamp: h.timestamp, status: h.status,
+      current_task: h.current_task ?? null, sprint: h.sprint ?? null,
+      ...(h.current_llm ? { current_llm: h.current_llm } : {}),
+      host: h.installation_id, origin: 'relay',
+    };
+    const k = `${row.agent_id}::${row.host}`;
+    const prev = byKey.get(k);
+    if (!prev || new Date(row.timestamp).getTime() > new Date(prev.timestamp).getTime()) { byKey.set(k, row); }
+  }
+  const out = [...byKey.values()];
+  const file = remoteHeartbeatsFile(autoclawDir);
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, JSON.stringify(out, null, 2), 'utf8');
+  return out.length;
+}
+
+/** Read the cached remote-machine heartbeats for the fleet view (empty when none). */
+export async function readRemoteHeartbeats(autoclawDir: string): Promise<RemoteFleetHeartbeat[]> {
+  try {
+    return JSON.parse(await fsp.readFile(remoteHeartbeatsFile(autoclawDir), 'utf8')) as RemoteFleetHeartbeat[];
+  } catch {
+    return [];
+  }
+}
+
+/** Pull remote heartbeats and refresh the fleet cache. No-op when inert. */
+export async function fetchAndCacheHeartbeats(autoclawDir: string, relay: CloudRelay): Promise<number> {
+  const res = await relay.fetchHeartbeats();
+  if (res.skipped || !res.ok) { return 0; }
+  return applyFetchedHeartbeats(autoclawDir, res.heartbeats, res.localInstallationId);
 }
 
 /** A message pulled from the relay (AF-7b), ready to land in a local inbox. */

@@ -52,8 +52,10 @@ export type {
   CloudRelayOptions,
 } from './relay';
 
-// Live forwarding (RELAY-WIRE / AF-7) + cross-machine pull (AF-7b)
+// Live forwarding (RELAY-WIRE / AF-7) + cross-machine pull (AF-7b/AF-10c)
 export {
   gatherHeartbeatsForRelay, forwardHeartbeats, gatherInboxForRelay, forwardInbox,
   applyFetchedToInboxes, type FetchedMessage,
+  applyFetchedHeartbeats, readRemoteHeartbeats, fetchAndCacheHeartbeats, type RemoteFleetHeartbeat,
 } from './forwarding';
+export type { FleetHeartbeatRow, RelayHeartbeatFetchResult } from './relay';
