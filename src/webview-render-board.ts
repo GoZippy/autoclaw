@@ -16,7 +16,7 @@
  * through {@link esc}. No fs / vscode imports.
  */
 import { esc, formatAge, shortModel } from './webview-render';
-import { type CanonicalRole, ROLE_META } from './roles';
+import { type CanonicalRole, ROLE_META, resolveAgentRole } from './roles';
 export { type CanonicalRole };
 
 // ---------------------------------------------------------------------------
@@ -278,6 +278,31 @@ export function inferRoleFromActivity(agentId: string, board: BoardSnapshot | nu
   const reviewing = (board.awaiting_review ?? []).some(t => (t.reviewers ?? []).includes(agentId));
   if (reviewing) { return 'reviewer'; }
   return 'generalist';
+}
+
+/**
+ * Resolve the single role to display for an agent, applying the full
+ * precedence chain in one place so the panel, board, and tests agree:
+ *
+ *   1. declared    — user override from `autoclaw.agentRoles` (already normalized)
+ *   2. registry    — explicit `role` / fabric `agent_type` / `can_orchestrate`
+ *   3. activity     — what the agent is doing on the live board right now
+ *   4. generalist  — nothing known
+ */
+export function resolveDisplayRole(input: {
+  declared?: CanonicalRole;
+  role?: string | null;
+  agent_type?: string | null;
+  can_orchestrate?: boolean;
+  agentId: string;
+  board: BoardSnapshot | null;
+}): CanonicalRole {
+  if (input.declared && input.declared !== 'generalist') { return input.declared; }
+  const registry = resolveAgentRole({
+    role: input.role, agent_type: input.agent_type, can_orchestrate: input.can_orchestrate,
+  });
+  if (registry !== 'generalist') { return registry; }
+  return inferRoleFromActivity(input.agentId, input.board);
 }
 
 /** Count of all tasks on the board — used for the section badge. */

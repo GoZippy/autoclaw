@@ -93,10 +93,10 @@ import {
   type FabricHealth, type InboxSummary, type AwaitingYouRow, type AgentWithLive,
 } from './webview-render';
 import {
-  renderBoard, renderMessageFeed, buildThreads, boardTaskCount, inferRoleFromActivity,
+  renderBoard, renderMessageFeed, buildThreads, boardTaskCount, resolveDisplayRole,
   type BoardSnapshot, type BoardRenderContext, type ThreadMessage,
 } from './webview-render-board';
-import { resolveAgentRole, type CanonicalRole } from './roles';
+import { normalizeRole, ROLE_ORDER, ROLE_META, type CanonicalRole } from './roles';
 import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
@@ -541,6 +541,11 @@ export function activate(context: vscode.ExtensionContext) {
   // Fabric onboarding (AF-4b)
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.fabric.onboard', () => fabricOnboardCommand())
+  );
+
+  // Declarative agent roles — assign a panel role to a detected agent.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.setAgentRole', () => setAgentRoleCommand())
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -3514,24 +3519,28 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     }
   } catch { board = null; }
 
+  // User-declared role overrides (highest precedence). A simple agentId → role
+  // map in settings, e.g. { "claude-code": "orchestrator", "kilocode": "coder" }.
+  const declaredRoles = readDeclaredAgentRoles();
+
   // Resolve each agent's canonical role + name + current model once, so the
   // board, threads, and message feed all color participants consistently.
-  // Role precedence: registry role → fabric agent_type → can_orchestrate →
-  // live board activity (what they're doing now) → generalist. (Sprint YAML
-  // "role:" lines are work-lane descriptions, not agent roles, so NOT used.)
+  // Role precedence: declared override → registry role → fabric agent_type →
+  // can_orchestrate → live board activity (what they're doing now) →
+  // generalist. (Sprint YAML "role:" lines are work-lane descriptions, not
+  // agent roles, so NOT used.)
   const roleOf: Record<string, CanonicalRole> = {};
   const nameOf: Record<string, string> = {};
   const modelOf: Record<string, string> = {};
   for (const a of agentsWithSessions) {
-    let role = resolveAgentRole({
+    const role = resolveDisplayRole({
+      declared: declaredRoles[a.id],
       role: (a as { role?: string }).role,
       agent_type: a.agent_type,
       can_orchestrate: a.can_orchestrate,
+      agentId: a.id,
+      board,
     });
-    if (role === 'generalist') {
-      const inferred = inferRoleFromActivity(a.id, board);
-      if (inferred !== 'generalist') { role = inferred; }
-    }
     roleOf[a.id] = role;
     // Stamp the resolved role back so the agent cards + team summary (which
     // call agentRole() internally) agree with the board's coloring.
@@ -3644,6 +3653,68 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
 // ---------------------------------------------------------------------------
 // v2.5 helpers — host-agent identity, fabric health, and reply orchestration.
 // ---------------------------------------------------------------------------
+
+/** Read the user-declared agentId → canonical role overrides from settings
+ *  (`autoclaw.agentRoles`). Values are normalized through the role taxonomy,
+ *  so synonyms ("dev", "qa", "security-auditor") resolve correctly. Unknown
+ *  values fall through to 'generalist' and are ignored by the caller. */
+function readDeclaredAgentRoles(): Record<string, CanonicalRole> {
+  const out: Record<string, CanonicalRole> = {};
+  try {
+    const cfg = vscode.workspace.getConfiguration('autoclaw');
+    const raw = cfg.get<Record<string, string>>('agentRoles', {});
+    if (raw && typeof raw === 'object') {
+      for (const [agentId, roleStr] of Object.entries(raw)) {
+        if (typeof roleStr === 'string') { out[agentId] = normalizeRole(roleStr); }
+      }
+    }
+  } catch { /* no config — empty overrides */ }
+  return out;
+}
+
+/**
+ * Command: assign a panel role to a detected agent. Pick an agent, pick a role
+ * from the canonical taxonomy, and persist it to `autoclaw.agentRoles` in
+ * workspace settings. The panel reflects it on the next refresh.
+ */
+async function setAgentRoleCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const commsDir = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+
+  // Offer detected agents; fall back to a free-text id if the registry is empty.
+  let agentId: string | undefined;
+  try {
+    const reg = await readRegistry(commsDir);
+    const ids = (reg?.agents ?? []).map(a => ({ label: a.name || a.id, description: a.id, id: a.id }));
+    if (ids.length > 0) {
+      const pick = await vscode.window.showQuickPick(ids, { title: 'Set agent role — choose an agent', placeHolder: 'Detected agents' });
+      agentId = pick?.id;
+    }
+  } catch { /* registry unreadable — fall through to manual entry */ }
+  if (!agentId) {
+    agentId = await vscode.window.showInputBox({ title: 'Set agent role', prompt: 'Agent id (e.g. claude-code)', ignoreFocusOut: true });
+  }
+  if (!agentId) { return; }
+
+  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r }));
+  const rolePick = await vscode.window.showQuickPick(roleItems, { title: `Role for ${agentId}`, placeHolder: 'Pick a role' });
+  if (!rolePick) { return; }
+
+  try {
+    const cfg = vscode.workspace.getConfiguration('autoclaw');
+    const current = { ...(cfg.get<Record<string, string>>('agentRoles', {}) ?? {}) };
+    current[agentId] = rolePick.role;
+    const target = vscode.workspace.workspaceFolders?.length
+      ? vscode.ConfigurationTarget.Workspace
+      : vscode.ConfigurationTarget.Global;
+    await cfg.update('agentRoles', current, target);
+    vscode.window.showInformationMessage(`AutoClaw: ${agentId} is now ${ROLE_META[rolePick.role].label}.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not save role — ${(e as Error).message}`);
+  }
+}
 
 /** Best-effort "who am I?" for the host running this extension instance.
  *  Used to populate the "Awaiting You" filter. Falls back to undefined. */

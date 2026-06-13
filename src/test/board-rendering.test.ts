@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import {
   renderBoard, renderMessageFeed, buildThreads, boardTaskCount, MAX_CARDS_PER_COLUMN,
-  inferRoleFromActivity,
+  inferRoleFromActivity, resolveDisplayRole,
   type BoardSnapshot, type BoardRenderContext, type ThreadMessage,
 } from '../webview-render-board';
 
@@ -164,6 +164,39 @@ suite('board renderer — inferRoleFromActivity', () => {
   test('an agent with no board activity, or a null board, is generalist', () => {
     assert.strictEqual(inferRoleFromActivity('nobody', board), 'generalist');
     assert.strictEqual(inferRoleFromActivity('claude-code', null), 'generalist');
+  });
+});
+
+suite('board renderer — resolveDisplayRole precedence', () => {
+  test('declared override wins over everything', () => {
+    const role = resolveDisplayRole({
+      declared: 'security', role: 'coder', agent_type: 'coder',
+      can_orchestrate: true, agentId: 'claude-code', board,
+    });
+    assert.strictEqual(role, 'security');
+  });
+
+  test('a generalist declaration does not override real signal', () => {
+    const role = resolveDisplayRole({
+      declared: 'generalist', agent_type: 'auditor', agentId: 'x', board: null,
+    });
+    assert.strictEqual(role, 'reviewer'); // auditor → reviewer
+  });
+
+  test('registry agent_type beats board activity', () => {
+    const role = resolveDisplayRole({
+      agent_type: 'supervisor', agentId: 'claude-code', board,
+    });
+    assert.strictEqual(role, 'orchestrator'); // not coder from board activity
+  });
+
+  test('falls back to board activity when nothing is declared/registered', () => {
+    const role = resolveDisplayRole({ agentId: 'claude-code', board });
+    assert.strictEqual(role, 'coder'); // authored T-3 in review
+  });
+
+  test('generalist when no signal anywhere', () => {
+    assert.strictEqual(resolveDisplayRole({ agentId: 'nobody', board: null }), 'generalist');
   });
 });
 

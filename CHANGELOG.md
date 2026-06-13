@@ -4,6 +4,37 @@
 
 ### Added
 
+- **Fleet-visibility panel** (`src/roles.ts`, `src/webview-render-board.ts`,
+  `src/webview-render.ts`) — the sidebar now reads as a dev-team-in-a-box at any
+  scale (2→50 agents). A canonical 13-role taxonomy (orchestrator, architect,
+  product, coder, reviewer, tester, security, designer, creative, docs,
+  researcher, ops, generalist) drives colored role chips on each agent and a
+  **team-summary strip** (live/total + session count + role distribution). Each
+  agent card shows its current **model** (abbreviated) and a **per-session
+  breakdown** (one row per chat session: status/model/task/last-seen). A new
+  **Board** section renders a four-lane kanban (Backlog → In progress → Review →
+  Blocked) from `board.json` with role-colored participants, and each task card
+  expands a **message thread** of the agents' conversation about it (grouped from
+  the comms log by task id); lanes cap at 30 cards with "+N more". Roles resolve
+  by precedence — `autoclaw.agentRoles` user override → registry role/`agent_type`/
+  `can_orchestrate` → live board activity → generalist — with a new
+  **"AutoClaw: Set Agent Role"** command to declare roles without editing JSON.
+  +40 tests.
+
+- **Evidence capsules** (`src/evidence/capsule.ts`) — durable, re-inspectable run
+  handles for review cycles, borrowed from openclaw/crabbox's run-handle +
+  failure-capsule pattern (validated 2026-06-13; IDEAS_LOG §N). Consensus
+  evaluation used to compute `ConsensusResult` and discard it; now every
+  `POST /api/v1/consensus/{tid}/evaluate` mints a stable `run-…` handle and
+  persists a capsule to `comms/consensus/results/<task>-<run>.json` bundling the
+  verdict, vote counts, excluded self-reviews, the acceptance *recipe* (checks)
+  AND *results* (`gate_checks`), `gates_passed`, and machine-readable timing.
+  A fresh-context verifier can fetch one (`GET /api/v1/capsules/<run_id>`), list
+  by task (`GET /api/v1/capsules?task=`), or **replay only the failed gates**
+  (`replayFailedGates` → re-runs red checks via `runAcceptanceChecks`, reports
+  pass/fail) — confirming a fix landed without re-running the whole review. The
+  evaluate response now includes `run_id`. Local-first (files in the comms tree),
+  best-effort (capsule write never blocks evaluation), zero-config. +14 tests.
 - **Trigger hooks (HKS-1..3)** (`src/hooks/triggerHooks.ts`) — event→action rules
   loaded from `.autoclaw/orchestrator/hooks.yaml` (flat-YAML subset, no new
   dependency): on `message` events (more sources specced), matching rules
