@@ -21,7 +21,7 @@ import {
 /** Where an agent's presence reached this panel from (CF-2, integrate-automate-v3.2).
  *  Mirrors the `FleetOrigin` in views/fleetViewModel.ts; kept inline so the
  *  pure render module has no cross-module import. */
-export type AgentOrigin = 'local' | 'relay';
+export type AgentOrigin = 'local' | 'relay' | 'beacon';
 
 /** RegisteredAgent + the live runtime fields that getAgentStatuses() injects. */
 export interface AgentWithLive extends RegisteredAgent {
@@ -43,9 +43,11 @@ export function agentHost(agent: AgentWithLive): string {
   return agent.host || agent.machine_id || 'local';
 }
 
-/** True when the agent is a relay-forwarded remote-host agent (CF-2). */
+/** True when the agent reached this panel from off this workspace — either a
+ *  relay-forwarded remote-host agent (CF-2) or a beacon check-in from another
+ *  IDE / runner on this machine (fleet beacons). Both render grouped by host. */
 export function isRemoteAgent(agent: AgentWithLive): boolean {
-  return agent.origin === 'relay';
+  return agent.origin === 'relay' || agent.origin === 'beacon';
 }
 
 /** Inbox summary tuple posted from extension.ts. */
@@ -345,7 +347,11 @@ export function renderAgentCard(
   // the single-machine view is unchanged (no badge when origin is local/absent).
   if (isRemoteAgent(agent)) {
     const host = agentHost(agent);
-    head += `<span class="origin-badge origin-remote" title="Remote agent on ${esc(host)} (via cloud relay)">⌂ ${esc(host)}</span>`;
+    const isBeacon = agent.origin === 'beacon';
+    const title = isBeacon
+      ? `External agent on ${esc(host)} (beacon check-in)`
+      : `Remote agent on ${esc(host)} (via cloud relay)`;
+    head += `<span class="origin-badge origin-${isBeacon ? 'beacon' : 'remote'}" title="${title}">⌂ ${esc(host)}</span>`;
   }
   if (summary && summary.awaiting_response > 0) {
     head += `<span class="awaiting-pip" title="${summary.awaiting_response} awaiting your response">${summary.awaiting_response}</span>`;
@@ -374,7 +380,8 @@ export function renderAgentCard(
   }
   // CF-2: surface host + origin so a remote agent is unambiguous in the body.
   if (isRemoteAgent(agent)) {
-    body += renderDetailRow('Host', `${agentHost(agent)} (remote · via relay)`);
+    const suffix = agent.origin === 'beacon' ? ' (external · beacon)' : ' (remote · via relay)';
+    body += renderDetailRow('Host', `${agentHost(agent)}${suffix}`);
   }
   // v2 identity + routing fields
   if (agent.machine_id) { body += renderDetailRow('Machine', agent.machine_id); }

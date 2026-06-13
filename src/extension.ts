@@ -71,7 +71,7 @@ import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
   markMessageReplied, detectAutoclawHostAgent, readClaimAuthor,
-  type CommsLogEntry, type Message,
+  type CommsLogEntry, type Message, type Heartbeat, type AgentStatus, type RegisteredAgent,
 } from './comms';
 import {
   CloudRelay, forwardHeartbeats, forwardInbox, applyFetchedToInboxes, fetchAndCacheHeartbeats,
@@ -93,10 +93,14 @@ import {
   type FabricHealth, type InboxSummary, type AwaitingYouRow, type AgentWithLive,
 } from './webview-render';
 import {
-  renderBoard, renderMessageFeed, buildThreads, boardTaskCount, resolveDisplayRole,
+  renderBoard, renderMessageFeed, buildThreads, boardTaskCount, inferRoleFromActivity,
   type BoardSnapshot, type BoardRenderContext, type ThreadMessage,
 } from './webview-render-board';
 import { normalizeRole, ROLE_ORDER, ROLE_META, type CanonicalRole } from './roles';
+import {
+  resolveFleet, parseFleetManifest, type FleetManifest, type AgentSignal,
+} from './fleet/architecture';
+import { readAllBeacons, type BeaconRow } from './fleet/beacons';
 import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
@@ -642,6 +646,11 @@ export function activate(context: vscode.ExtensionContext) {
   // Declarative agent roles — assign a panel role to a detected agent.
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.setAgentRole', () => setAgentRoleCommand())
+  );
+
+  // Fleet architecture — let the user designate who coordinates the team.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.designateOrchestrator', () => designateOrchestratorCommand())
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -3649,39 +3658,55 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     }
   } catch { board = null; }
 
-  // User-declared role overrides (highest precedence). A simple agentId → role
-  // map in settings, e.g. { "claude-code": "orchestrator", "kilocode": "coder" }.
-  const declaredRoles = readDeclaredAgentRoles();
+  // Merge in agents that checked in from OTHER tools/IDEs/runners via beacons
+  // (other-IDE AutoClaw, Hermes, openclaw, …). Local registry agents win on id
+  // collision. See docs/FLEET_ARCHITECTURE.md §4.
+  let beaconRows: BeaconRow[] = [];
+  try { beaconRows = await readAllBeacons({ commsDir, now: Date.now() }); } catch { /* none */ }
+  const knownIds = new Set(agentsWithSessions.map(a => a.id));
+  const fleetAgents: AgentWithLive[] = [...agentsWithSessions];
+  for (const b of beaconRows) {
+    if (knownIds.has(b.agent_id)) { continue; }
+    knownIds.add(b.agent_id);
+    fleetAgents.push(beaconToAgent(b));
+  }
 
-  // Resolve each agent's canonical role + name + current model once, so the
-  // board, threads, and message feed all color participants consistently.
-  // Role precedence: declared override → registry role → fabric agent_type →
-  // can_orchestrate → live board activity (what they're doing now) →
-  // generalist. (Sprint YAML "role:" lines are work-lane descriptions, not
-  // agent roles, so NOT used.)
+  // Resolve each agent's role + the single orchestrator via the
+  // user-authoritative chain: fleet.json manifest → autoclaw.agentRoles setting
+  // → registry role/agent_type/can_orchestrate → live board activity →
+  // generalist. The user has ultimate control (the manifest overrides all).
+  const manifest = readFleetManifest(wr);
+  const declaredRoles = readDeclaredAgentRoles();
+  const governancePrimary = readGovernancePrimary(wr);
+  const signals: AgentSignal[] = fleetAgents.map(a => ({
+    id: a.id,
+    role: (a as { role?: string }).role,
+    agent_type: a.agent_type,
+    can_orchestrate: a.can_orchestrate,
+  }));
+  const resolvedFleet = resolveFleet(signals, {
+    manifest,
+    settingRoles: declaredRoles,
+    governancePrimary,
+    inferRole: (id) => inferRoleFromActivity(id, board),
+  });
+
   const roleOf: Record<string, CanonicalRole> = {};
   const nameOf: Record<string, string> = {};
   const modelOf: Record<string, string> = {};
-  for (const a of agentsWithSessions) {
-    const role = resolveDisplayRole({
-      declared: declaredRoles[a.id],
-      role: (a as { role?: string }).role,
-      agent_type: a.agent_type,
-      can_orchestrate: a.can_orchestrate,
-      agentId: a.id,
-      board,
-    });
-    roleOf[a.id] = role;
-    // Stamp the resolved role back so the agent cards + team summary (which
-    // call agentRole() internally) agree with the board's coloring.
-    (a as { role?: string }).role = role;
+  for (const a of fleetAgents) {
+    const rr = resolvedFleet.roles[a.id];
+    roleOf[a.id] = rr.canonical;
+    // Stamp the resolved canonical role back so the agent cards + team summary
+    // (which call agentRole() internally) agree with the board's coloring.
+    (a as { role?: string }).role = rr.canonical;
     nameOf[a.id] = a.name || a.id;
     const model = a.heartbeat?.current_llm
       || (a.llms_available && a.llms_available.length === 1 ? a.llms_available[0] : undefined);
     if (model) { modelOf[a.id] = model; }
   }
 
-  // v2.5: per-agent inbox summaries + server-rendered cards
+  // v2.5: per-agent inbox summaries (local agents only) + server-rendered cards
   const summaries: Record<string, InboxSummary> = {};
   for (const a of agents) {
     try {
@@ -3692,8 +3717,8 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     view.webview.postMessage({
       command: 'updateAgentCards',
       data: {
-        html: renderAgentList(agentsWithSessions, summaries),
-        count: agents.length,
+        html: renderAgentList(fleetAgents, summaries),
+        count: fleetAgents.length,
       },
     });
   } catch {}
@@ -3800,6 +3825,99 @@ function readDeclaredAgentRoles(): Record<string, CanonicalRole> {
     }
   } catch { /* no config — empty overrides */ }
   return out;
+}
+
+/** Read the user-authoritative fleet manifest (`.autoclaw/orchestrator/fleet.json`).
+ *  Returns null when absent or malformed — callers fall back to detection. */
+function readFleetManifest(wr: string): FleetManifest | null {
+  try {
+    const p = path.join(wr, '.autoclaw', 'orchestrator', 'fleet.json');
+    if (!fs.existsSync(p)) { return null; }
+    return parseFleetManifest(fs.readFileSync(p, 'utf8'));
+  } catch { return null; }
+}
+
+/** Read the informational orchestrator from state.json governance.primary. */
+function readGovernancePrimary(wr: string): string | null {
+  try {
+    const p = path.join(wr, '.autoclaw', 'orchestrator', 'state.json');
+    if (!fs.existsSync(p)) { return null; }
+    const s = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^﻿/, '')) as
+      { governance?: { primary?: { agent_id?: string } } };
+    return s.governance?.primary?.agent_id ?? null;
+  } catch { return null; }
+}
+
+/** Turn a beacon check-in (other IDE / runner / workspace) into a panel agent
+ *  row so cross-tool agents appear in the fleet view, grouped by host. */
+function beaconToAgent(b: BeaconRow): AgentWithLive {
+  const live: AgentStatus = b.stale ? 'stalled' : (b.status === 'active' ? 'active' : 'idle');
+  const hb: Heartbeat = {
+    agent_id: b.agent_id,
+    timestamp: b.timestamp,
+    status: b.status === 'active' ? 'active' : 'idle',
+    current_task: b.current_task ?? null,
+    sprint: null,
+    session_id: b.session_id,
+    current_llm: b.current_llm,
+  };
+  return {
+    id: b.agent_id,
+    name: b.agent_id,
+    extension_id: null,
+    detected: true,
+    inbox_path: '',
+    hooks_supported: false,
+    last_heartbeat: b.timestamp,
+    status: live,
+    live_status: live,
+    heartbeat: hb,
+    sessions: [hb],
+    role: b.role,
+    agent_type: (b.agent_type as RegisteredAgent['agent_type']),
+    origin: 'beacon',
+    host: b.host || b.workspace_id || 'external',
+    machine_id: b.machine_id,
+  } as AgentWithLive;
+}
+
+/**
+ * Command: designate the fleet orchestrator. Writes the chosen agent id to
+ * `.autoclaw/orchestrator/fleet.json` (the user-authoritative manifest), which
+ * the panel reads with top precedence over state.json governance + detection.
+ */
+async function designateOrchestratorCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const commsDir = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+
+  let agentId: string | undefined;
+  try {
+    const reg = await readRegistry(commsDir);
+    const items = (reg?.agents ?? []).map(a => ({ label: a.name || a.id, description: a.id, id: a.id }));
+    if (items.length > 0) {
+      const pick = await vscode.window.showQuickPick(items, {
+        title: 'Designate fleet orchestrator', placeHolder: 'Who coordinates the team?',
+      });
+      agentId = pick?.id;
+    }
+  } catch { /* fall through to manual entry */ }
+  if (!agentId) {
+    agentId = await vscode.window.showInputBox({ title: 'Designate fleet orchestrator', prompt: 'Agent id', ignoreFocusOut: true });
+  }
+  if (!agentId) { return; }
+
+  try {
+    const p = path.join(wr, '.autoclaw', 'orchestrator', 'fleet.json');
+    const existing = readFleetManifest(wr) ?? { schema_version: '1.0' as const };
+    const next: FleetManifest = { ...existing, orchestrator: agentId };
+    await fsPromises.mkdir(path.dirname(p), { recursive: true });
+    await fsPromises.writeFile(p, JSON.stringify(next, null, 2), 'utf8');
+    vscode.window.showInformationMessage(`AutoClaw: ${agentId} is now the fleet orchestrator.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not write fleet.json — ${(e as Error).message}`);
+  }
 }
 
 /**

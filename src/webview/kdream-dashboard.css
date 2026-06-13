@@ -246,6 +246,21 @@ th {
   border: 1px solid color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 40%, transparent);
 }
 
+/* Beacon: an agent checking in from another IDE / runner on this machine. */
+.origin-badge.origin-beacon {
+  background: color-mix(in srgb, var(--vscode-charts-blue, #4daafc) 20%, transparent);
+  color: var(--vscode-charts-blue, #4daafc);
+  border: 1px solid color-mix(in srgb, var(--vscode-charts-blue, #4daafc) 40%, transparent);
+}
+
+/* Custom (user-defined) role label — neutral chip, no canonical color. */
+.role-chip.role-custom,
+.who.role-custom {
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  color: var(--vscode-foreground);
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 28%, transparent);
+}
+
 /* CF-2: per-host group header in the cross-machine fleet view. */
 .host-group-header {
   display: flex;
@@ -1094,6 +1109,33 @@ th {
 .meta-votes { font-family: var(--vscode-editor-font-family, monospace); }
 .meta-label { text-transform: uppercase; font-size: 0.85em; opacity: 0.7; margin-right: 2px; }
 .meta-reviewers, .meta-author { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+
+/* -- Recent evidence strip (capsules) ------------------------------------- */
+.board-evidence { margin-top: 8px; }
+.board-evidence-title {
+  font-size: 0.78em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--vscode-descriptionForeground);
+  margin: 0 2px 4px;
+}
+.board-evidence-table { width: 100%; border-collapse: collapse; font-size: 0.8em; }
+.board-evidence-table th {
+  text-align: left;
+  font-weight: 600;
+  opacity: 0.7;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+.board-evidence-table td { padding: 2px 6px; border-bottom: 1px solid var(--vscode-panel-border); }
+.board-evidence-table .ev-task, .board-evidence-table .ev-run { font-family: var(--vscode-editor-font-family, monospace); }
+.board-evidence-table .ev-run { opacity: 0.7; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.board-evidence-table .ev-ok { color: var(--vscode-charts-green, #89d185); }
+.board-evidence-table .ev-bad { color: var(--vscode-charts-red, #f14c4c); }
+.board-evidence-table .ev-gate-pass { color: var(--vscode-charts-green, #89d185); }
+.board-evidence-table .ev-gate-fail { color: var(--vscode-charts-red, #f14c4c); }
+.board-evidence-table .ev-gate-none { opacity: 0.6; }
 
 /* -- Participant avatar (who chip) ---------------------------------------- */
 .who {
