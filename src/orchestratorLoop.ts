@@ -33,6 +33,8 @@ import { writeBoard } from './orchestrator/boardWriter';
 // subpath keeps the message-bus/bridge out of the loop module.
 import { gateDispatch, appendAuditLog, type ControlLevel } from './fabric/governance';
 import type { AgentType } from './fabric/agentTypes';
+// Fleet HALT kill switch (HKS-3) — leaf module shared with hooks/triggerHooks.
+import { isFleetHalted } from './hooks/fleetHalt';
 
 const fsPromises = fs.promises;
 
@@ -453,6 +455,17 @@ export async function dispatchWork(
   pkg: WorkPackage,
   controlLevel: ControlLevel = 'individual'
 ): Promise<string | null> {
+  // Fleet HALT kill switch (HKS-3, agent-trigger-hooks spec): when the
+  // operator has engaged `.autoclaw/orchestrator/HALT`, NOTHING dispatches —
+  // not the loop tick, not trigger hooks. Journaled so the pause is visible.
+  if (isFleetHalted(workspaceRoot)) {
+    await writeLoopJournal(workspaceRoot, {
+      at: new Date().toISOString(), tick: 0, phase: 'dispatch',
+      action: 'dispatch_halted', detail: { taskId: pkg.taskId, vendor: pkg.assignToVendor, reason: 'fleet HALT engaged' },
+    });
+    return null;
+  }
+
   const commsDirAbs = commsDir(workspaceRoot);
   const sidecarDir = path.join(workspaceRoot, LOOP_SIDE_CAR_DIR);
   const autoclawDir = path.join(workspaceRoot, '.autoclaw');

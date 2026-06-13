@@ -1,0 +1,41 @@
+# AutoClaw trigger hooks — starter rules (agent-trigger-hooks spec, HKS-1..3).
+#
+# Copy this file to `.autoclaw/orchestrator/hooks.yaml` and uncomment the rules
+# you want. No file (or no uncommented rules) = hooks fully off (zero-config
+# no-op). While `.autoclaw/orchestrator/HALT` exists, nothing fires — use the
+# "AutoClaw: HALT Fleet" / "Resume Fleet" commands.
+#
+# Shape per rule:
+#   id                — unique name (audit key + cooldown key)
+#   on                — message | heartbeat_stall | claim_stale | consensus | autobuild_fail
+#   filter            — equality match on event fields; *_gte / *_lte compare numbers
+#   action            — dispatch | notify   (launch_skill / spawn_runner / relay: HKS-4/5, not yet active)
+#   target            — agent id; "{{field}}" templates render from the event
+#   cooldown_seconds  — re-fire floor per rule (default 300)
+#
+# Every firing AND suppression is audited to comms/hooks/audit.jsonl and the
+# comms log (types: hook_fired / hook_suppressed / hook_error).
+
+hooks:
+  # Wake the reviewer the moment a review_request lands in their inbox.
+  # - id: wake-reviewer
+  #   on: message
+  #   filter: { type: review_request }
+  #   action: dispatch
+  #   target: "{{to}}"
+  #   cooldown_seconds: 300
+
+  # Wake an agent when work is assigned to them.
+  # - id: wake-assignee
+  #   on: message
+  #   filter: { type: task_assign }
+  #   action: dispatch
+  #   target: "{{to}}"
+  #   cooldown_seconds: 300
+
+  # Surface (don't auto-act on) a stalled agent.
+  # - id: surface-stall
+  #   on: heartbeat_stall
+  #   filter: { seconds_stale_gte: 600 }
+  #   action: notify
+  #   cooldown_seconds: 900

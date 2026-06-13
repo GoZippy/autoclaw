@@ -1,7 +1,7 @@
 ---
 spec_id: agent-trigger-hooks
 title: Event-driven trigger hooks — wake agents on comms/build events, with fleet HALT
-status: draft  # draft | review | pilot | implement | verify | done
+status: pilot  # draft | review | pilot | implement | verify | done — HKS-1..3 landed 2026-06-12
 owner: claude-code
 created: 2026-06-12
 updated: 2026-06-12
@@ -162,9 +162,9 @@ are fully unit-tested without fs/vscode.
 
 | Step | Deliverable | Owner | Exit gate |
 |---|---|---|---|
-| 1 | `HookRule`/`HookEvent` types, yaml loader, pure `matchHooks` (filters, cooldown, HALT, via_hook) + unit tests | claude-code | Acceptance #3, #4 pure-logic versions pass |
-| 2 | `executeHook` actions: `dispatch` + `notify` + audit writes | claude-code | Acceptance #1 passes end-to-end |
-| 3 | HALT kill switch: file check in hooks + existing dispatch tick + the two VS Code commands | claude-code | Acceptance #2 passes |
+| 1 | `HookRule`/`HookEvent` types, yaml loader, pure `matchHooks` (filters, cooldown, HALT, via_hook) + unit tests | claude-code | ✅ **DONE 2026-06-12** — `src/hooks/triggerHooks.ts`; cooldown/cap/HALT/via_hook all unit-tested |
+| 2 | `executeHook` actions: `dispatch` + `notify` + audit writes | claude-code | ✅ **DONE 2026-06-12** — dispatch reuses `orchestratorLoop.dispatchWork` (AF-8 gating + sidecar + shared-inbox wake); audit to `comms/hooks/audit.jsonl` + comms-log; runtime via InboxWatcher (`startTriggerHooksRuntime`, zero-config no-op); starter rules at `skills/orchestrate/templates/hooks.starter.yaml` |
+| 3 | HALT kill switch: file check in hooks + existing dispatch tick + the two VS Code commands | claude-code | ✅ **DONE 2026-06-12** — `src/hooks/fleetHalt.ts` (leaf module); `dispatchWork` gates on it (journaled `dispatch_halted`); `autoclaw.fleet.halt` / `autoclaw.fleet.resume` commands. +18 tests; full suite 973 passing. |
 | 4 | `launch_skill` + `spawn_runner` actions | claude-code | hook can open a pre-filled chat/runner session |
 | 5 | `relay` action (cross-machine wake) + HALT mirroring over relay | claude-code | remote inbox receives the wake |
 

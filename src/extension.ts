@@ -82,6 +82,8 @@ import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS } from './runners';
 // out of modules that only need the taxonomy).
 import { onboardPlatform } from './fabric/onboarding';
 import { defaultAgentTypeForRunner } from './fabric/agentTypes';
+// Trigger hooks + fleet HALT kill switch (HKS-1..3, agent-trigger-hooks spec).
+import { setFleetHalted, startTriggerHooksRuntime } from './hooks/triggerHooks';
 import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
@@ -532,6 +534,44 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.fabric.onboard', () => fabricOnboardCommand())
   );
+
+  // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
+  // HALT is a file (`.autoclaw/orchestrator/HALT`): while present, neither the
+  // orchestrator loop nor trigger hooks dispatch anything in this workspace.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.fleet.halt', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!root) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+      const reason = await vscode.window.showInputBox({
+        prompt: 'Reason for halting the fleet (written to the HALT file)',
+        placeHolder: 'manual fleet halt',
+      });
+      await setFleetHalted(root, true, reason || undefined);
+      vscode.window.showWarningMessage('AutoClaw: fleet HALTED — all auto-dispatch and trigger hooks are paused. Run "AutoClaw: Resume Fleet" to release.');
+    }),
+    vscode.commands.registerCommand('autoclaw.fleet.resume', async () => {
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!root) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+      await setFleetHalted(root, false);
+      vscode.window.showInformationMessage('AutoClaw: fleet resumed — dispatch and trigger hooks are active again.');
+    })
+  );
+  {
+    // Zero-config no-op: startTriggerHooksRuntime returns an inert handle when
+    // .autoclaw/orchestrator/hooks.yaml is absent or has no valid rules.
+    const hooksRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (hooksRoot) {
+      startTriggerHooksRuntime({
+        workspaceRoot: hooksRoot,
+        log: (line) => console.log(`[autoclaw] ${line}`),
+        notify: (m) => { vscode.window.showInformationMessage(m); },
+      }).then(runtime => {
+        if (runtime.ruleCount > 0) {
+          context.subscriptions.push({ dispose: () => { void runtime.stop(); } });
+        }
+      }).catch(e => console.error('trigger-hooks runtime failed to start:', e));
+    }
+  }
 
   // Orchestrator Dashboard commands — redirect to unified panel
   context.subscriptions.push(

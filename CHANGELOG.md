@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Trigger hooks (HKS-1..3)** (`src/hooks/triggerHooks.ts`) — event→action rules
+  loaded from `.autoclaw/orchestrator/hooks.yaml` (flat-YAML subset, no new
+  dependency): on `message` events (more sources specced), matching rules
+  `dispatch` (reuses `orchestratorLoop.dispatchWork` — AF-8 gating + sidecar +
+  shared-inbox wake) or `notify`. Pure matcher with per-rule cooldowns
+  (default 300s), a global firings-per-hour cap (30), `{{field}}` target
+  templates, and **no self-amplification** (hook/loop-generated events are
+  via_hook-tagged and never re-match). Every firing AND suppression is audited
+  to `comms/hooks/audit.jsonl` + the comms log (`hook_fired`/`hook_suppressed`/
+  `hook_error`). Runtime rides the existing chokidar InboxWatcher; **zero-config
+  no-op** — no hooks.yaml ⇒ no watcher, no behavior change. Starter rules at
+  `skills/orchestrate/templates/hooks.starter.yaml`. Spec:
+  `docs/specs/agent-trigger-hooks.spec.md` (HKS-4/5 — launch_skill/spawn_runner/
+  relay actions — still open).
+- **Fleet HALT kill switch** (`src/hooks/fleetHalt.ts`) — while
+  `.autoclaw/orchestrator/HALT` exists, nothing auto-dispatches: trigger hooks
+  suppress (audited) and `orchestratorLoop.dispatchWork` refuses (journaled
+  `dispatch_halted`). New commands **AutoClaw: HALT Fleet** (prompts for a
+  reason, written into the HALT file) and **AutoClaw: Resume Fleet**. It's just
+  a file, so it also works from any shell or remote session. +18 tests; full
+  unit suite 973 passing.
+
 - **Verifier independence in consensus** (`src/orchestrate.ts`) — `evaluateConsensus()`
   gains an optional 4th arg `ctx?: { author_agent_id?: string }`. When set, the
   task author's own vote(s) are excluded before the tally (a fresh-context
