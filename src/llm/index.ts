@@ -94,3 +94,11 @@ export {
   type LlmInstallReport,
   type LlmInstallOptions,
 } from './install';
+
+export {
+  PeerServer,
+  type PeerServerOptions,
+  type PeerRouteRequest,
+  type PeerRouteResponse,
+  type PeerSuggest,
+} from './peer-server';

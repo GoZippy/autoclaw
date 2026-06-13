@@ -42,3 +42,5 @@ export type {
   ClaudeRunOutcome,
   ClaudeStreamEvent,
 } from './claude-code';
+
+export { LocalCoderRunner, type LocalCoderConfig } from './local-coder';

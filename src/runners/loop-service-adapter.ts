@@ -34,6 +34,7 @@ import type {
   SessionSummary,
   TrustPreset,
 } from './types';
+import type { LlmProvider } from '../llm/types';
 
 /* -------------------------------------------------------------------------- */
 /*  Configuration                                                             */
@@ -92,6 +93,13 @@ export interface LoopServiceConfig {
    * Default `id`.
    */
   idField?: string;
+  /**
+   * Optional LLM provider for pre-/post-dispatch chat helpers (RFC §4).
+   * Most adapters ignore this; subclasses like `LocalCoderRunner` use
+   * it to ask a local model for a plan preamble before dispatching.
+   * Behavior of the base class is unchanged when set.
+   */
+  provider?: LlmProvider;
 }
 
 /** Conservative capability default for a generic HTTP loop service. */
@@ -277,6 +285,13 @@ export class LoopServiceAdapter implements Runner {
   /** The service config this adapter drives. */
   protected readonly config: LoopServiceConfig;
 
+  /**
+   * Optional LLM provider passed through `LoopServiceConfig.provider`.
+   * Subclasses use it for plan preambles, post-dispatch summaries,
+   * etc. (RFC §4). The base adapter never reads it.
+   */
+  protected readonly provider?: LlmProvider;
+
   private readonly recentErrors = new Map<ErrorClass, number>();
   private lastDispatchAt: string | undefined;
   /** Absolute path to the heartbeats directory, when a working dir is known. */
@@ -286,6 +301,7 @@ export class LoopServiceAdapter implements Runner {
     this.config = config;
     this.id = config.id;
     this.capabilities = { ...DEFAULT_CAPABILITIES, ...(config.capabilities ?? {}) };
+    this.provider = config.provider;
   }
 
   /* ----------------------------------------------------------------------- */
@@ -438,7 +454,7 @@ export class LoopServiceAdapter implements Runner {
       const submitRes = await fetch(this.route('dispatch'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
-        body: JSON.stringify(this.buildDispatchBody(opts)),
+        body: JSON.stringify(await this.composeDispatchBody(opts)),
         signal: AbortSignal.timeout(30_000),
       });
       if (submitRes.status === 401 || submitRes.status === 403) {
@@ -518,6 +534,41 @@ export class LoopServiceAdapter implements Runner {
       trust_deny_list: opts.trustDenyList,
       env: opts.env,
     };
+  }
+
+  /**
+   * Async wrapper around `buildDispatchBody` that runs the optional
+   * `augmentDispatchBody` hook. Subclasses needing async augmentation
+   * (e.g. asking a provider for a plan preamble) override
+   * `augmentDispatchBody`; subclasses with sync vendor-specific bodies
+   * keep overriding `buildDispatchBody` and never touch this.
+   *
+   * Added in Phase B S3 to let `LocalCoderRunner` inject a plan
+   * without changing the existing override surface. Existing
+   * subclasses (AutoGpt, etc.) are unaffected — they override the
+   * sync `buildDispatchBody` and the default `augmentDispatchBody` is
+   * identity.
+   */
+  protected async composeDispatchBody(opts: DispatchOptions): Promise<Record<string, unknown>> {
+    const base = this.buildDispatchBody(opts);
+    return this.augmentDispatchBody(base, opts);
+  }
+
+  /**
+   * Hook for async augmentation of the dispatch body. Default returns
+   * the body unchanged. `LocalCoderRunner` overrides this to inject a
+   * `preamble` from its LLM provider.
+   */
+  protected augmentDispatchBody(
+    body: Record<string, unknown>,
+    _opts: DispatchOptions,
+  ): Promise<Record<string, unknown>> {
+    return Promise.resolve(body);
+  }
+
+  /** Visible for testing — returns the provider injected via config. */
+  providerForTest(): LlmProvider | undefined {
+    return this.provider;
   }
 
   /* ----------------------------------------------------------------------- */
