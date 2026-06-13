@@ -55,6 +55,15 @@ export interface BoardStuckItem {
   detail?: string;
   age_ms?: number | null;
 }
+export interface BoardCapsuleItem {
+  run_id: string;
+  task_id: string;
+  source?: string;
+  verdict?: string;
+  gates_passed?: boolean;
+  votes_count?: number;
+  evaluated_at?: string;
+}
 export interface BoardSnapshot {
   fleet_size?: number;
   live_count?: number;
@@ -62,6 +71,7 @@ export interface BoardSnapshot {
   in_flight?: BoardInFlightItem[];
   awaiting_review?: BoardReviewItem[];
   stuck?: BoardStuckItem[];
+  recent_capsules?: BoardCapsuleItem[];
 }
 
 /** A single message in a per-task thread (a flattened comms-log entry). */
@@ -254,7 +264,38 @@ export function renderBoard(board: BoardSnapshot | null, ctx: BoardRenderContext
   h += renderColumn({ key: 'review', label: 'Review', glyph: '◔', cards: reviewCards, emptyHint: 'Nothing in review.' });
   h += renderColumn({ key: 'blocked', label: 'Blocked', glyph: '✕', cards: stuckCards, emptyHint: 'Nothing stuck.' });
   h += '</div>';
+  h += renderRecentEvidence(board.recent_capsules ?? []);
   return h;
+}
+
+/**
+ * Recent-evidence strip below the kanban: a compact, read-only log of the latest
+ * review-cycle / ingested-run capsules (verdict + gate state). Each row carries
+ * the run handle so an operator can fetch or replay the capsule. Empty ⇒ nothing.
+ */
+function renderRecentEvidence(capsules: BoardCapsuleItem[]): string {
+  if (capsules.length === 0) { return ''; }
+  const rows = capsules.map(c => {
+    const gate = c.gates_passed === undefined
+      ? '<span class="ev-gate ev-gate-none" title="no acceptance gate ran">—</span>'
+      : c.gates_passed
+        ? '<span class="ev-gate ev-gate-pass" title="acceptance gate passed">✓</span>'
+        : '<span class="ev-gate ev-gate-fail" title="acceptance gate failed">✗</span>';
+    const verdictClass = c.verdict === 'approved' ? 'ev-ok' : (c.verdict === 'blocked' || c.verdict === 'needs_changes') ? 'ev-bad' : '';
+    return '<tr>' +
+      `<td class="ev-task">${esc(c.task_id)}</td>` +
+      `<td class="ev-verdict ${verdictClass}">${esc(c.verdict ?? '—')}</td>` +
+      `<td class="ev-gatecell">${gate}</td>` +
+      `<td class="ev-votes">${esc(c.votes_count ?? 0)}</td>` +
+      `<td class="ev-source">${esc(c.source ?? '—')}</td>` +
+      `<td class="ev-run" title="${esc(c.run_id)}">${esc(c.run_id)}</td>` +
+      '</tr>';
+  }).join('');
+  return '<div class="board-evidence" aria-label="Recent evidence">' +
+    '<div class="board-evidence-title">Recent evidence</div>' +
+    '<table class="board-evidence-table"><thead><tr>' +
+    '<th>Task</th><th>Verdict</th><th>Gate</th><th>Votes</th><th>Source</th><th>Run</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
 /**

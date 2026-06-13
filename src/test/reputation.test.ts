@@ -20,7 +20,11 @@ import {
   reputationFactor,
   REPUTATION_NEUTRAL,
   REPUTATION_DIR_REL,
+  REPUTATION_SUBDIR,
   OUTCOMES_FILE,
+  recordTaskOutcomeInComms,
+  readTrackRecordInComms,
+  recordOutcomeOnce,
 } from '../reputation';
 import type { TaskOutcome } from '../reputation';
 
@@ -65,6 +69,36 @@ suite('Reputation — record & read', () => {
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, OUTCOMES_FILE), `${JSON.stringify(outcome())}\n{bad json\n\n`);
     assert.strictEqual((await readTrackRecord(root)).length, 1);
+  });
+});
+
+suite('Reputation — commsDir helpers + dedup (REP-1 join)', () => {
+  test('recordTaskOutcomeInComms writes under <commsDir>/reputation and reads back', async () => {
+    const comms = makeTmpRoot();
+    await recordTaskOutcomeInComms(comms, outcome({ task_id: 'B1', agent_id: 'kilocode' }));
+    assert.ok(fs.existsSync(path.join(comms, REPUTATION_SUBDIR, OUTCOMES_FILE)));
+    const back = await readTrackRecordInComms(comms, { task_id: 'B1' });
+    assert.strictEqual(back.length, 1);
+    assert.strictEqual(back[0].agent_id, 'kilocode');
+  });
+
+  test('readTrackRecordInComms filters by task_id', async () => {
+    const comms = makeTmpRoot();
+    await recordTaskOutcomeInComms(comms, outcome({ task_id: 'A' }));
+    await recordTaskOutcomeInComms(comms, outcome({ task_id: 'B' }));
+    assert.strictEqual((await readTrackRecordInComms(comms, { task_id: 'A' })).length, 1);
+  });
+
+  test('recordOutcomeOnce dedups by (task_id, agent_id) — poll-safe', async () => {
+    const comms = makeTmpRoot();
+    const first = await recordOutcomeOnce(comms, outcome({ task_id: 'B1', agent_id: 'kilocode' }));
+    const second = await recordOutcomeOnce(comms, outcome({ task_id: 'B1', agent_id: 'kilocode', verdict: 'needs_changes' }));
+    assert.strictEqual(first, true);
+    assert.strictEqual(second, false); // re-poll does not append
+    assert.strictEqual((await readTrackRecordInComms(comms, { task_id: 'B1' })).length, 1);
+    // A different agent on the same task is still recorded.
+    const other = await recordOutcomeOnce(comms, outcome({ task_id: 'B1', agent_id: 'cursor' }));
+    assert.strictEqual(other, true);
   });
 });
 

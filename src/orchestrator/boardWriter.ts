@@ -14,12 +14,15 @@ import * as path from 'path';
 import {
   buildBoard,
   renderBoardMarkdown,
+  BOARD_CAPSULES_MAX,
+  type BoardCapsule,
   type BoardClaim,
   type BoardConsensus,
   type BoardHeartbeat,
   type BoardModel,
   type BoardTask,
 } from './board';
+import { listCapsules } from '../evidence';
 
 const fsp = fs.promises;
 
@@ -268,6 +271,20 @@ async function readHeartbeats(workspaceRoot: string): Promise<BoardHeartbeat[]> 
   return out;
 }
 
+/** Read recent evidence capsules and summarize them for the board (newest-first, capped). */
+async function readRecentCapsules(workspaceRoot: string): Promise<BoardCapsule[]> {
+  const capsules = await listCapsules(commsDir(workspaceRoot)); // already newest-first
+  return capsules.slice(0, BOARD_CAPSULES_MAX).map(c => ({
+    run_id: c.run_id,
+    task_id: c.task_id,
+    source: c.source,
+    verdict: c.final_verdict,
+    gates_passed: c.gates_passed,
+    votes_count: c.votes_count,
+    evaluated_at: c.evaluated_at,
+  }));
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Top-level                                                                 */
 /* -------------------------------------------------------------------------- */
@@ -296,10 +313,11 @@ export interface WriteBoardResult {
 export async function writeBoard(opts: WriteBoardOptions): Promise<WriteBoardResult> {
   const { workspaceRoot } = opts;
 
-  const [claims, consensus, heartbeats] = await Promise.all([
+  const [claims, consensus, heartbeats, capsules] = await Promise.all([
     readClaims(workspaceRoot),
     readConsensus(workspaceRoot),
     readHeartbeats(workspaceRoot),
+    readRecentCapsules(workspaceRoot),
   ]);
 
   const claimedTaskIds = new Set(claims.map(c => c.task_id));
@@ -311,6 +329,7 @@ export async function writeBoard(opts: WriteBoardOptions): Promise<WriteBoardRes
     claims,
     consensus,
     heartbeats,
+    capsules,
     generator: opts.generator,
     now: opts.now,
   });

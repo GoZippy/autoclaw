@@ -323,12 +323,16 @@ export function createBridgeServer(
           // When workspaceRoot is configured, run manifest-declared acceptance
           // commands in the correct directory — safe because the bridge owner
           // controls the workspace. Absent workspaceRoot → skip (safe default).
+          // Acceptance recipe (the checks themselves) — captured onto the capsule
+          // so a verifier can replay only the failed gates later.
+          let acceptanceChecks: AcceptanceCheck[] | undefined;
           if (config.workspaceRoot) {
             try {
               const manifestDir = path.join(config.commsDir, '..', 'sprints');
               const { tasks: gateMap } = await readManifestTaskGates(manifestDir);
               const taskGates = gateMap.get(tid);
               if (taskGates?.acceptance && taskGates.acceptance.length > 0) {
+                acceptanceChecks = taskGates.acceptance;
                 const gateChecks: GateCheckResult[] = await runAcceptanceChecks(
                   taskGates.acceptance,
                   { cwd: config.workspaceRoot },
@@ -340,8 +344,24 @@ export function createBridgeServer(
           // Persist a durable evidence capsule (crabbox run-handle pattern): a
           // re-inspectable bundle a fresh-context verifier can read or replay,
           // instead of discarding the result after evaluation.
-          const capsule = buildCapsule(result, { author_agent_id: author, evaluated_by: token.agent_id });
+          const capsule = buildCapsule(result, {
+            author_agent_id: author, evaluated_by: token.agent_id, acceptance_checks: acceptanceChecks,
+          });
           await writeCapsule(config.commsDir, capsule).catch(() => { /* best-effort */ });
+          // Reputation join (REP-1): when consensus is reached, record the
+          // outcome for the agent whose work was reviewed so the router can later
+          // prefer agents with a track record. Dedup-guarded (evaluate is polled)
+          // and best-effort — never blocks the response.
+          if (author && result.status === 'consensus_reached') {
+            await recordOutcomeOnce(config.commsDir, {
+              task_id: tid,
+              agent_id: author,
+              verdict: result.final_verdict,
+              gate_passed: capsule.gates_passed,
+              rework_rounds: result.rounds,
+              timestamp: capsule.evaluated_at,
+            }).catch(() => { /* best-effort */ });
+          }
           await appendCommsLog(config.commsDir, {
             timestamp: new Date().toISOString(),
             type: 'consensus_result',

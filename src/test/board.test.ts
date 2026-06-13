@@ -12,14 +12,20 @@ import {
   CLAIM_TTL_DEFAULT_MS,
   HEARTBEAT_OFFLINE_MS,
   REVIEW_OVERDUE_MS,
+  BOARD_CAPSULES_MAX,
   buildBoard,
   renderBoardMarkdown,
+  type BoardCapsule,
   type BoardClaim,
   type BoardConsensus,
   type BoardHeartbeat,
   type BoardTask,
 } from '../orchestrator/board';
 import { writeBoard } from '../orchestrator/boardWriter';
+
+function cap(over: Partial<BoardCapsule> & { run_id: string; task_id: string }): BoardCapsule {
+  return { source: 'consensus', verdict: 'approved', votes_count: 2, evaluated_at: new Date(now).toISOString(), ...over };
+}
 
 const now = new Date('2026-05-24T12:00:00Z').getTime();
 
@@ -250,6 +256,36 @@ suite('board — renderBoardMarkdown', () => {
     const md = renderBoardMarkdown(board);
     assert.ok(md.includes('has \\| pipe'));
   });
+
+  test('renders a Recent evidence section only when capsules exist', () => {
+    const without = renderBoardMarkdown(buildBoard({ tasks: [], claims: [], consensus: [], heartbeats: [], now }));
+    assert.ok(!without.includes('## Recent evidence'));
+    const withCaps = renderBoardMarkdown(buildBoard({
+      tasks: [], claims: [], consensus: [], heartbeats: [],
+      capsules: [cap({ run_id: 'run-1', task_id: 'T1', verdict: 'blocked', gates_passed: false })],
+      now,
+    }));
+    assert.ok(withCaps.includes('## Recent evidence'));
+    assert.ok(withCaps.includes('`T1`'));
+    assert.ok(withCaps.includes('blocked'));
+  });
+});
+
+suite('board — recent capsules', () => {
+  test('summaries are sorted newest-first and capped at BOARD_CAPSULES_MAX', () => {
+    const many: BoardCapsule[] = [];
+    for (let i = 0; i < BOARD_CAPSULES_MAX + 5; i++) {
+      many.push(cap({ run_id: `run-${i}`, task_id: `T${i}`, evaluated_at: new Date(now - i * 1000).toISOString() }));
+    }
+    const board = buildBoard({ tasks: [], claims: [], consensus: [], heartbeats: [], capsules: many, now });
+    assert.strictEqual(board.recent_capsules?.length, BOARD_CAPSULES_MAX);
+    assert.strictEqual(board.recent_capsules?.[0].run_id, 'run-0'); // newest (largest evaluated_at)
+  });
+
+  test('omitted entirely when there are no capsules', () => {
+    const board = buildBoard({ tasks: [], claims: [], consensus: [], heartbeats: [], now });
+    assert.strictEqual(board.recent_capsules, undefined);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -298,6 +334,15 @@ suite('board — writeBoard end-to-end', () => {
         status: 'active', current_task: 'T1', sprint: 1,
       }, null, 2));
 
+      // A persisted evidence capsule should surface on the board.
+      fs.mkdirSync(path.join(comms, 'consensus', 'results'), { recursive: true });
+      fs.writeFileSync(path.join(comms, 'consensus', 'results', 'T1-run-abc.json'), JSON.stringify({
+        run_id: 'run-abc', source: 'consensus', task_id: 'T1', sprint: 1,
+        final_verdict: 'approved', status: 'consensus_reached', rounds: 1, votes_count: 2,
+        gates_passed: true, artifacts: { capsule_path: '', votes_dir: '' },
+        evaluated_at: new Date(now - 2000).toISOString(),
+      }, null, 2));
+
       const result = await writeBoard({ workspaceRoot: ws, now, generator: 'test' });
 
       assert.ok(fs.existsSync(result.jsonPath));
@@ -312,10 +357,15 @@ suite('board — writeBoard end-to-end', () => {
       assert.strictEqual(board.claimable.length, 1);
       assert.strictEqual(board.claimable[0].task_id, 'T2');
 
+      assert.strictEqual(board.recent_capsules.length, 1);
+      assert.strictEqual(board.recent_capsules[0].run_id, 'run-abc');
+      assert.strictEqual(board.recent_capsules[0].verdict, 'approved');
+
       const md = fs.readFileSync(result.mdPath, 'utf8');
       assert.ok(md.includes('# AutoClaw Agendaboard'));
       assert.ok(md.includes('`T1`'));
       assert.ok(md.includes('`T2`'));
+      assert.ok(md.includes('## Recent evidence'));
     } finally {
       rmrf(ws);
     }

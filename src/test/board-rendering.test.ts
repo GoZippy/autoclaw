@@ -42,6 +42,24 @@ suite('board renderer — kanban shell', () => {
     assert.strictEqual((html.match(/col-count">1</g) || []).length, 4);
   });
 
+  test('no Recent evidence strip when there are no capsules', () => {
+    assert.ok(!renderBoard(board, ctx).includes('board-evidence'));
+  });
+
+  test('renders a Recent evidence strip with verdict + gate state', () => {
+    const withCaps: BoardSnapshot = {
+      ...board,
+      recent_capsules: [
+        { run_id: 'run-xyz', task_id: 'T-3', source: 'consensus', verdict: 'blocked', gates_passed: false, votes_count: 2, evaluated_at: new Date(NOW).toISOString() },
+      ],
+    };
+    const html = renderBoard(withCaps, ctx);
+    assert.ok(html.includes('board-evidence'));
+    assert.ok(html.includes('Recent evidence'));
+    assert.ok(html.includes('run-xyz'));
+    assert.ok(html.includes('ev-gate-fail'));
+  });
+
   test('null board → friendly empty hint, no kanban shell', () => {
     const html = renderBoard(null, ctx);
     assert.ok(!html.includes('board-kanban'));

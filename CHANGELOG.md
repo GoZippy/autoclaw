@@ -35,6 +35,32 @@
   pass/fail) — confirming a fix landed without re-running the whole review. The
   evaluate response now includes `run_id`. Local-first (files in the comms tree),
   best-effort (capsule write never blocks evaluation), zero-config. +14 tests.
+- **Capsule ingest (`from-actions` analog)** — `captureCapsule` / `captureFromChecks`
+  let a non-consensus source (a failed autobuild, an ingested CI log, a manual
+  run) mint a replayable capsule with a `source` provenance tag; the verdict
+  defaults from the gate state (red ⇒ needs_changes, green ⇒ approved). The
+  captured failure is replayable via `replayFailedGates`, exactly like a
+  consensus capsule. +5 tests.
+- **Capsules on the fleet board** — recent capsules now surface as a read-only
+  "Recent evidence" strip below the kanban (task · verdict · gate · votes ·
+  source · run handle) in both panel renderers, fed from `board.json`
+  (`BoardModel.recent_capsules`, newest-first, capped at 10). +6 tests.
+- **Capsule → reputation join (REP-1)** — the consensus evaluate path now records
+  a task outcome to the reputation ledger when consensus is reached, feeding the
+  capsule's `gates_passed` + verdict into the agent's track record the router
+  prefers. `recordOutcomeOnce` dedups by (task_id, agent_id) so the idempotent,
+  polled evaluate endpoint can't skew an agent's success rate; new commsDir-
+  relative ledger helpers (`recordTaskOutcomeInComms`/`readTrackRecordInComms`)
+  mirror the capsule store. Best-effort — never blocks the response. +3 tests.
+- **Cost-as-instrument budget ceiling** (`src/budget/ceiling.ts`) — borrowed from
+  crabbox's spend caps; the LFD "a constraint without an instrument is a vibe"
+  gap (IDEAS_LOG §L). An opt-in `.autoclaw/orchestrator/budget.json`
+  (`max_spend_usd` / `max_wallclock_ms`) is the ceiling; `checkBudget` is the
+  queryable instrument (rolls up LLM cost-ledger spend + wall-clock from an armed
+  epoch that survives restarts); `enforceBudget` engages the existing fleet HALT
+  switch (HKS-3) once on breach. Wired into `dispatchWork`: an over-budget fleet
+  stops dispatching (journaled `dispatch_over_budget`) and the operator sees the
+  reason. Zero-config no-op when no budget.json exists. +18 tests.
 - **Trigger hooks (HKS-1..3)** (`src/hooks/triggerHooks.ts`) — event→action rules
   loaded from `.autoclaw/orchestrator/hooks.yaml` (flat-YAML subset, no new
   dependency): on `message` events (more sources specced), matching rules

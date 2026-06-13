@@ -116,6 +116,22 @@ export interface BoardStuckItem {
   age_ms: number;
 }
 
+/**
+ * Compact summary of an evidence capsule for the board (the full capsule lives
+ * in the comms tree). Verdict is a plain string to keep this module decoupled
+ * from the orchestrate types. Newest-first, capped — a recent-activity log.
+ */
+export interface BoardCapsule {
+  run_id: string;
+  task_id: string;
+  source: string;
+  verdict: string;
+  /** true/false when a gate ran; undefined when none did. */
+  gates_passed?: boolean;
+  votes_count: number;
+  evaluated_at: string;
+}
+
 /** Top-level board model written to `board.json`. */
 export interface BoardModel {
   generated_at: string;
@@ -128,7 +144,12 @@ export interface BoardModel {
   in_flight: BoardInFlightItem[];
   awaiting_review: BoardAwaitingReviewItem[];
   stuck: BoardStuckItem[];
+  /** Recent review-cycle / ingested-run capsules (newest first, capped). */
+  recent_capsules?: BoardCapsule[];
 }
+
+/** Max capsules surfaced on the board (it's a recent-activity strip, not a log). */
+export const BOARD_CAPSULES_MAX = 10;
 
 /* -------------------------------------------------------------------------- */
 /*  Constants                                                                 */
@@ -150,6 +171,8 @@ export interface BuildBoardInputs {
   claims: BoardClaim[];
   consensus: BoardConsensus[];
   heartbeats: BoardHeartbeat[];
+  /** Recent capsules (already summarized by the caller), newest-first preferred. */
+  capsules?: BoardCapsule[];
   generator?: string;
   now?: number;
 }
@@ -323,6 +346,11 @@ export function buildBoard(inputs: BuildBoardInputs): BoardModel {
 
   stuck.sort((a, b) => b.age_ms - a.age_ms);
 
+  const recent_capsules = (inputs.capsules ?? [])
+    .slice()
+    .sort((a, b) => (a.evaluated_at < b.evaluated_at ? 1 : a.evaluated_at > b.evaluated_at ? -1 : 0))
+    .slice(0, BOARD_CAPSULES_MAX);
+
   return {
     generated_at: new Date(now).toISOString(),
     generator,
@@ -332,6 +360,7 @@ export function buildBoard(inputs: BuildBoardInputs): BoardModel {
     in_flight: inFlight,
     awaiting_review: awaitingReview,
     stuck,
+    ...(recent_capsules.length > 0 ? { recent_capsules } : {}),
   };
 }
 
@@ -413,6 +442,18 @@ export function renderBoardMarkdown(board: BoardModel): string {
     }
   }
   out.push('');
+
+  const capsules = board.recent_capsules ?? [];
+  if (capsules.length > 0) {
+    out.push('## Recent evidence');
+    out.push('| Task | Verdict | Gate | Votes | Source | Run |');
+    out.push('|---|---|---|---|---|---|');
+    for (const c of capsules) {
+      const gate = c.gates_passed === undefined ? '—' : c.gates_passed ? '✓' : '✗';
+      out.push(`| \`${c.task_id}\` | ${c.verdict} | ${gate} | ${c.votes_count} | ${escapeCell(c.source)} | \`${escapeCell(c.run_id)}\` |`);
+    }
+    out.push('');
+  }
 
   return out.join('\n');
 }

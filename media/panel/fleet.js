@@ -375,6 +375,19 @@
         ? boardEmpty('Nothing stuck — fleet is healthy.')
         : boardTable(['Task', 'Reason', 'Age', 'Detail'], rows),
     ));
+
+    // Recent evidence (capsules) — a read-only log of completed review cycles.
+    var caps = board.recent_capsules || [];
+    if (caps.length) {
+      rows = caps.map(function (c) {
+        var gate = c.gates_passed === undefined ? '—' : (c.gates_passed ? '✓' : { warn: '✗' });
+        return [{ code: c.task_id }, c.verdict || '—', gate, c.votes_count == null ? 0 : c.votes_count, c.source || '—', { code: c.run_id }];
+      });
+      body.appendChild(boardSubsection(
+        'Recent evidence', rows.length,
+        boardTable(['Task', 'Verdict', 'Gate', 'Votes', 'Source', 'Run'], rows),
+      ));
+    }
   }
 
   // ---- top-level render ---------------------------------------------------

@@ -35,6 +35,7 @@ import { gateDispatch, appendAuditLog, type ControlLevel } from './fabric/govern
 import type { AgentType } from './fabric/agentTypes';
 // Fleet HALT kill switch (HKS-3) — leaf module shared with hooks/triggerHooks.
 import { isFleetHalted } from './hooks/fleetHalt';
+import { enforceBudget } from './budget';
 
 const fsPromises = fs.promises;
 
@@ -462,6 +463,19 @@ export async function dispatchWork(
     await writeLoopJournal(workspaceRoot, {
       at: new Date().toISOString(), tick: 0, phase: 'dispatch',
       action: 'dispatch_halted', detail: { taskId: pkg.taskId, vendor: pkg.assignToVendor, reason: 'fleet HALT engaged' },
+    });
+    return null;
+  }
+
+  // Cost-as-instrument ceiling: when a spend/wall-clock budget is configured and
+  // breached, enforceBudget engages the fleet HALT switch (so the pause persists
+  // and is visible) and we refuse this dispatch. No-op when no budget.json exists.
+  const budget = await enforceBudget(workspaceRoot);
+  if (budget.enabled && !budget.within) {
+    await writeLoopJournal(workspaceRoot, {
+      at: new Date().toISOString(), tick: 0, phase: 'dispatch',
+      action: 'dispatch_over_budget',
+      detail: { taskId: pkg.taskId, vendor: pkg.assignToVendor, breaches: budget.breaches, spend_usd: budget.spend_usd },
     });
     return null;
   }
