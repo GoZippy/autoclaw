@@ -19,12 +19,12 @@ opt-in, golden no-op test, evidence-grounded acceptance.
 | # | Item | Spec | Status |
 |---|------|------|--------|
 | QLT-0 | Gates + tier×phase routing: A/C/B **live** (reviewer≠author, acceptance gate at review command, registry `llms_available` → scorer). 256 tests green. | [specs/orchestrate-gates-and-routing.spec.md](specs/orchestrate-gates-and-routing.spec.md) | done (4c open) |
-| QLT-0b | Bridge `/consensus/{tid}/evaluate` gating — add `workspaceRoot` to `BridgeConfig`, reuse gate helpers (unsafe to guess root for remote-triggered shell commands) | spec §Sequencing 4c | open |
+| QLT-0b | Bridge `/consensus/{tid}/evaluate` gating — add `workspaceRoot` to `BridgeConfig`, reuse gate helpers (unsafe to guess root for remote-triggered shell commands) | spec §Sequencing 4c | **done** (kilocode, 2026-06-13) |
 | HKS-1..3 | Trigger hooks: pure matcher + dispatch/notify actions + **fleet HALT kill switch** + audit | [specs/agent-trigger-hooks.spec.md](specs/agent-trigger-hooks.spec.md) | **done** (2026-06-12; 973 tests green) |
 | HKS-4..5 | Hook actions launch_skill / spawn_runner / relay (cross-machine wake) + non-message event sources (heartbeat_stall, claim_stale, consensus, autobuild_fail) | spec §Sequencing 4–5 | open |
-| REP-1 | Track-record ledger (join voteWriter outcomes + gate_checks + metrics + costLedger per agent×capability) | V4_PLAN §P5 | open |
-| ONB-2 | Launch Skill catalog rework (goal-oriented picker with when-to-use) | V4_PLAN §P1 | open |
-| MEM-1 | Fact provenance (`verified_by` on every memory write; 5-stage discipline) | V4_PLAN §P6 | open |
+| REP-1 | Track-record ledger (join voteWriter outcomes + gate_checks + metrics + costLedger per agent×capability) | V4_PLAN §P5 | **done** (079bacc; 2026-06-13) |
+| ONB-2 | Launch Skill catalog rework (goal-oriented picker with when-to-use) | V4_PLAN §P1 | **done** (kilocode, 2026-06-13) |
+| MEM-1 | Fact provenance (`verified_by` on every memory write; 5-stage discipline) | V4_PLAN §P6 | **done** (079bacc; 2026-06-13) |
 
 ### Cloud relay GA — security follow-ups (from the PA-2 audit)
 Accepted-risk residuals; tracked in

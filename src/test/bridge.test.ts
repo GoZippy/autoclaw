@@ -362,8 +362,83 @@ suite('Bridge — endpoints', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Port fallback (Phase 1 Item F)
+// QLT-0b: acceptance command gate (bridge path)
 // ---------------------------------------------------------------------------
+
+suite('Bridge — QLT-0b acceptance gate', () => {
+  async function bringWithRoot(workspaceRoot?: string): Promise<BridgeState> {
+    const commsDir = tmpDir();
+    const tokensPath = path.join(commsDir, 'tokens.json');
+    const port = 9876 + Math.floor(Math.random() * 1000);
+    const cfg: BridgeConfig = { port, host: '127.0.0.1', commsDir, tokensPath, workspaceRoot };
+    return startBridge(cfg);
+  }
+
+  test('evaluate with workspaceRoot + acceptance check blocks on failure', async () => {
+    // Create a workspace with the bridge's comms dir inside it
+    const wsRoot = tmpDir();
+    const commsDir = path.join(wsRoot, '.autoclaw', 'orchestrator', 'comms');
+    fs.mkdirSync(path.join(commsDir, 'consensus', 'active'), { recursive: true });
+    const tokensPath = path.join(commsDir, 'tokens.json');
+    const port = 9876 + Math.floor(Math.random() * 1000);
+    const cfg: BridgeConfig = { port, host: '127.0.0.1', commsDir, tokensPath, workspaceRoot: wsRoot };
+    const state = await startBridge(cfg);
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'bridge-tester');
+    // Write a vote
+    fs.writeFileSync(path.join(commsDir, 'consensus', 'active', 'TG1-a1.json'), JSON.stringify({
+      agent_id: 'a1', provider: 'kiro', verdict: 'approved', confidence: 0.9,
+      findings: [], timestamp: '2026-05-09T00:00:00Z',
+    }));
+    // Write a manifest sprint with an acceptance check that will fail
+    const sprintsDir = path.join(wsRoot, '.autoclaw', 'orchestrator', 'sprints');
+    fs.mkdirSync(sprintsDir, { recursive: true });
+    fs.writeFileSync(path.join(sprintsDir, 'sprint-1.yaml'), [
+      'tasks:',
+      '  - id: TG1',
+      '    acceptance:',
+      '      - command: exit 1',
+      '        expect: exit_zero',
+    ].join('\n'));
+    try {
+      const r = await request(state, 'POST', '/api/v1/consensus/TG1/evaluate',
+        { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` }, '{}');
+      assert.strictEqual(r.status, 200);
+      const body = JSON.parse(r.body);
+      assert.strictEqual(body.final_verdict, 'needs_changes',
+        'failing acceptance check should force needs_changes');
+      assert.ok(body.gate_checks, 'gate_checks should be present');
+      assert.strictEqual(body.gate_checks[0].passed, false);
+    } finally {
+      await stopBridge(state);
+    }
+  });
+
+  test('evaluate without workspaceRoot skips acceptance checks (safe default)', async () => {
+    const state = await bringWithRoot();
+    const t = await createRemoteAgentToken(state.config.tokensPath, 'bridge-tester');
+    // Stage a vote so consensus has something to tally
+    const vd = path.join(state.config.commsDir, 'consensus', 'active');
+    fs.writeFileSync(path.join(vd, 'TG2-a1.json'), JSON.stringify({
+      agent_id: 'a1', provider: 'kiro', verdict: 'approved', confidence: 0.9,
+      findings: [], timestamp: '2026-05-09T00:00:00Z',
+    }));
+    fs.writeFileSync(path.join(vd, 'TG2-a2.json'), JSON.stringify({
+      agent_id: 'a2', provider: 'claude-code', verdict: 'approved', confidence: 0.9,
+      findings: [], timestamp: '2026-05-09T00:00:00Z',
+    }));
+    try {
+      const r = await request(state, 'POST', '/api/v1/consensus/TG2/evaluate',
+        { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` }, '{}');
+      assert.strictEqual(r.status, 200);
+      const body = JSON.parse(r.body);
+      assert.strictEqual(body.final_verdict, 'approved',
+        'without workspaceRoot, consensus should proceed normally');
+      assert.ok(!body.gate_checks, 'gate_checks should be absent without workspaceRoot');
+    } finally {
+      await stopBridge(state);
+    }
+  });
+});
 
 suite('Bridge — port fallback on EADDRINUSE', () => {
   let blocker: http.Server | undefined;

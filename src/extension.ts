@@ -324,36 +324,102 @@ export function activate(context: vscode.ExtensionContext) {
       // Kiro: .kiro/steering/  |  everything else: .clinerules/ (installed by KiloCode + Cline adapters)
       const sp = (skill: string) => isKiro ? `.kiro/steering/${skill}.md` : `.clinerules/${skill}.md`;
 
-      const skills = [
-        { label: '🌙 KDream — Start', detail: 'Start the persistent background agent', prompt: `Follow the instructions in ${sp('kdream')} — run kdream start` },
-        { label: '🌙 KDream — Status', detail: 'Check background agent status', prompt: `Follow the instructions in ${sp('kdream')} — run kdream ps` },
-        { label: '🌙 KDream — Add Task', detail: 'Add a follow-up task', prompt: `Follow the instructions in ${sp('kdream')} — run kdream add "` },
-        { label: '🔨 AutoBuild — Schedule', detail: 'Schedule a build workflow', prompt: `Follow the instructions in ${sp('autobuild')} — run autobuild schedule` },
-        { label: '🔨 AutoBuild — Run', detail: 'Run a workflow now', prompt: `Follow the instructions in ${sp('autobuild')} — run autobuild run` },
-        { label: '👥 MAteam — Launch', detail: 'Spawn a multi-agent team', prompt: `Follow the instructions in ${sp('mateam')} — run mateam launch "` },
-        { label: '🎯 Orchestrate — Init', detail: 'Initialize orchestrator', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate init` },
-        { label: '🎯 Orchestrate — Plan', detail: 'Generate sprint plans', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate plan` },
-        { label: '🎯 Orchestrate — Status', detail: 'Show sprint progress', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate status` },
-        { label: '🎯 Orchestrate — Assign', detail: 'Assign next sprint', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate next` },
-        { label: '📬 Check Inbox', detail: 'Check cross-agent messages', prompt: `Read ${sp('cross-agent')} for the protocol. Check your inbox at .autoclaw/orchestrator/comms/inboxes/ for new messages and process them.` },
+      // ONB-2: Goal-oriented skill catalog — grouped by user intent, not flat command list.
+      // Each goal maps to one or more skill actions with a one-line "when to use".
+      const skillCatalog = [
+        {
+          label: '🚀 Start a New Project',
+          detail: 'Initialize orchestration, set up manifests, and plan your first sprint',
+          actions: [
+            { label: 'Initialize + Plan', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate init, then orchestrate plan` },
+          ],
+        },
+        {
+          label: '▶️ Run / Resume Orchestration',
+          detail: 'Assign work, check progress, and manage active sprints',
+          actions: [
+            { label: 'Assign Next Sprint', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate next` },
+            { label: 'Check Status', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate status` },
+            { label: 'Review + Merge', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate review, then orchestrate merge` },
+          ],
+        },
+        {
+          label: '👥 Spawn a Multi-Agent Team',
+          detail: 'Launch a team of parallel agents to work on a feature or fix',
+          actions: [
+            { label: 'Launch Team', prompt: `Follow the instructions in ${sp('mateam')} — run mateam launch "` },
+          ],
+        },
+        {
+          label: '🔨 Automate Builds & Workflows',
+          detail: 'Schedule or run CI/CD workflows, lint fixes, and automated tasks',
+          actions: [
+            { label: 'Schedule Workflow', prompt: `Follow the instructions in ${sp('autobuild')} — run autobuild schedule` },
+            { label: 'Run Now', prompt: `Follow the instructions in ${sp('autobuild')} — run autobuild run` },
+          ],
+        },
+        {
+          label: '🌙 Background Agent (KDream)',
+          detail: 'Start, monitor, or task the persistent background agent',
+          actions: [
+            { label: 'Start KDream', prompt: `Follow the instructions in ${sp('kdream')} — run kdream start` },
+            { label: 'Check Status', prompt: `Follow the instructions in ${sp('kdream')} — run kdream ps` },
+            { label: 'Add Task', prompt: `Follow the instructions in ${sp('kdream')} — run kdream add "` },
+          ],
+        },
+        {
+          label: '📬 Check Inbox',
+          detail: 'Read cross-agent messages, review requests, and task completions',
+          actions: [
+            { label: 'Check Inbox', prompt: `Read ${sp('cross-agent')} for the protocol. Check your inbox at .autoclaw/orchestrator/comms/inboxes/ for new messages and process them.` },
+          ],
+        },
+        {
+          label: '🛡️ Security Audit',
+          detail: 'Audit a module for security defects before merging or GA',
+          actions: [
+            { label: 'Run Audit', prompt: `Follow the instructions in ${sp('security-auditor')} — run security-auditor "audit <path>"` },
+          ],
+        },
+        {
+          label: '📝 Write Documentation',
+          detail: 'Generate docs, READMEs, or API references from code',
+          actions: [
+            { label: 'Write Docs', prompt: `Follow the instructions in ${sp('doc-writer')} — run doc-writer "` },
+          ],
+        },
       ];
 
-      const pick = await vscode.window.showQuickPick(skills, {
-        placeHolder: 'Select an AutoClaw skill to launch (copies prompt to clipboard)',
+      // Two-step picker: first pick a goal, then pick an action within it.
+      const goalPick = await vscode.window.showQuickPick(skillCatalog, {
+        placeHolder: 'What do you want to do? (select a goal)',
         matchOnDetail: true,
       });
 
-      if (pick) {
-        await vscode.env.clipboard.writeText(pick.prompt);
-        const hint = isClaudeCode
-          ? `Copied "${pick.label}" prompt. Claude Code users can also type the skill command directly in chat.`
-          : `Copied "${pick.label}" prompt to clipboard. Paste into any AI chat.`;
-        vscode.window.showInformationMessage(hint, 'Open Chat').then(action => {
-          if (action === 'Open Chat') {
-            vscode.commands.executeCommand('workbench.action.chat.open');
-          }
+      if (!goalPick) return;
+
+      // If only one action, use it directly; otherwise let the user pick the specific action.
+      let selectedPrompt: string;
+      if (goalPick.actions.length === 1) {
+        selectedPrompt = goalPick.actions[0].prompt;
+      } else {
+        const actionPick = await vscode.window.showQuickPick(goalPick.actions, {
+          placeHolder: `${goalPick.label} — select an action`,
+          matchOnDetail: true,
         });
+        if (!actionPick) return;
+        selectedPrompt = actionPick.prompt;
       }
+
+      await vscode.env.clipboard.writeText(selectedPrompt);
+      const hint = isClaudeCode
+        ? `Copied "${goalPick.label}" prompt. Claude Code users can also type the skill command directly in chat.`
+        : `Copied "${goalPick.label}" prompt to clipboard. Paste into any AI chat.`;
+      vscode.window.showInformationMessage(hint, 'Open Chat').then(action => {
+        if (action === 'Open Chat') {
+          vscode.commands.executeCommand('workbench.action.chat.open');
+        }
+      });
     })
   );
 
@@ -3234,6 +3300,7 @@ async function bridgeStartCommand(): Promise<void> {
     portBlockBase: block.bridgeBase,
     commsDir: path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms'),
     tokensPath: path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'tokens.json'),
+    workspaceRoot,
   };
   try {
     activeBridge = await startBridge(config);

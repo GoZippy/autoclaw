@@ -13,14 +13,17 @@ import {
 } from './comms';
 import {
   evaluateConsensus, DEFAULT_CONSENSUS_CONFIG,
-  type ValidationVote, type ConsensusResult,
+  applyAcceptanceGate, readManifestTaskGates, runAcceptanceChecks, consensusConfigForTask,
+  type ValidationVote, type ConsensusResult, type GateCheckResult, type AcceptanceCheck,
 } from './orchestrate';
+import { buildCapsule, writeCapsule, summarizeCapsule, readCapsule, listCapsules } from './evidence';
+import { recordOutcomeOnce } from './reputation';
 import { verifyBiscuitToken } from './biscuit';
 import { verifySvid } from './svid';
 
 const fsPromises = fs.promises;
 
-export interface BridgeConfig { port: number; host: string; commsDir: string; tokensPath: string; portBlockBase?: number; }
+export interface BridgeConfig { port: number; host: string; commsDir: string; tokensPath: string; portBlockBase?: number; /** Workspace root for running manifest-declared acceptance commands (QLT-0b). When set, the bridge consensus endpoint can safely run shell commands in the correct directory. Optional — absent means remote-triggered gating is skipped (safe default). */ workspaceRoot?: string; }
 export interface RemoteAgentToken {
   agent_id: string;
   token: string;
@@ -316,15 +319,51 @@ export function createBridgeServer(
           const author = await readClaimAuthor(config.commsDir, tid);
           const result = evaluateConsensus(votes, round, DEFAULT_CONSENSUS_CONFIG, { author_agent_id: author });
           result.task_id = tid;
+          // QLT-0b: acceptance command gate (bridge path).
+          // When workspaceRoot is configured, run manifest-declared acceptance
+          // commands in the correct directory — safe because the bridge owner
+          // controls the workspace. Absent workspaceRoot → skip (safe default).
+          if (config.workspaceRoot) {
+            try {
+              const manifestDir = path.join(config.commsDir, '..', 'sprints');
+              const { tasks: gateMap } = await readManifestTaskGates(manifestDir);
+              const taskGates = gateMap.get(tid);
+              if (taskGates?.acceptance && taskGates.acceptance.length > 0) {
+                const gateChecks: GateCheckResult[] = await runAcceptanceChecks(
+                  taskGates.acceptance,
+                  { cwd: config.workspaceRoot },
+                );
+                applyAcceptanceGate(result, gateChecks, { criticality: taskGates.criticality });
+              }
+            } catch { /* best-effort: gate failure does not block consensus */ }
+          }
+          // Persist a durable evidence capsule (crabbox run-handle pattern): a
+          // re-inspectable bundle a fresh-context verifier can read or replay,
+          // instead of discarding the result after evaluation.
+          const capsule = buildCapsule(result, { author_agent_id: author, evaluated_by: token.agent_id });
+          await writeCapsule(config.commsDir, capsule).catch(() => { /* best-effort */ });
           await appendCommsLog(config.commsDir, {
             timestamp: new Date().toISOString(),
             type: 'consensus_result',
             from: token.agent_id,
             task_id: tid,
-            message: `${token.agent_id} evaluated ${tid}: ${result.status} (${result.final_verdict})`,
+            message: `${token.agent_id} evaluated ${tid}: ${summarizeCapsule(capsule)}`,
           });
           bus.publish('consensus', result);
-          return json(res, 200, result);
+          return json(res, 200, { ...result, run_id: capsule.run_id });
+        }
+        // Evidence capsules (crabbox run-handle analog). List by task, or fetch one
+        // by run handle so a fresh-context verifier can re-inspect a review cycle.
+        if (p === '/api/v1/capsules' && method === 'GET') {
+          const task = url.searchParams.get('task') ?? undefined;
+          const capsules = await listCapsules(config.commsDir, task);
+          return json(res, 200, { capsules, count: capsules.length });
+        }
+        const km = p.match(/^\/api\/v1\/capsules\/([^/]+)$/);
+        if (km && method === 'GET') {
+          const capsule = await readCapsule(config.commsDir, km[1]);
+          if (!capsule) { return err(res, 404, 'No such capsule'); }
+          return json(res, 200, capsule);
         }
         const cm = p.match(/^\/api\/v1\/consensus\/(.+)$/);
         if (cm && method === 'GET') {
