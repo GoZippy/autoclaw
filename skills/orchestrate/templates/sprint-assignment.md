@@ -11,7 +11,7 @@
 ## Context Files
 - Orchestrator config: `.autoclaw/orchestrator/config.yaml`
 - Plan summary: `.autoclaw/orchestrator/sprints/plan-summary.yaml`
-- Cross-agent protocol: `.clinerules/cross-agent.md` (or `.kiro/steering/cross-agent.md` for Kiro)
+- Cross-agent protocol — read whichever your host installed: `.claude/rules/cross-agent-protocol.md` (Claude Code), `.clinerules/cross-agent.md` (Cline/KiloCode), `.cursor/rules/cross-agent.mdc` (Cursor), `.kiro/steering/cross-agent.md` (Kiro), `.windsurf/rules/cross-agent.md` (Windsurf), `.agent/rules/cross-agent.md` (Antigravity), `.continue/prompts/cross-agent.prompt` (Continue), or `AGENTS.md`
 
 ## Scope Rules
 You may ONLY modify files matching these patterns:
