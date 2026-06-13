@@ -1,11 +1,12 @@
 import * as assert from 'assert';
 import {
-  esc, formatContextWindow, formatAge, shortSessionId,
+  esc, formatContextWindow, formatAge, shortSessionId, shortModel,
   statusBadgeClass, trustBadgeClass,
   renderChips, renderDetailRow, renderAgentCard, renderAgentList,
   extractPlatform, payloadExcerpt, filterAwaitingYou, renderAwaitingYou,
   renderFabricHealth, bridgeTooltip, kgTooltip, kgClickCommand,
-  agentHost, isRemoteAgent,
+  agentHost, isRemoteAgent, agentRole, renderRoleChip, renderTeamSummary,
+  renderSessionList,
   type AgentWithLive, type InboxSummary, type AwaitingYouRow, type FabricHealth,
 } from '../webview-render';
 import type { Message, RegisteredAgent, Heartbeat } from '../comms';
@@ -53,6 +54,14 @@ suite('webview-render — escaping & formatters', () => {
     assert.strictEqual(shortSessionId('abcdefgh'), 'abcdefgh');
     assert.strictEqual(shortSessionId('abcdefghijkl'), 'abcdefgh…');
     assert.strictEqual(shortSessionId(undefined), '');
+  });
+
+  test('shortModel drops vendor prefixes and date stamps', () => {
+    assert.strictEqual(shortModel('claude-haiku-4-5-20251001'), 'claude-haiku-4-5');
+    assert.strictEqual(shortModel('us.anthropic.claude-fable-5'), 'claude-fable-5');
+    assert.strictEqual(shortModel('anthropic/claude-opus-4-8'), 'claude-opus-4-8');
+    assert.strictEqual(shortModel('claude-fable-5'), 'claude-fable-5');
+    assert.strictEqual(shortModel(undefined), '');
   });
 
   test('status & trust badge classes map known values', () => {
@@ -663,5 +672,84 @@ suite('webview-render — cross-machine fleet (CF-2)', () => {
     const iAlpha = html.indexOf('>alpha<');
     const iZeta = html.indexOf('>zeta<');
     assert.ok(iLocal < iAlpha && iAlpha < iZeta, 'local-first then hosts alphabetically');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Roles, team summary, sessions (fleet visibility upgrade)
+// ---------------------------------------------------------------------------
+
+suite('webview-render — roles & model on cards', () => {
+  test('agentRole resolves explicit role over agent_type', () => {
+    const a: AgentWithLive = { ...makeMinimalAgent(), role: 'reviewer', agent_type: 'coder' };
+    assert.strictEqual(agentRole(a), 'reviewer');
+  });
+
+  test('renderRoleChip compact uses the abbreviation; full uses the label', () => {
+    assert.match(renderRoleChip('security', true), /role-security/);
+    assert.match(renderRoleChip('security', true), /SEC/);
+    assert.match(renderRoleChip('security', false), /Security/);
+  });
+
+  test('card head shows a role chip and the current model abbreviated', () => {
+    const a: AgentWithLive = {
+      ...makeMinimalAgent(), id: 'cc', name: 'Claude', role: 'coder', status: 'active',
+      heartbeat: {
+        agent_id: 'cc', timestamp: new Date().toISOString(), status: 'active',
+        current_task: null, sprint: null, current_llm: 'us.anthropic.claude-fable-5',
+      },
+    };
+    const html = renderAgentCard(a);
+    assert.match(html, /role-chip role-coder/);
+    // Visible model text is abbreviated; the full id is preserved in the title.
+    assert.match(html, /class="agent-model" title="us\.anthropic\.claude-fable-5">claude-fable-5</);
+  });
+});
+
+suite('webview-render — team summary', () => {
+  test('shows live/total and role distribution chips', () => {
+    const agents: AgentWithLive[] = [
+      { ...makeMinimalAgent(), id: 'a1', role: 'coder', status: 'active' },
+      { ...makeMinimalAgent(), id: 'a2', role: 'coder', status: 'idle' },
+      { ...makeMinimalAgent(), id: 'a3', role: 'reviewer', status: 'offline' },
+    ];
+    const html = renderTeamSummary(agents);
+    assert.match(html, /team-summary/);
+    assert.match(html, /2<\/span>\/3 live/);     // 2 live of 3
+    assert.match(html, /role-coder/);
+    assert.match(html, /role-reviewer/);
+    assert.match(html, /role-count">2</);         // two coders counted
+  });
+
+  test('empty fleet → empty string (no strip)', () => {
+    assert.strictEqual(renderTeamSummary([]), '');
+  });
+});
+
+suite('webview-render — session list', () => {
+  const mkHb = (id: string, ageMin: number, model?: string): Heartbeat => ({
+    agent_id: 'cc',
+    timestamp: new Date(Date.now() - ageMin * 60000).toISOString(),
+    status: 'active', current_task: 'T-9', sprint: 1, session_id: id, current_llm: model,
+  });
+
+  test('renders one row per session, newest first, model abbreviated', () => {
+    const html = renderSessionList([mkHb('old12345', 30), mkHb('new67890', 1, 'claude-haiku-4-5-20251001')]);
+    assert.match(html, /session-list/);
+    assert.match(html, /session-list-count">2</);
+    const iNew = html.indexOf('new67890');
+    const iOld = html.indexOf('old12345');
+    assert.ok(iNew >= 0 && iOld >= 0 && iNew < iOld, 'newest session first');
+    assert.match(html, /claude-haiku-4-5</);
+  });
+
+  test('sessions older than 10 min get the stale class', () => {
+    const html = renderSessionList([mkHb('stale123', 30)]);
+    assert.match(html, /session-row stale/);
+  });
+
+  test('empty → empty string', () => {
+    assert.strictEqual(renderSessionList([]), '');
+    assert.strictEqual(renderSessionList(undefined), '');
   });
 });

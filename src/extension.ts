@@ -84,12 +84,20 @@ import { onboardPlatform } from './fabric/onboarding';
 import { defaultAgentTypeForRunner } from './fabric/agentTypes';
 // Trigger hooks + fleet HALT kill switch (HKS-1..3, agent-trigger-hooks spec).
 import { setFleetHalted, startTriggerHooksRuntime } from './hooks/triggerHooks';
+// Track-record ledger (REP-1) — record reviewed-task outcomes for reputation routing.
+import { recordTaskOutcome } from './reputation';
 import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
   readExtensionVersionFromDisk, readGitBranchFromDisk,
-  type FabricHealth, type InboxSummary, type AwaitingYouRow,
+  type FabricHealth, type InboxSummary, type AwaitingYouRow, type AgentWithLive,
 } from './webview-render';
+import {
+  renderBoard, renderMessageFeed, buildThreads, boardTaskCount, inferRoleFromActivity,
+  type BoardSnapshot, type BoardRenderContext, type ThreadMessage,
+} from './webview-render-board';
+import { resolveAgentRole, type CanonicalRole } from './roles';
+import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
   startBridge, stopBridge, createRemoteAgentToken, revokeToken, readTokens,
@@ -1746,11 +1754,23 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             </div>
         </div>
 
+        <!-- Board section (kanban: backlog → in progress → review → blocked) -->
+        <div class="panel-section open" id="board-section">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="true" aria-controls="board-body" data-section="board">
+                <span class="section-chevron"></span>
+                Board
+                <span class="section-badge" id="board-badge">0</span>
+            </div>
+            <div class="section-body" id="board-body">
+                <div id="board-content"><p class="empty">Loading...</p></div>
+            </div>
+        </div>
+
         <!-- Agents section -->
         <div class="panel-section open" id="agents-section">
             <div class="section-header" role="button" tabindex="0" aria-expanded="true" aria-controls="agents-body" data-section="agents">
                 <span class="section-chevron"></span>
-                Agents
+                Team
                 <span class="section-badge" id="agents-badge">0</span>
             </div>
             <div class="section-body" id="agents-body">
@@ -2985,6 +3005,24 @@ async function orchestrateReviewCommand(): Promise<void> {
       channel.appendLine(`[orchestrate] consensus broadcast failed for ${taskId}: ${(e as Error).message}`);
     }
 
+    // REP-1: record the reviewed-task outcome for the claiming agent's track
+    // record (best-effort; never blocks the review). Skip 'abstain' — that is
+    // "not enough voters yet", not a decision about the agent's work.
+    if (author && result.final_verdict !== 'abstain') {
+      try {
+        await recordTaskOutcome(workspaceRoot, {
+          task_id: taskId,
+          agent_id: author,
+          phase: taskDef?.phase,
+          verdict: result.final_verdict,
+          gate_passed: gateChecks ? gateChecks.every(g => g.passed) : undefined,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (e) {
+        channel.appendLine(`[orchestrate] reputation record failed for ${taskId}: ${(e as Error).message}`);
+      }
+    }
+
     if (result.status !== 'consensus_reached') { allApproved = false; }
   }
 
@@ -3457,6 +3495,53 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
   try { agents = await getAgentStatuses(commsDir); } catch {}
   try { view.webview.postMessage({ command: 'updateAgents', data: agents }); } catch {}
 
+  // Attach per-session heartbeats so cards can break a single agent process
+  // into its individual chat sessions.
+  const agentsWithSessions: AgentWithLive[] = [];
+  for (const a of agents) {
+    let sessions: Awaited<ReturnType<typeof readSessionHeartbeats>> = [];
+    try { sessions = await readSessionHeartbeats(commsDir, a.id); } catch { /* none */ }
+    agentsWithSessions.push({ ...(a as AgentWithLive), sessions });
+  }
+
+  // Board snapshot — read once and reused for role inference, the kanban, and
+  // the section badge.
+  let board: BoardSnapshot | null = null;
+  try {
+    const boardPath = path.join(wr, '.autoclaw', 'orchestrator', 'board.json');
+    if (fs.existsSync(boardPath)) {
+      board = JSON.parse((await fsPromises.readFile(boardPath, 'utf8')).replace(/^﻿/, '')) as BoardSnapshot;
+    }
+  } catch { board = null; }
+
+  // Resolve each agent's canonical role + name + current model once, so the
+  // board, threads, and message feed all color participants consistently.
+  // Role precedence: registry role → fabric agent_type → can_orchestrate →
+  // live board activity (what they're doing now) → generalist. (Sprint YAML
+  // "role:" lines are work-lane descriptions, not agent roles, so NOT used.)
+  const roleOf: Record<string, CanonicalRole> = {};
+  const nameOf: Record<string, string> = {};
+  const modelOf: Record<string, string> = {};
+  for (const a of agentsWithSessions) {
+    let role = resolveAgentRole({
+      role: (a as { role?: string }).role,
+      agent_type: a.agent_type,
+      can_orchestrate: a.can_orchestrate,
+    });
+    if (role === 'generalist') {
+      const inferred = inferRoleFromActivity(a.id, board);
+      if (inferred !== 'generalist') { role = inferred; }
+    }
+    roleOf[a.id] = role;
+    // Stamp the resolved role back so the agent cards + team summary (which
+    // call agentRole() internally) agree with the board's coloring.
+    (a as { role?: string }).role = role;
+    nameOf[a.id] = a.name || a.id;
+    const model = a.heartbeat?.current_llm
+      || (a.llms_available && a.llms_available.length === 1 ? a.llms_available[0] : undefined);
+    if (model) { modelOf[a.id] = model; }
+  }
+
   // v2.5: per-agent inbox summaries + server-rendered cards
   const summaries: Record<string, InboxSummary> = {};
   for (const a of agents) {
@@ -3468,7 +3553,7 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     view.webview.postMessage({
       command: 'updateAgentCards',
       data: {
-        html: renderAgentList(agents, summaries),
+        html: renderAgentList(agentsWithSessions, summaries),
         count: agents.length,
       },
     });
@@ -3504,7 +3589,31 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     }
   } catch {}
 
-  try { view.webview.postMessage({ command: 'updateMessages', data: await readCommsLog(commsDir, { limit: 50 }) }); } catch {}
+  // Comms log → role-colored message feed + per-task threads for the board.
+  let commsLog: CommsLogEntry[] = [];
+  try { commsLog = await readCommsLog(commsDir, { limit: 200 }); } catch {}
+  const threadEntries: ThreadMessage[] = commsLog.map(e => ({
+    timestamp: e.timestamp, type: e.type, from: e.from, to: e.to,
+    task_id: e.task_id, message: e.message,
+  }));
+  const boardCtx: BoardRenderContext = {
+    roleOf, nameOf, modelOf, threads: buildThreads(threadEntries),
+  };
+  try {
+    view.webview.postMessage({
+      command: 'updateMessages',
+      data: { html: renderMessageFeed(threadEntries.slice(-60), boardCtx), count: commsLog.length },
+    });
+  } catch {}
+
+  // Task board (kanban) — board.json was read once above and is reused here.
+  try {
+    view.webview.postMessage({
+      command: 'updateBoard',
+      data: { html: renderBoard(board, boardCtx), count: boardTaskCount(board) },
+    });
+  } catch {}
+
   try {
     const sp = path.join(wr, '.autoclaw', 'orchestrator', 'sprints', 'plan-summary.yaml');
     if (fs.existsSync(sp)) {

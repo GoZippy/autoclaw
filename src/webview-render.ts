@@ -14,6 +14,9 @@ import * as path from 'path';
 import type {
   RegisteredAgent, Heartbeat, AgentStatus, Message,
 } from './comms';
+import {
+  type CanonicalRole, ROLE_META, resolveAgentRole, summarizeRoles,
+} from './roles';
 
 /** Where an agent's presence reached this panel from (CF-2, integrate-automate-v3.2).
  *  Mirrors the `FleetOrigin` in views/fleetViewModel.ts; kept inline so the
@@ -29,6 +32,10 @@ export interface AgentWithLive extends RegisteredAgent {
   origin?: AgentOrigin;
   /** CF-2: the host the agent runs on. Falls back to machine_id, then 'local'. */
   host?: string;
+  /** Optional explicit role string (registry rows in the wild carry one). */
+  role?: string;
+  /** All known session heartbeats for this agent (sidecar files). */
+  sessions?: Heartbeat[];
 }
 
 /** Resolve an agent's display host (CF-2): explicit host → machine_id → 'local'. */
@@ -160,6 +167,105 @@ export function shortSessionId(s?: string | null): string {
   return s.length > 8 ? s.slice(0, 8) + '…' : s;
 }
 
+/** Short display form of a model id: drops vendor path prefixes
+ *  ("us.anthropic.claude-…" → "claude-…") and trailing date stamps
+ *  ("claude-haiku-4-5-20251001" → "claude-haiku-4-5"). */
+export function shortModel(s?: string | null): string {
+  if (!s) { return ''; }
+  let m = String(s);
+  const slash = m.lastIndexOf('/');
+  if (slash >= 0) { m = m.slice(slash + 1); }
+  // vendor-prefixed bedrock-style ids: us.anthropic.claude-x → claude-x
+  m = m.replace(/^[a-z]{2}\.[a-z0-9]+\./, '');
+  m = m.replace(/-20\d{6}(-v\d+(:\d+)?)?$/, '');
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// Roles & team summary
+// ---------------------------------------------------------------------------
+
+/** Render one colored role chip. `compact` uses the 2–3 letter abbreviation. */
+export function renderRoleChip(role: CanonicalRole, compact = false): string {
+  const meta = ROLE_META[role];
+  const text = compact ? meta.abbrev : meta.label;
+  return `<span class="role-chip ${meta.cssClass}" title="${esc(meta.label)}">` +
+    `<span class="role-glyph" aria-hidden="true">${meta.glyph}</span>${esc(text)}</span>`;
+}
+
+/** Resolve the canonical role for a panel agent row. */
+export function agentRole(agent: AgentWithLive): CanonicalRole {
+  return resolveAgentRole({
+    role: agent.role,
+    agent_type: agent.agent_type,
+    can_orchestrate: agent.can_orchestrate,
+  });
+}
+
+/**
+ * Render the team-summary strip shown above the agent list: live/total
+ * counts, session count, and the role distribution as colored chips.
+ * Designed to stay readable from 2 agents up to 50.
+ */
+export function renderTeamSummary(agents: readonly AgentWithLive[], now: number = Date.now()): string {
+  if (!agents || agents.length === 0) { return ''; }
+  const live = agents.filter(a => {
+    const s = a.live_status || a.status;
+    return s === 'active' || s === 'idle' || s === 'overloaded';
+  }).length;
+  const sessionCount = agents.reduce((n, a) => n + (a.sessions?.length ?? 0), 0);
+  const roles = summarizeRoles(agents.map(agentRole));
+
+  let h = '<div class="team-summary" role="status" aria-label="Team summary">';
+  h += `<span class="team-count" title="agents with a fresh heartbeat / total registered">` +
+    `<span class="team-live">${live}</span>/${agents.length} live</span>`;
+  if (sessionCount > 0) {
+    h += `<span class="team-sessions" title="known sessions across all agents">${sessionCount} session${sessionCount === 1 ? '' : 's'}</span>`;
+  }
+  h += '<span class="team-roles">';
+  for (const { role, count } of roles) {
+    const meta = ROLE_META[role];
+    h += `<span class="role-chip ${meta.cssClass}" title="${count} × ${esc(meta.label)}">` +
+      `<span class="role-glyph" aria-hidden="true">${meta.glyph}</span>${esc(meta.label)}` +
+      (count > 1 ? `<span class="role-count">${count}</span>` : '') + '</span>';
+  }
+  h += '</span></div>';
+  return h;
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+/** Sort sessions newest-first; the primary heartbeat's session (if any) is
+ *  not special-cased — every session renders the same way. */
+function sortSessions(sessions: readonly Heartbeat[]): Heartbeat[] {
+  return [...sessions].sort((a, b) =>
+    new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+}
+
+/**
+ * Render the per-agent session list (expanded card body). One row per
+ * session heartbeat: short id, status, model, current task, last-seen.
+ */
+export function renderSessionList(sessions: readonly Heartbeat[] | undefined, now: number = Date.now()): string {
+  if (!sessions || sessions.length === 0) { return ''; }
+  let h = '<div class="session-list" aria-label="Sessions">';
+  h += `<div class="session-list-label">Sessions<span class="session-list-count">${sessions.length}</span></div>`;
+  for (const s of sortSessions(sessions)) {
+    const stale = now - new Date(s.timestamp).getTime() > 10 * 60_000;
+    h += `<div class="session-row${stale ? ' stale' : ''}">`;
+    h += `<span class="session-dot ${stale ? 'status-offline' : 'status-' + esc(s.status || 'idle')}" aria-hidden="true"></span>`;
+    h += `<span class="session-id" title="${esc(s.session_id ?? '')}">${esc(shortSessionId(s.session_id) || '(no id)')}</span>`;
+    if (s.current_llm) { h += `<span class="session-model" title="${esc(s.current_llm)}">${esc(shortModel(s.current_llm))}</span>`; }
+    if (s.current_task) { h += `<span class="session-task" title="${esc(s.current_task)}">${esc(s.current_task)}</span>`; }
+    h += `<span class="session-seen">${esc(formatAge(s.timestamp, now))}</span>`;
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
 // ---------------------------------------------------------------------------
 // Agent card
 // ---------------------------------------------------------------------------
@@ -222,9 +328,18 @@ export function renderAgentCard(
   head += '<span class="card-chevron"></span>';
   head += `<span class="status-pill ${statusBadgeClass(live)}" title="${esc(live)}">${esc(live)}</span>`;
   head += `<span class="agent-name">${esc(agent.name || agent.id)}</span>`;
+  // Role chip — the single most useful "what is this agent doing on the team"
+  // signal, so it sits right after the name on the always-visible summary line.
+  head += renderRoleChip(agentRole(agent), true);
   head += `<span class="agent-id">${esc(agent.id)}</span>`;
   if (agent.extension_id) {
     head += `<span class="agent-platform">${esc(extractPlatform(agent.extension_id))}</span>`;
+  }
+  // Model the agent is running right now — abbreviated to stay on one line.
+  const headModel = hb?.current_llm
+    || (agent.llms_available && agent.llms_available.length === 1 ? agent.llms_available[0] : undefined);
+  if (headModel) {
+    head += `<span class="agent-model" title="${esc(headModel)}">${esc(shortModel(headModel))}</span>`;
   }
   // CF-2: origin/host badge — only for relay-forwarded remote-host agents, so
   // the single-machine view is unchanged (no badge when origin is local/absent).
@@ -239,6 +354,9 @@ export function renderAgentCard(
 
   // ── Expanded body ────────────────────────────────────────────────────────
   let body = `<div class="agent-card-body" id="${cardId}-body" hidden>`;
+  // Role first, with the colored pill so the body restates the head chip.
+  body += `<div class="agent-detail-row"><span class="detail-label">Role</span>`;
+  body += `<span class="detail-value">${renderRoleChip(agentRole(agent), false)}</span></div>`;
   body += renderChips('Capabilities', agent.capabilities);
   body += renderChips('LLMs', agent.llms_available);
   if (typeof agent.context_window === 'number' && agent.context_window > 0) {
@@ -290,7 +408,12 @@ export function renderAgentCard(
     body += `<div class="agent-detail-row last-error"><span class="detail-label">Last Error</span>`;
     body += `<pre class="error-box">${esc(hb.last_error.message)}</pre></div>`;
   }
-  if (hb?.session_id) {
+  // Per-session breakdown — when sidecar session heartbeats exist, show one
+  // row each (a single agent process can host several chat sessions). Falls
+  // back to the single primary session id when no sidecars were collected.
+  if (agent.sessions && agent.sessions.length > 0) {
+    body += renderSessionList(agent.sessions, now);
+  } else if (hb?.session_id) {
     body += renderDetailRow('Session', shortSessionId(hb.session_id));
   }
 
@@ -326,9 +449,10 @@ export function renderAgentList(
 
   const hasRelay = agents.some(isRemoteAgent);
   const card = (a: AgentWithLive) => renderAgentCard(a, summaries[a.id] ?? null, now);
+  const summary = renderTeamSummary(agents, now);
 
   if (!hasRelay) {
-    return agents.map(card).join('');
+    return summary + agents.map(card).join('');
   }
 
   // Partition into this machine's local agents and remote agents grouped by
@@ -352,7 +476,7 @@ export function renderAgentList(
     `<span class="host-label">${esc(label)}</span>` +
     `<span class="host-count">${count}</span></div>`;
 
-  let out = '';
+  let out = summary;
   if (localAgents.length > 0) {
     out += groupHeader('local', '⚑', 'This machine', localAgents.length);
     out += localAgents.map(card).join('');

@@ -57,6 +57,7 @@
         case 'updateHealth': updateHealth(data); break;
         // Orchestrator data
         case 'updateAgents': renderAgents(data); break;
+        case 'updateBoard': renderBoardHtml(data); break;
         case 'updateMessages': renderMessages(data); break;
         case 'updateSprints': renderSprints(data); break;
         case 'updateTimeline': renderTimeline(data); break;
@@ -236,27 +237,49 @@
   }
 
   // ── Messages section ──────────────────────────────────────────────
-  function renderMessages(entries) {
+  function renderBoardHtml(payload) {
+    const el = document.getElementById('board-content');
+    if (!el) return;
+    const html = (payload && typeof payload.html === 'string') ? payload.html : '';
+    const count = (payload && typeof payload.count === 'number') ? payload.count : 0;
+    el.innerHTML = html || '<p class="empty">No board yet.</p>';
+    setBadge('board-badge', String(count));
+    // Wire the per-task message-thread toggles on each card.
+    el.querySelectorAll('.thread-toggle').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.board-card');
+        const thread = card && card.querySelector('.task-thread');
+        if (!thread) return;
+        const opening = thread.hasAttribute('hidden');
+        if (opening) thread.removeAttribute('hidden'); else thread.setAttribute('hidden', '');
+        btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        card.classList.toggle('thread-open', opening);
+      });
+    });
+  }
+
+  function renderMessages(payload) {
     const el = document.getElementById('messages-content');
     if (!el) return;
-    if (!entries?.length) {
-      el.innerHTML = '<p class="empty">No messages yet.</p>';
-      setBadge('messages-badge', '0');
+    // Back-compat: accept either the new {html,count} payload or a raw array.
+    if (Array.isArray(payload)) {
+      if (!payload.length) { el.innerHTML = '<p class="empty">No messages yet.</p>'; setBadge('messages-badge', '0'); return; }
+      let h = '<div class="msg-feed">';
+      for (const e of payload.slice().reverse()) {
+        h += '<div class="msg-entry"><span class="msg-time">' + esc(new Date(e.timestamp).toLocaleTimeString()) + '</span> ';
+        h += '<span class="msg-type">' + esc(e.type) + '</span> <span class="msg-from">' + esc(e.from) + '</span>';
+        if (e.to) h += ' \u2192 <span class="msg-to">' + esc(e.to) + '</span>';
+        if (e.task_id) h += ' <em>(' + esc(e.task_id) + ')</em>';
+        h += '</div>';
+      }
+      el.innerHTML = h + '</div>';
+      setBadge('messages-badge', String(payload.length));
       return;
     }
-    setBadge('messages-badge', String(entries.length));
-    let h = '<div class="msg-feed">';
-    for (const e of entries.slice().reverse()) {
-      const t = new Date(e.timestamp).toLocaleTimeString();
-      h += '<div class="msg-entry">';
-      h += '<span class="msg-time">' + esc(t) + '</span> ';
-      h += '<span class="msg-type">' + esc(e.type) + '</span> ';
-      h += '<span class="msg-from">' + esc(e.from) + '</span>';
-      if (e.to) h += ' \u2192 <span class="msg-to">' + esc(e.to) + '</span>';
-      if (e.task_id) h += ' <em>(' + esc(e.task_id) + ')</em>';
-      h += '</div>';
-    }
-    el.innerHTML = h + '</div>';
+    const html = (payload && typeof payload.html === 'string') ? payload.html : '';
+    const count = (payload && typeof payload.count === 'number') ? payload.count : 0;
+    el.innerHTML = html || '<p class="empty">No messages yet.</p>';
+    setBadge('messages-badge', String(count));
   }
 
   // ── Timeline (folded into Activity) ───────────────────────────────

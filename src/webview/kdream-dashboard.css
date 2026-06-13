@@ -867,3 +867,300 @@ th {
 .agent-card.open:hover {
   border-color: color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
 }
+
+/* ===========================================================================
+   Fleet visibility upgrade — roles, team summary, kanban board, threads,
+   sessions. Colors derive from VS Code chart tokens with hard-coded
+   fallbacks so they read on any theme.
+   =========================================================================== */
+
+/* -- Role chips ----------------------------------------------------------- */
+.role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: 8px;
+  font-size: 0.72em;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.role-chip .role-glyph { font-size: 0.95em; opacity: 0.9; }
+.role-chip .role-count {
+  margin-left: 3px;
+  padding: 0 4px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.25);
+  font-size: 0.9em;
+}
+/* role color tokens -- text + tinted background of the same hue */
+.role-orchestrator { color: var(--vscode-charts-purple, #b180d7); background: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 16%, transparent); border-color: color-mix(in srgb, var(--vscode-charts-purple, #b180d7) 38%, transparent); }
+.role-architect    { color: var(--vscode-charts-blue, #3794ff);   background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 16%, transparent);   border-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 38%, transparent); }
+.role-product      { color: var(--vscode-charts-yellow, #d7ba7d); background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 18%, transparent); border-color: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 40%, transparent); }
+.role-coder        { color: var(--vscode-charts-green, #89d185);  background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 16%, transparent);  border-color: color-mix(in srgb, var(--vscode-charts-green, #89d185) 38%, transparent); }
+.role-reviewer     { color: var(--vscode-charts-orange, #d7935d); background: color-mix(in srgb, var(--vscode-charts-orange, #d7935d) 16%, transparent); border-color: color-mix(in srgb, var(--vscode-charts-orange, #d7935d) 38%, transparent); }
+.role-tester       { color: #4db6ac; background: color-mix(in srgb, #4db6ac 16%, transparent); border-color: color-mix(in srgb, #4db6ac 38%, transparent); }
+.role-security     { color: var(--vscode-charts-red, #f14c4c);    background: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 14%, transparent);    border-color: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 36%, transparent); }
+.role-designer     { color: #e57bb6; background: color-mix(in srgb, #e57bb6 16%, transparent); border-color: color-mix(in srgb, #e57bb6 38%, transparent); }
+.role-creative     { color: #c586c0; background: color-mix(in srgb, #c586c0 16%, transparent); border-color: color-mix(in srgb, #c586c0 38%, transparent); }
+.role-docs         { color: #75beff; background: color-mix(in srgb, #75beff 14%, transparent); border-color: color-mix(in srgb, #75beff 34%, transparent); }
+.role-researcher   { color: #9cdcfe; background: color-mix(in srgb, #9cdcfe 14%, transparent); border-color: color-mix(in srgb, #9cdcfe 34%, transparent); }
+.role-ops          { color: #b5b5b5; background: color-mix(in srgb, #b5b5b5 16%, transparent); border-color: color-mix(in srgb, #b5b5b5 36%, transparent); }
+.role-generalist   { color: var(--vscode-descriptionForeground); background: rgba(127,127,127,0.14); border-color: rgba(127,127,127,0.3); }
+
+/* -- Team summary strip --------------------------------------------------- */
+.team-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  background: var(--vscode-editor-inactiveSelectionBackground);
+}
+.team-count { font-size: 0.85em; font-weight: 600; }
+.team-count .team-live { color: var(--vscode-charts-green, #89d185); }
+.team-sessions {
+  font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+  padding: 0 6px;
+  border-left: 1px solid var(--vscode-panel-border);
+}
+.team-roles { display: flex; flex-wrap: wrap; gap: 4px; flex: 1 1 100%; }
+
+/* model tag on the agent card head */
+.agent-model {
+  font-size: 0.72em;
+  font-family: var(--vscode-editor-font-family, monospace);
+  color: var(--vscode-descriptionForeground);
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.16);
+  white-space: nowrap;
+}
+
+/* -- Per-agent session list (card body) ----------------------------------- */
+.session-list { margin-top: 6px; border-top: 1px dashed var(--vscode-panel-border); padding-top: 5px; }
+.session-list-label {
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+  margin-bottom: 4px;
+}
+.session-list-count {
+  margin-left: 5px;
+  padding: 0 5px;
+  border-radius: 6px;
+  background: rgba(127, 127, 127, 0.2);
+}
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 0.8em;
+}
+.session-row.stale { opacity: 0.55; }
+.session-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.session-dot.status-active { background: var(--vscode-charts-green, #89d185); }
+.session-dot.status-idle { background: var(--vscode-charts-yellow, #d7ba7d); }
+.session-dot.status-offline { background: var(--vscode-charts-red, #f14c4c); }
+.session-id { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-descriptionForeground); }
+.session-model {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.16);
+}
+.session-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.session-seen { margin-left: auto; color: var(--vscode-descriptionForeground); white-space: nowrap; }
+
+/* -- Kanban board --------------------------------------------------------- */
+.board-kanban {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.board-col {
+  flex: 1 1 0;
+  min-width: 132px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 6px;
+  background: var(--vscode-editor-inactiveSelectionBackground);
+}
+.board-col-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  font-size: 0.78em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  position: sticky;
+  top: 0;
+}
+.board-col-head .col-count {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.22);
+  font-size: 0.95em;
+}
+.board-col-backlog .col-glyph  { color: var(--vscode-descriptionForeground); }
+.board-col-inflight .col-glyph { color: var(--vscode-charts-blue, #3794ff); }
+.board-col-review .col-glyph   { color: var(--vscode-charts-orange, #d7935d); }
+.board-col-blocked .col-glyph  { color: var(--vscode-charts-red, #f14c4c); }
+.board-col-body { padding: 5px; display: flex; flex-direction: column; gap: 5px; }
+.board-empty { font-size: 0.78em; color: var(--vscode-descriptionForeground); opacity: 0.7; margin: 4px 2px; }
+.board-more { font-size: 0.74em; color: var(--vscode-descriptionForeground); opacity: 0.8; margin: 3px 2px 0; text-align: center; font-style: italic; }
+
+.board-card {
+  border: 1px solid var(--vscode-panel-border);
+  border-left-width: 3px;
+  border-radius: 5px;
+  padding: 5px 6px;
+  background: var(--vscode-editor-background);
+}
+.board-card.is-claimable { border-left-color: var(--vscode-descriptionForeground); }
+.board-card.is-inflight  { border-left-color: var(--vscode-charts-blue, #3794ff); }
+.board-card.is-review    { border-left-color: var(--vscode-charts-orange, #d7935d); }
+.board-card.is-stuck     { border-left-color: var(--vscode-charts-red, #f14c4c); }
+.board-card.thread-open  { border-color: var(--vscode-focusBorder); }
+.board-card-top { display: flex; align-items: center; gap: 6px; }
+.board-card .task-id {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-weight: 600;
+  font-size: 0.82em;
+}
+.board-card .task-title {
+  font-size: 0.8em;
+  color: var(--vscode-foreground);
+  margin: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.board-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 5px;
+  font-size: 0.74em;
+  color: var(--vscode-descriptionForeground);
+}
+.thread-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  height: 16px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.74em;
+  cursor: pointer;
+}
+.thread-toggle:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
+.thread-icon { font-size: 0.9em; }
+
+/* meta sub-elements */
+.prio { padding: 0 4px; border-radius: 4px; font-size: 0.92em; font-weight: 600; }
+.prio-high { color: var(--vscode-charts-red, #f14c4c); background: color-mix(in srgb, var(--vscode-charts-red, #f14c4c) 14%, transparent); }
+.prio-medium { color: var(--vscode-charts-orange, #d7935d); }
+.prio-low { color: var(--vscode-descriptionForeground); }
+.meta-model {
+  font-family: var(--vscode-editor-font-family, monospace);
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.16);
+}
+.meta-warn, .meta-stuck { color: var(--vscode-charts-red, #f14c4c); }
+.meta-votes { font-family: var(--vscode-editor-font-family, monospace); }
+.meta-label { text-transform: uppercase; font-size: 0.85em; opacity: 0.7; margin-right: 2px; }
+.meta-reviewers, .meta-author { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+
+/* -- Participant avatar (who chip) ---------------------------------------- */
+.who {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 5px;
+  height: 15px;
+  border-radius: 7px;
+  font-size: 0.92em;
+  border: 1px solid transparent;
+  max-width: 120px;
+}
+.who .who-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who .who-glyph { opacity: 0.9; }
+.who-shared { color: var(--vscode-descriptionForeground); background: rgba(127, 127, 127, 0.16); }
+
+/* -- Message thread (board card drill-down) ------------------------------- */
+.task-thread {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px dashed var(--vscode-panel-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.thread-msg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.76em;
+}
+.thread-time { color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.thread-arrow { color: var(--vscode-descriptionForeground); }
+.thread-type, .msg-type {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.18);
+  font-size: 0.92em;
+}
+.thread-text {
+  flex: 1 1 100%;
+  color: var(--vscode-descriptionForeground);
+  padding-left: 4px;
+  border-left: 2px solid var(--vscode-panel-border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -- Message feed (role-colored) ------------------------------------------ */
+.msg-feed { display: flex; flex-direction: column; gap: 4px; }
+.msg-entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  font-size: 0.8em;
+}
+.msg-entry:hover { background: var(--vscode-list-hoverBackground); }
+.msg-time { color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.msg-task {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.16);
+}
