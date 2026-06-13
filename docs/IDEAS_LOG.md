@@ -538,3 +538,94 @@ Deliverables this wave:
   on comms/build events) + fleet HALT kill switch + audit + no-self-amplification.
 - INDEX.md + BACKLOG.md updated (v3.4 wave: QLT-0, HKS-1..3, REP-1, ONB-2, MEM-1).
 - GR-LIVE (live activation of gates+routing) running via background subagent.
+
+## N. Cross-pollination — openclaw/crabbox (2026-06-13)
+
+User: "consider crabbox and what we can learn from it … validate methods and
+borrow the ideas and useful stuff — add to ours and keep building."
+
+**What crabbox is.** A remote test/command execution control plane for
+maintainers + AI agents (Go CLI + Cloudflare-Worker broker + SSH runners). Core
+move: **control plane / data plane split** — the broker only does leasing,
+credentials, cost caps, observability; sync (rsync)/SSH/exec go CLI→runner
+direct. Same openclaw org as our model-oracle ([[reference_claw002]]), so
+ecosystem-aligned, not a random import.
+
+**Methods validated (read live from the repo, not memory):**
+- **Run handles** — every coordinator-backed run gets an early `run_…` id;
+  `attach`/`events`/`logs` query it during + after completion. ✓
+- **Failure capsules** — `capsule from-actions <run-url>` → portable replayable
+  bundle → `capsule replay` re-runs a broken CI run. Failed runs auto-save
+  `.crabbox/captures/*.tar.gz`. ✓
+- **Evidence** — history/logs/events/telemetry/JUnit/screenshots/recordings/
+  artifacts; `--timing-json` = one machine-readable sync/command/total schema. ✓
+- **Cost** — per-lease + monthly spend caps reject over-budget leases;
+  `crabbox usage` rolls spend up by user/org/provider/type. ✓
+
+**What maps onto what we already have (read-only sweep confirmed):** our
+`ConsensusResult.gate_checks` + `runAcceptanceChecks` are the *inputs*; the
+reputation ledger (`src/reputation/`) and cost ledger (`src/llm/costLedger.ts`)
+are the *rollups*; the relay (`src/relay-server/` + `src/cloud/relay.ts`) is
+already a **broker(control)/direct(data) split** — relay carries heartbeats +
+encrypted inboxes only; work stays local. So crabbox isn't a better
+architecture; it's a working reference for **three things we'd specced but not
+closed**: durable run handles, replayable failure capsules, cost-as-instrument.
+
+**Borrowed + SHIPPED this wave (dev-beta, uncommitted): evidence capsules.**
+The gap was that `evaluateConsensus` computed a verdict and **threw it away** —
+a fresh-context verifier (reviewer≠author, §L) had nothing to re-inspect. New
+`src/evidence/capsule.ts` (mirrors the `reputation/` module shape):
+- `EvidenceCapsule` = stable `run-<isoZ>-<6hex>` handle + verdict + vote counts +
+  `excluded_self_review` + the acceptance **recipe** (`acceptance_checks`, for
+  replay) AND **results** (`gate_checks`) + `gates_passed` + machine-readable
+  `timing` + artifact pointers.
+- `bridge.ts` `…/consensus/{tid}/evaluate` now persists a capsule to
+  `comms/consensus/results/<task>-<run>.json` (atomic tmp+rename) and returns
+  `run_id`. New `GET /api/v1/capsules?task=` (list, newest-first) +
+  `GET /api/v1/capsules/<run_id>` (fetch) = our `events`/`logs` analog.
+- `replayFailedGates(capsule)` = our `capsule replay` — re-runs **only** the red
+  checks via `runAcceptanceChecks`, reports pass/fail, so a verifier confirms a
+  fix from the durable record without redoing the whole review.
+- Local-first, best-effort (write never blocks eval), zero-config no-op when no
+  gate ran. **+14 tests; 1039 passing; tsc clean.** CHANGELOG `[Unreleased]`.
+
+**Deliberately NOT borrowed (recorded so we don't relitigate):**
+- The **stack** (Go + Cloudflare Workers/Durable Objects) — conflicts with
+  TS/VS-Code + local-first; same "borrow shape, not framework" rule as LangGraph/
+  Hindsight (§C/§E). The Worker-broker is at most an optional WAN tier.
+- **`tar.gz` capture bundles** — our evidence is small JSON; revisit only if we
+  start capturing large artifacts (screenshots/recordings) for the vision-verify
+  gate (§L [P2]).
+- **License** — verify crabbox's license before lifting any *code* (we lifted
+  only the pattern/shape, wrote our own TS).
+
+**Next slices:**
+1. **Cost-as-instrument** — ✅ SHIPPED 2026-06-13. `src/budget/ceiling.ts`:
+   opt-in `.autoclaw/orchestrator/budget.json` (`max_spend_usd`/`max_wallclock_ms`)
+   → `checkBudget` (queryable instrument: cost-ledger spend rollup + wall-clock
+   from an armed epoch that survives restarts) → `enforceBudget` engages the
+   existing fleet HALT switch once on breach. Wired into `dispatchWork`
+   (journaled `dispatch_over_budget`). Zero-config no-op. +18 tests.
+2. **Reputation join** — ✅ SHIPPED 2026-06-13. Evaluate path records a task
+   outcome (`recordOutcomeOnce`, dedup by task_id+agent_id since evaluate is
+   polled) feeding the capsule's `gates_passed`+verdict into the reputation
+   ledger the router prefers; commsDir-relative ledger helpers added. +3 tests.
+   Limitation: records the *first* terminal verdict per task; a later re-review
+   of the same task id isn't re-recorded (acceptable for v1).
+3. **`from-actions` analog** — ✅ SHIPPED 2026-06-13. `captureCapsule` /
+   `captureFromChecks` (evidence module) mint a replayable capsule from a
+   non-consensus run (failed autobuild / ingested CI log / manual), tagged with a
+   `source` provenance field; verdict defaults from gate state. Replayable via
+   the same `replayFailedGates`. +5 tests. (Wiring a trigger-hook build-failure →
+   `captureFromChecks` is the natural follow-on; the primitive is now ready.)
+4. **Panel surface** — ✅ SHIPPED 2026-06-13. `BoardModel.recent_capsules`
+   (newest-first, capped 10) flows board.json → both panel renderers as a
+   read-only "Recent evidence" strip below the kanban (task · verdict · gate ·
+   votes · source · run). board.ts/boardWriter.ts/webview-render-board.ts +
+   media/panel/fleet.js + CSS. +6 tests.
+5. For **other projects** (ZippyVoice/Webster/ZippySwap): crabbox is a *tool*,
+   not a lib — could be used directly as the ephemeral remote-test sandbox
+   (E2B/Modal providers + spend caps) for agent-run suites. Faster win than any
+   AutoClaw integration; no vendoring. **Status: recommendation only — no
+   AutoClaw code change; revisit per-project when those test suites need
+   ephemeral remote runners.**

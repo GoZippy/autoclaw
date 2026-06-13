@@ -21,6 +21,8 @@ const fsPromises = fs.promises;
 
 /** Append-only ledger location (workspace-relative). */
 export const REPUTATION_DIR_REL = path.join('.autoclaw', 'orchestrator', 'comms', 'reputation');
+/** Same store, relative to the comms-tree root (for callers that hold commsDir). */
+export const REPUTATION_SUBDIR = 'reputation';
 export const OUTCOMES_FILE = 'outcomes.jsonl';
 
 /** One reviewed-task outcome. Optional fields are recorded when available. */
@@ -49,19 +51,17 @@ export function isSuccess(o: TaskOutcome): boolean {
   return o.verdict === 'approved' && o.gate_passed !== false;
 }
 
-/** Append one outcome to the ledger. Best-effort caller; creates the dir. */
-export async function recordTaskOutcome(workspaceRoot: string, outcome: TaskOutcome): Promise<void> {
-  const dir = path.join(workspaceRoot, REPUTATION_DIR_REL);
+/** Filter accepted by the ledger readers. */
+export interface OutcomeFilter { agent_id?: string; capability?: string; since?: string; task_id?: string; }
+
+/** Append one outcome to the ledger at `dir`. Best-effort caller; creates the dir. */
+async function appendOutcomeTo(dir: string, outcome: TaskOutcome): Promise<void> {
   await fsPromises.mkdir(dir, { recursive: true });
   await fsPromises.appendFile(path.join(dir, OUTCOMES_FILE), JSON.stringify(outcome) + '\n', 'utf8');
 }
 
-/** Read the ledger, optionally filtered. Missing/unreadable file ⇒ []. */
-export async function readTrackRecord(
-  workspaceRoot: string,
-  filter?: { agent_id?: string; capability?: string; since?: string }
-): Promise<TaskOutcome[]> {
-  const file = path.join(workspaceRoot, REPUTATION_DIR_REL, OUTCOMES_FILE);
+/** Read + parse + filter the ledger at `file`. Missing/unreadable ⇒ []. */
+async function readOutcomesFrom(file: string, filter?: OutcomeFilter): Promise<TaskOutcome[]> {
   let text: string;
   try { text = await fsPromises.readFile(file, 'utf8'); } catch { return []; }
   const out: TaskOutcome[] = [];
@@ -71,11 +71,51 @@ export async function readTrackRecord(
     let o: TaskOutcome;
     try { o = JSON.parse(t) as TaskOutcome; } catch { continue; }
     if (filter?.agent_id && o.agent_id !== filter.agent_id) { continue; }
+    if (filter?.task_id && o.task_id !== filter.task_id) { continue; }
     if (filter?.capability && !(o.capabilities ?? []).includes(filter.capability)) { continue; }
     if (filter?.since && o.timestamp < filter.since) { continue; }
     out.push(o);
   }
   return out;
+}
+
+/** Append one outcome to the ledger. Best-effort caller; creates the dir. */
+export async function recordTaskOutcome(workspaceRoot: string, outcome: TaskOutcome): Promise<void> {
+  await appendOutcomeTo(path.join(workspaceRoot, REPUTATION_DIR_REL), outcome);
+}
+
+/** Read the ledger, optionally filtered. Missing/unreadable file ⇒ []. */
+export async function readTrackRecord(
+  workspaceRoot: string,
+  filter?: OutcomeFilter
+): Promise<TaskOutcome[]> {
+  return readOutcomesFrom(path.join(workspaceRoot, REPUTATION_DIR_REL, OUTCOMES_FILE), filter);
+}
+
+/**
+ * commsDir-relative variants for callers that hold the comms-tree root (e.g. the
+ * bridge), mirroring the evidence-capsule store. Same ledger file, different base.
+ */
+export async function recordTaskOutcomeInComms(commsDir: string, outcome: TaskOutcome): Promise<void> {
+  await appendOutcomeTo(path.join(commsDir, REPUTATION_SUBDIR), outcome);
+}
+export async function readTrackRecordInComms(commsDir: string, filter?: OutcomeFilter): Promise<TaskOutcome[]> {
+  return readOutcomesFrom(path.join(commsDir, REPUTATION_SUBDIR, OUTCOMES_FILE), filter);
+}
+
+/**
+ * Record an outcome at most once per (task_id, agent_id). The consensus evaluate
+ * endpoint is idempotent and may be polled repeatedly; without this guard each
+ * poll would append a duplicate and skew the agent's success rate. Returns true
+ * when a row was written, false when one already existed. Records the *first*
+ * terminal verdict for a task; a later re-review of the same task id is not
+ * re-recorded (acceptable for v1 — the headline outcome is what reputation routes on).
+ */
+export async function recordOutcomeOnce(commsDir: string, outcome: TaskOutcome): Promise<boolean> {
+  const existing = await readTrackRecordInComms(commsDir, { task_id: outcome.task_id, agent_id: outcome.agent_id });
+  if (existing.length > 0) { return false; }
+  await recordTaskOutcomeInComms(commsDir, outcome);
+  return true;
 }
 
 export interface CapabilityRep { samples: number; successes: number; success_rate: number; }
