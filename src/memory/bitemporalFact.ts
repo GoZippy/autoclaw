@@ -21,6 +21,36 @@
  */
 
 // ---------------------------------------------------------------------------
+// Provenance (MEM-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * How a fact's content was established. Per the Continual-Learning discipline
+ * (Fail → Investigate → Verify → Distill → Consult) a distilled fact should
+ * carry *why we believe it* — "a fact without provenance is a guess". The
+ * `method` ranks evidence strength; absent provenance is treated as
+ * `'unverified'` on read.
+ *
+ * Spec: docs/V4_PLAN.md §P6 (MEM-1); docs/research/2026-06-11-*.md.
+ */
+export type VerificationMethod =
+  | 'session' // observed in a session transcript
+  | 'tool_result' // confirmed by a tool's output
+  | 'command' // confirmed by a command's exit/output
+  | 'user' // asserted by the user
+  | 'unverified'; // a guess / not yet checked
+
+/** Why a fact is believed — its evidence trail. All fields optional but `method`. */
+export interface Provenance {
+  /** Evidence strength / origin. */
+  method: VerificationMethod;
+  /** Free-form pointer to the evidence — transcript line, command, tool name. */
+  evidence?: string;
+  /** ISO8601 — when the verification happened. */
+  verified_at?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
 
@@ -59,6 +89,12 @@ export interface BitemporalFact {
   source?: string;
   /** Optional confidence in [0,1]; absent ⇒ treated as 1. */
   confidence?: number;
+  /**
+   * How the fact was verified (MEM-1). Absent ⇒ treated as `'unverified'` on
+   * read; left absent by writers when no provenance is supplied so existing
+   * serialized output is byte-identical. See {@link Provenance}, {@link isVerified}.
+   */
+  verified_by?: Provenance;
 }
 
 /** A minimal shape accepted by {@link createFact} — timestamps are filled in. */
@@ -73,6 +109,8 @@ export interface NewFactInput {
   tier?: BitemporalFact['tier'];
   source?: string;
   confidence?: number;
+  /** Optional provenance (MEM-1). When omitted the field is left absent. */
+  verified_by?: Provenance;
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +129,7 @@ function nowIso(): string {
  */
 export function createFact(input: NewFactInput): BitemporalFact {
   const recorded_at = input.recorded_at ?? nowIso();
-  return {
+  const fact: BitemporalFact = {
     id: input.id,
     subject: input.subject,
     content: input.content,
@@ -103,6 +141,34 @@ export function createFact(input: NewFactInput): BitemporalFact {
     source: input.source,
     confidence: input.confidence,
   };
+  // Leave `verified_by` absent unless supplied, so a fact created without
+  // provenance serializes byte-identically to pre-MEM-1 output.
+  if (input.verified_by !== undefined) {
+    fact.verified_by = input.verified_by;
+  }
+  return fact;
+}
+
+// ---------------------------------------------------------------------------
+// Provenance helpers (MEM-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a fact's provenance for reading. A fact without `verified_by` is
+ * treated as `{ method: 'unverified' }` — the safe default that keeps a guess
+ * from masquerading as a checked fact.
+ */
+export function provenanceOf(fact: Pick<BitemporalFact, 'verified_by'>): Provenance {
+  return fact.verified_by ?? { method: 'unverified' };
+}
+
+/**
+ * `true` when a fact carries provenance from an actual verification — i.e. it
+ * was confirmed by a session, tool result, command, or the user. Lets a reader
+ * rank verified facts above unverified guesses.
+ */
+export function isVerified(fact: Pick<BitemporalFact, 'verified_by'>): boolean {
+  return provenanceOf(fact).method !== 'unverified';
 }
 
 // ---------------------------------------------------------------------------

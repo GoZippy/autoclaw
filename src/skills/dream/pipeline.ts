@@ -22,6 +22,7 @@
 import {
   type BitemporalFact,
   type NewFactInput,
+  type Provenance,
   createFact,
   supersede,
 } from '../../memory/bitemporalFact';
@@ -48,6 +49,12 @@ export interface FactCandidate {
   valid_from: string;
   recorded_at: string;
   source: string;
+  /**
+   * Optional provenance (MEM-1). Carried onto the created fact's `verified_by`.
+   * Left absent by {@link extract} unless `withProvenance` is requested, so the
+   * default pipeline output is byte-identical.
+   */
+  verified_by?: Provenance;
 }
 
 /**
@@ -62,10 +69,21 @@ const NOTE_ECHO = /^\s*(?:\/note|NOTE):\s*(.+)$/i;
 /**
  * Stage 1 — extract candidate facts from recent transcripts. Pure: a
  * transcript with no `FACT[...]` / `NOTE:` markers yields nothing.
+ *
+ * When `withProvenance` is set, each candidate is stamped with session
+ * provenance (`method: 'session'`); facts pulled from a transcript line are
+ * genuinely session-verified. It is opt-in so the default output stays
+ * byte-identical to pre-MEM-1 behavior.
  */
-export function extract(transcripts: readonly SessionTranscript[]): FactCandidate[] {
+export function extract(
+  transcripts: readonly SessionTranscript[],
+  withProvenance = false,
+): FactCandidate[] {
   const out: FactCandidate[] = [];
   for (const t of transcripts) {
+    const provenance: Provenance | undefined = withProvenance
+      ? { method: 'session', evidence: `session:${t.session_id}`, verified_at: t.ended_at }
+      : undefined;
     for (const rawLine of t.text.split(/\r?\n/)) {
       const factMatch = rawLine.match(FACT_LINE);
       if (factMatch) {
@@ -75,6 +93,7 @@ export function extract(transcripts: readonly SessionTranscript[]): FactCandidat
           valid_from: t.ended_at,
           recorded_at: t.ended_at,
           source: `session:${t.session_id}`,
+          ...(provenance ? { verified_by: provenance } : {}),
         });
         continue;
       }
@@ -88,6 +107,7 @@ export function extract(transcripts: readonly SessionTranscript[]): FactCandidat
           valid_from: t.ended_at,
           recorded_at: t.ended_at,
           source: `session:${t.session_id}`,
+          ...(provenance ? { verified_by: provenance } : {}),
         });
       }
     }
@@ -184,6 +204,8 @@ export function conflictResolve(
       recorded_at: c.recorded_at,
       source: c.source,
       tier: 'recall',
+      // Carry candidate provenance onto the fact; absent ⇒ left absent by createFact.
+      verified_by: c.verified_by,
     };
     const fact = createFact(input);
     const prior = currentBySubject.get(c.subject);
@@ -434,6 +456,11 @@ export interface DreamInput {
   codeIndex: CodeIndex;
   /** Enable the opt-in micro-PR queue. Default false. */
   microPr?: boolean;
+  /**
+   * Stamp session provenance (MEM-1) on extracted candidates. Default false so
+   * the pipeline output stays byte-identical unless provenance is requested.
+   */
+  withProvenance?: boolean;
 }
 
 /** The consolidated result of one `/dream` run. */
@@ -456,7 +483,7 @@ export interface DreamResult {
 export function runDreamPipeline(input: DreamInput): DreamResult {
   const trace: string[] = [];
 
-  const candidates = extract(input.transcripts);
+  const candidates = extract(input.transcripts, input.withProvenance ?? false);
   trace.push(`extract: ${candidates.length} candidate(s) from ${input.transcripts.length} transcript(s)`);
 
   const deduped = dedupe(candidates, input.existingFacts);
