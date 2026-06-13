@@ -175,3 +175,24 @@ If MEMORY.md exceeds 200 lines or 25KB:
 
 ### Phase 5 — Finalize
 Update `state.json` `"lastDream"`. Append: `[HH:MM:SS] autoDream complete. Memory: <N> lines.`
+
+---
+
+## Provenance — a fact without provenance is a guess (MEM-1)
+
+Distilled facts follow the continual-learning discipline: **Fail → Investigate
+→ Verify → Distill → Consult.** A lesson is only worth keeping once it has been
+*verified*, and a verified fact records *how* it was checked.
+
+When consolidating, a fact MAY carry a `verified_by` provenance stamp:
+
+```json
+"verified_by": { "method": "command", "evidence": "npm run compile exited 0", "verified_at": "<ISO>" }
+```
+
+- `method` is one of `session` | `tool_result` | `command` | `user` | `unverified`.
+- Omitting `verified_by` is fine — readers treat an absent stamp as
+  `unverified` (a guess), so existing memory keeps working unchanged.
+- Prefer stamping facts you confirmed by a command, tool result, or the user
+  over ones merely observed in chatter; readers can then rank verified facts
+  above guesses.

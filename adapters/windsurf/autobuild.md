@@ -113,3 +113,75 @@ steps:
 notify: true              # VS Code notification on completion
 timeout: 600              # seconds per step, default 120
 ```
+
+---
+
+## Guarded Fix Mode (AB-2+)
+
+Steps can opt into `fix` mode with a `guard` block that enforces safety constraints before and after execution:
+
+```yaml
+steps:
+  - id: auto-fix
+    run: npm run lint -- --fix
+    mode: fix
+    guard:
+      scope_globs: ["src/**", "test/**"]   # files the step may touch
+      max_files: 10                         # hard cap on files changed
+      require_clean_git: true              # reject if dirty working tree
+      rollback_on: test_fail               # rollback on test failure (or "never")
+    verify: npm test                       # command to verify fix succeeded
+```
+
+**Guard enforcement order:**
+1. `require_clean_git` — if true, rejects the step before execution if `git status --porcelain` is non-empty. Verdict: `rejected_dirty`.
+2. Pre-image capture — records `git diff --name-only` + untracked files before execution (for rollback).
+3. Step executes.
+4. `files_changed` — computed from `git diff --name-only` + untracked files after execution.
+5. `max_files` — if `files_changed.length > max_files`, rejects. Verdict: `rejected_cap`.
+6. `scope_globs` — if any changed file doesn't match a glob pattern, rejects. Verdict: `rejected_scope`.
+7. `rollback_on: test_fail` — if verify command fails, runs `git checkout -- <pre-image files>` to restore working tree.
+
+**Guard verdicts:** `applied` (passed), `rejected_dirty`, `rejected_cap`, `rejected_scope`, `rolled_back`, `na` (not applicable / report mode).
+
+**Step results now include:** `mode`, `files_changed[]`, `guard_verdict`.
+
+**Run results now include:** `guardBlockRejected` (count), `guardRolledBack` (count).
+
+---
+
+## Self-Heal Workflow Templates
+
+When creating workflows that should recover from common failures, use these patterns:
+
+### Pattern: Fix + Verify + Rollback
+
+```yaml
+name: self-heal-lint
+cron: "0 4 * * *"
+steps:
+  - id: lint-fix
+    run: npm run lint -- --fix
+    mode: fix
+    guard:
+      scope_globs: ["src/**"]
+      max_files: 20
+      require_clean_git: true
+      rollback_on: test_fail
+    verify: npm run lint
+  - id: test-after-fix
+    run: npm test
+```
+
+### Pattern: Report-Only (Safe Default)
+
+```yaml
+name: health-check
+cron: "*/30 * * * *"
+steps:
+  - id: check
+    run: npm run doctor
+    mode: report    # never modifies files, guard not needed
+```
+
+**Rule of thumb:** Use `mode: report` unless the step intentionally mutates files. Use `mode: fix` with a `guard` when the step should change code and you want automatic rollback on failure.

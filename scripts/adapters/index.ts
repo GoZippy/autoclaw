@@ -10,7 +10,14 @@ import * as kiro from "./kiro";
 import * as continueAdapter from "./continue";
 import * as kilocode from "./kilocode";
 
-const SKILL_NAMES = ["kdream", "autobuild", "mateam", "orchestrate"] as const;
+const SKILL_NAMES = [
+  "kdream",
+  "autobuild",
+  "mateam",
+  "orchestrate",
+  "security-auditor",
+  "doc-writer",
+] as const;
 
 /**
  * Load every source skill from skills/<name>/SKILL.md and return them with

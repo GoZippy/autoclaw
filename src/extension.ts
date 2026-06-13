@@ -116,6 +116,13 @@ import {
 } from './fabric';
 import { buildAgentCard } from './agent-card';
 import {
+  HOST_SKILL_CONVENTIONS,
+  renderSkillPrompt,
+  renderInboxPrompt,
+  type LaunchAction,
+  type LaunchGoal,
+} from './skillLauncher';
+import {
   startKgDaemon, stopKgDaemon, fetchKgHealth,
   type KgState,
 } from './kg';
@@ -316,76 +323,78 @@ export function activate(context: vscode.ExtensionContext) {
   // Skill launcher — quick pick that copies a skill prompt to clipboard
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.launchSkill', async () => {
-      const appName = vscode.env.appName || '';
-      const isKiro = /kiro/i.test(appName);
-      const isClaudeCode = !!vscode.extensions.getExtension('Anthropic.claude-code');
+      // Resolve which host's conventions to target, then render every prompt for
+      // it. Forks (Cursor/Kiro/Windsurf/Antigravity) are detected by appName; in
+      // stock VS Code an explicit autoclaw.hostAgentId wins, else we prefer an
+      // installed Claude Code, else the one installed agent extension.
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+      const hostId = resolveLauncherHost(workspaceRoot);
+      const isSlashHost = HOST_SKILL_CONVENTIONS[hostId]?.style === 'slash';
 
-      // Route to the correct skill file based on the active IDE/extension host.
-      // Kiro: .kiro/steering/  |  everything else: .clinerules/ (installed by KiloCode + Cline adapters)
-      const sp = (skill: string) => isKiro ? `.kiro/steering/${skill}.md` : `.clinerules/${skill}.md`;
-
-      // ONB-2: Goal-oriented skill catalog — grouped by user intent, not flat command list.
-      // Each goal maps to one or more skill actions with a one-line "when to use".
-      const skillCatalog = [
+      // ONB-2: Goal-oriented skill catalog — grouped by user intent, not a flat
+      // command list. Each action names a shipped skill + the command phrase
+      // (which begins with the skill name); the prompt is rendered for `hostId`
+      // at selection time so it always points at THIS IDE's installed adapter.
+      const skillCatalog: LaunchGoal[] = [
         {
           label: '🚀 Start a New Project',
           detail: 'Initialize orchestration, set up manifests, and plan your first sprint',
           actions: [
-            { label: 'Initialize + Plan', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate init, then orchestrate plan` },
+            { label: 'Initialize + Plan', skill: 'orchestrate', command: 'orchestrate init, then orchestrate plan' },
           ],
         },
         {
           label: '▶️ Run / Resume Orchestration',
           detail: 'Assign work, check progress, and manage active sprints',
           actions: [
-            { label: 'Assign Next Sprint', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate next` },
-            { label: 'Check Status', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate status` },
-            { label: 'Review + Merge', prompt: `Follow the instructions in ${sp('orchestrate')} — run orchestrate review, then orchestrate merge` },
+            { label: 'Assign Next Sprint', skill: 'orchestrate', command: 'orchestrate next' },
+            { label: 'Check Status', skill: 'orchestrate', command: 'orchestrate status' },
+            { label: 'Review + Merge', skill: 'orchestrate', command: 'orchestrate review, then orchestrate merge' },
           ],
         },
         {
           label: '👥 Spawn a Multi-Agent Team',
           detail: 'Launch a team of parallel agents to work on a feature or fix',
           actions: [
-            { label: 'Launch Team', prompt: `Follow the instructions in ${sp('mateam')} — run mateam launch "` },
+            { label: 'Launch Team', skill: 'mateam', command: 'mateam launch "' },
           ],
         },
         {
           label: '🔨 Automate Builds & Workflows',
           detail: 'Schedule or run CI/CD workflows, lint fixes, and automated tasks',
           actions: [
-            { label: 'Schedule Workflow', prompt: `Follow the instructions in ${sp('autobuild')} — run autobuild schedule` },
-            { label: 'Run Now', prompt: `Follow the instructions in ${sp('autobuild')} — run autobuild run` },
+            { label: 'Schedule Workflow', skill: 'autobuild', command: 'autobuild schedule' },
+            { label: 'Run Now', skill: 'autobuild', command: 'autobuild run' },
           ],
         },
         {
           label: '🌙 Background Agent (KDream)',
           detail: 'Start, monitor, or task the persistent background agent',
           actions: [
-            { label: 'Start KDream', prompt: `Follow the instructions in ${sp('kdream')} — run kdream start` },
-            { label: 'Check Status', prompt: `Follow the instructions in ${sp('kdream')} — run kdream ps` },
-            { label: 'Add Task', prompt: `Follow the instructions in ${sp('kdream')} — run kdream add "` },
+            { label: 'Start KDream', skill: 'kdream', command: 'kdream start' },
+            { label: 'Check Status', skill: 'kdream', command: 'kdream ps' },
+            { label: 'Add Task', skill: 'kdream', command: 'kdream add "' },
           ],
         },
         {
           label: '📬 Check Inbox',
           detail: 'Read cross-agent messages, review requests, and task completions',
           actions: [
-            { label: 'Check Inbox', prompt: `Read ${sp('cross-agent')} for the protocol. Check your inbox at .autoclaw/orchestrator/comms/inboxes/ for new messages and process them.` },
+            { label: 'Check Inbox', inbox: true },
           ],
         },
         {
           label: '🛡️ Security Audit',
           detail: 'Audit a module for security defects before merging or GA',
           actions: [
-            { label: 'Run Audit', prompt: `Follow the instructions in ${sp('security-auditor')} — run security-auditor "audit <path>"` },
+            { label: 'Run Audit', skill: 'security-auditor', command: 'security-auditor "audit <path>"' },
           ],
         },
         {
           label: '📝 Write Documentation',
           detail: 'Generate docs, READMEs, or API references from code',
           actions: [
-            { label: 'Write Docs', prompt: `Follow the instructions in ${sp('doc-writer')} — run doc-writer "` },
+            { label: 'Write Docs', skill: 'doc-writer', command: 'doc-writer "' },
           ],
         },
       ];
@@ -399,24 +408,45 @@ export function activate(context: vscode.ExtensionContext) {
       if (!goalPick) return;
 
       // If only one action, use it directly; otherwise let the user pick the specific action.
-      let selectedPrompt: string;
+      let action: LaunchAction;
       if (goalPick.actions.length === 1) {
-        selectedPrompt = goalPick.actions[0].prompt;
+        action = goalPick.actions[0];
       } else {
         const actionPick = await vscode.window.showQuickPick(goalPick.actions, {
           placeHolder: `${goalPick.label} — select an action`,
           matchOnDetail: true,
         });
         if (!actionPick) return;
-        selectedPrompt = actionPick.prompt;
+        action = actionPick;
+      }
+
+      // Render the prompt for the ACTIVE host — correct rules dir, file
+      // extension, and invocation modality (slash command vs. rule-file path).
+      let selectedPrompt: string;
+      if (action.inbox) {
+        selectedPrompt = renderInboxPrompt(hostId);
+      } else {
+        selectedPrompt = renderSkillPrompt(hostId, action.skill!, action.command!);
+        // Don't hand the user a path to a file that isn't installed for this
+        // host — offer to install the adapters first.
+        if (!isSkillInstalled(hostId, action.skill!, workspaceRoot)) {
+          const choice = await vscode.window.showWarningMessage(
+            `The "${action.skill}" skill isn't installed for ${hostId} yet.`,
+            'Install Adapters', 'Copy Anyway'
+          );
+          if (!choice) { return; }
+          if (choice === 'Install Adapters') {
+            await installAdapters(adaptersDir, context.extensionPath, false);
+          }
+        }
       }
 
       await vscode.env.clipboard.writeText(selectedPrompt);
-      const hint = isClaudeCode
-        ? `Copied "${goalPick.label}" prompt. Claude Code users can also type the skill command directly in chat.`
-        : `Copied "${goalPick.label}" prompt to clipboard. Paste into any AI chat.`;
-      vscode.window.showInformationMessage(hint, 'Open Chat').then(action => {
-        if (action === 'Open Chat') {
+      const hint = isSlashHost
+        ? `Copied "${goalPick.label}" — paste into ${hostId} chat (skills run as slash commands).`
+        : `Copied "${goalPick.label}" — paste into your AI chat (points at this IDE's installed rule file).`;
+      vscode.window.showInformationMessage(hint, 'Open Chat').then(sel => {
+        if (sel === 'Open Chat') {
           vscode.commands.executeCommand('workbench.action.chat.open');
         }
       });
@@ -2245,6 +2275,39 @@ function detectAgents(workspaceRoot: string): DetectedAgent[] {
     if (def.id === 'antigravity' && (isAntigravityHost || fs.existsSync(path.join(workspaceRoot, '.agent')))) { detected = true; }
     return { ...def, detected };
   });
+}
+
+/**
+ * Resolve which host the "Launch Skill" picker should target. Forks are
+ * unambiguous via appName (currentIde); in stock VS Code we honor an explicit
+ * `autoclaw.hostAgentId`, else prefer an installed Claude Code, else the single
+ * installed agent extension. Falls back to claude-code.
+ */
+function resolveLauncherHost(workspaceRoot: string): string {
+  if (currentIde === 'cursor' || currentIde === 'kiro' || currentIde === 'windsurf' || currentIde === 'antigravity') {
+    return currentIde;
+  }
+  const explicit = vscode.workspace.getConfiguration('autoclaw').get<string>('hostAgentId');
+  if (explicit && HOST_SKILL_CONVENTIONS[explicit]) { return explicit; }
+  const installed = detectAgents(workspaceRoot).filter(a => a.detected && HOST_SKILL_CONVENTIONS[a.id]);
+  if (installed.some(a => a.id === 'claude-code')) { return 'claude-code'; }
+  if (installed.length >= 1) { return installed[0].id; }
+  return 'claude-code';
+}
+
+/**
+ * True if `skill`'s adapter is actually installed for `hostId` — a global Claude
+ * Code skill dir (~/.claude/skills/<skill>/SKILL.md), or the host's workspace
+ * rule file. Used to warn before copying a prompt that points at nothing.
+ */
+function isSkillInstalled(hostId: string, skill: string, workspaceRoot: string): boolean {
+  const conv = HOST_SKILL_CONVENTIONS[hostId];
+  if (!conv) { return false; }
+  if (conv.style === 'slash') {
+    return fs.existsSync(path.join(os.homedir(), '.claude', 'skills', skill, 'SKILL.md'));
+  }
+  if (!workspaceRoot) { return false; }
+  return fs.existsSync(path.join(workspaceRoot, conv.dir!, `${skill}${conv.ext}`));
 }
 
 function generateCrossAgentRules(agentId: string, agentName: string, allAgents: DetectedAgent[]): string {
