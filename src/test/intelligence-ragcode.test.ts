@@ -33,6 +33,7 @@ import {
 } from '../intelligence/ragCode';
 import { defaultConfig } from '../intelligence/config';
 import { IntelligenceConfig } from '../intelligence/types';
+import { nativeVectorAvailable } from './_vectorBackendAvailable';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -149,6 +150,15 @@ suite('intelligence-ragcode', function () {
   // -------------------------------------------------------------------------
 
   suite('intelligence-ragcode: index + retrieve', function () {
+    suiteSetup(function () {
+      // Indexing + retrieval need a WORKING native vector backend; skip cleanly
+      // where it cannot load (e.g. the Electron integration runner). The
+      // "degraded backend" suite below stays running regardless.
+      if (!nativeVectorAvailable()) {
+        this.skip();
+      }
+    });
+
     test('full index honors fileExtensions/ignoredDirs and retrieveCode returns file-scoped hits', async function () {
       const ws = freshDir('ws-basic');
       writeFile(ws, 'alpha.ts', 'export function alphaSearchToken() { return 42; }');

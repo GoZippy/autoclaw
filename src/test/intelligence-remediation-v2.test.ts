@@ -34,6 +34,7 @@ import {
   SourceAdapter,
   UnifiedSession,
 } from '../intelligence/types';
+import { nativeVectorAvailable } from './_vectorBackendAvailable';
 
 const DIM = 64;
 const SIGNATURE: EmbeddingSignature = { model: 'none-test', dimension: DIM };
@@ -144,6 +145,15 @@ async function countLearnRecords(ws: string, signature: EmbeddingSignature): Pro
 // ---------------------------------------------------------------------------
 
 suite('intelligence-remediation-v2', function () {
+  suiteSetup(function () {
+    // Every test in this file exercises a WORKING native vector backend
+    // (initVectorDB / learnFromSessions / indexCodebase round-trips). Skip
+    // cleanly where the native backend cannot load (e.g. the Electron
+    // integration runner); runs fully in plain Node.
+    if (!nativeVectorAvailable()) {
+      this.skip();
+    }
+  });
   suiteSetup(function () {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-remediation-v2-'));
   });

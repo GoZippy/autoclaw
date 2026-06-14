@@ -40,6 +40,7 @@ import {
   SourceAdapter,
   UnifiedSession,
 } from '../intelligence/types';
+import { nativeVectorAvailable } from './_vectorBackendAvailable';
 
 const DIM = 64;
 const SIGNATURE: EmbeddingSignature = { model: 'none-test', dimension: DIM };
@@ -153,6 +154,12 @@ suite('intelligence-remediation', function () {
   // -------------------------------------------------------------------------
 
   suite('re-index convergence (issue 1)', function () {
+    suiteSetup(function () {
+      if (!nativeVectorAvailable()) {
+        this.skip();
+      }
+    });
+
     test('a modified file drops its stale chunks instead of orphaning them', async function () {
       const ws = freshDir('ws-modify');
       // Original: 3 short lines -> id range ...:1-3 with the stale token.
@@ -246,6 +253,12 @@ suite('intelligence-remediation', function () {
     });
 
     test('indexed code keeps the benign token in stored content', async function () {
+      // This case stores through the native vector backend; skip when it cannot
+      // load. The two redactSecrets-only cases above run regardless.
+      if (!nativeVectorAvailable()) {
+        this.skip();
+        return;
+      }
       const ws = freshDir('ws-redact-keep');
       writeFile(
         ws,
@@ -271,6 +284,12 @@ suite('intelligence-remediation', function () {
   // -------------------------------------------------------------------------
 
   suite('learn embeds every record (issue 4)', function () {
+    suiteSetup(function () {
+      if (!nativeVectorAvailable()) {
+        this.skip();
+      }
+    });
+
     test('multiple learning records are embedded, not just one reflection', async function () {
       const ws = freshDir('ws-learn-embed');
       const s = session({
@@ -315,6 +334,12 @@ suite('intelligence-remediation', function () {
   // -------------------------------------------------------------------------
 
   suite('model-change warning (issue 6)', function () {
+    suiteSetup(function () {
+      if (!nativeVectorAvailable()) {
+        this.skip();
+      }
+    });
+
     test('re-opening with a different model (same dim) emits a warning', async function () {
       const dbPath = freshDbPath();
       const first = await initVectorDB(dbPath, { model: 'model-A', dimension: DIM });
@@ -362,6 +387,12 @@ suite('intelligence-remediation', function () {
   // -------------------------------------------------------------------------
 
   suite('vector-store primitives', function () {
+    suiteSetup(function () {
+      if (!nativeVectorAvailable()) {
+        this.skip();
+      }
+    });
+
     test('storeEmbeddings batch inserts, deleteIdPrefixes clears, listIds enumerates', async function () {
       const dbPath = freshDbPath();
       const db = await initVectorDB(dbPath, SIGNATURE);

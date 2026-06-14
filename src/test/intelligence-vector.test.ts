@@ -21,6 +21,7 @@ import * as path from 'path';
 import { initVectorDB } from '../intelligence/vectorEngine';
 import { getNoneEmbedding } from '../intelligence/embeddings';
 import { EmbeddingSignature } from '../intelligence/types';
+import { nativeVectorAvailable } from './_vectorBackendAvailable';
 
 const DIM = 64;
 const SIGNATURE: EmbeddingSignature = { model: 'none-test', dimension: DIM };
@@ -49,6 +50,14 @@ suite('intelligence-vector', function () {
   });
 
 suite('intelligence-vector: store -> search round-trip', function () {
+  suiteSetup(function () {
+    // Requires a WORKING native backend; skip cleanly where it cannot load
+    // (e.g. the Electron integration runner). Runs fully in plain Node.
+    if (!nativeVectorAvailable()) {
+      this.skip();
+    }
+  });
+
   test('stores items and retrieves the closest by similarity, respecting limit', async function () {
     const dbPath = freshDbPath();
     const db = await initVectorDB(dbPath, SIGNATURE);
@@ -163,6 +172,12 @@ suite('intelligence-vector: store -> search round-trip', function () {
 });
 
 suite('intelligence-vector: project namespace isolation (D11)', function () {
+  suiteSetup(function () {
+    if (!nativeVectorAvailable()) {
+      this.skip();
+    }
+  });
+
   test('vectors stored under project A are not returned when searching project B', async function () {
     const dbPath = freshDbPath();
     const db = await initVectorDB(dbPath, SIGNATURE);

@@ -38,6 +38,7 @@ import {
   SourceAdapter,
   UnifiedSession,
 } from '../intelligence/types';
+import { nativeVectorAvailable } from './_vectorBackendAvailable';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -237,6 +238,13 @@ suite('intelligence-sources', function () {
     }
 
     test('parses chat messages + code blocks and infers keptCode from approval', async function () {
+      // buildFixtureDb requires the native better-sqlite3 binding directly. Guard
+      // BEFORE it is invoked so the require cannot throw in a runtime where the
+      // native backend is unavailable (e.g. the Electron integration runner).
+      if (!nativeVectorAvailable()) {
+        this.skip();
+        return;
+      }
       const dbPath = buildFixtureDb();
       if (!dbPath) {
         this.skip();
