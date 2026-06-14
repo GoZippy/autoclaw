@@ -364,6 +364,9 @@ export class GossipRing {
       );
     this.fsTransport = new FilesystemGossipTransport({
       gossipDir,
+      // Poll at least as often as we publish so a fast-configured ring
+      // discovers peers promptly. Default stays min(15000, 5000) = 5000.
+      pollIntervalMs: Math.min(this.publishIntervalMs, 5000),
       logger: this.logger,
     });
     this.fsTransport.setSelfOrigin(this.origin);
