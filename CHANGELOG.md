@@ -1,6 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [3.4.0] - 2026-06-13
+
+_The dev-team-in-a-box release: fleet visibility + evidence-grounded gates +
+reputation routing + memory provenance + trigger hooks._
 
 ### Added
 
