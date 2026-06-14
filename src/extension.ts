@@ -68,6 +68,7 @@ import {
 } from './orchestrate';
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
+import { registerIntelligenceCommands } from './intelligence-commands';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -807,6 +808,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register @autoclaw chat participant (VS Code 1.90+; degrades on older builds / other IDEs)
   registerChatParticipant(
+    context,
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  );
+
+  // Register Intelligence Layer commands (registration only — no I/O at activation)
+  registerIntelligenceCommands(
     context,
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   );
