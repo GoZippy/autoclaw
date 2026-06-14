@@ -1,0 +1,562 @@
+/**
+ * ragCode.ts — codebase RAG indexing + retrieval for the AutoClaw Intelligence
+ * Layer (R4.1-R4.4, R7.1, D11).
+ *
+ * Three pieces:
+ *   - `chunkCode` splits file content into line-aware, overlapping chunks while
+ *     honoring a character budget (config.rag.codeChunkSize / codeOverlap).
+ *   - `indexCodebase` walks the workspace (honoring ignoredDirs / fileExtensions),
+ *     redacts each chunk before embedding, and stores embeddings tagged with the
+ *     resolved project namespace + file metadata. Supports incremental git-diff
+ *     selection backed by `.autoclaw/vector/last-index.json` (lock-protected) and
+ *     a `--force` full reindex.
+ *   - `retrieveCode` embeds a query and returns `{ file, content, score }` hits
+ *     scoped to the current project namespace.
+ *
+ * Degrade path: when the vector backend is unavailable (FEAT-002 degraded mode),
+ * `indexCodebase` reports 0 indexed and `retrieveCode` returns `[]`; neither
+ * throws.
+ *
+ * No `vscode` import; the git invocation is injectable so tests stay offline and
+ * independent of a real repository.
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import { execSync } from 'child_process';
+
+import {
+  LogFn,
+  loadConfig,
+  getActiveEmbeddingSignature,
+} from './config';
+import { IntelligenceConfig } from './types';
+import { intelligencePaths, ensureDir, toForwardSlash } from './paths';
+import { resolveProjectKey } from './project';
+import { redactSecrets } from './redact';
+import { getEmbedding } from './embeddings';
+import { acquireLock } from './fileLock';
+import { initVectorDB, VectorRecord } from './vectorEngine';
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/** A single line-aware chunk produced by {@link chunkCode}. */
+export interface CodeChunk {
+  /** The chunk text (joined source lines). */
+  content: string;
+  /** 1-based line number of the first line in the chunk. */
+  startLine: number;
+  /** 1-based line number of the last line in the chunk. */
+  endLine: number;
+}
+
+/**
+ * Pluggable git command runner. Receives the git arguments (without the leading
+ * `git`) and the working directory; returns stdout. Implementations should throw
+ * on failure so callers can fall back to a full walk. Tests inject a stub.
+ */
+export type GitRunner = (args: string, cwd: string) => string;
+
+/** Options for {@link indexCodebase}. */
+export interface IndexCodebaseOptions {
+  /** Directory that contains (or will contain) `.autoclaw`. */
+  workspaceRoot: string;
+  /** Ignore prior state and re-index everything (R4.3). */
+  force?: boolean;
+  /** Pre-resolved config. When omitted it is loaded from disk. */
+  config?: IntelligenceConfig;
+  /** Optional warning sink (logger-injection convention). */
+  log?: LogFn;
+  /** Injectable git runner (defaults to a real `git` via execSync). */
+  gitRunner?: GitRunner;
+  /**
+   * Cooperative cancellation probe. Checked before each file is read so a
+   * long index can be aborted (wired to the VS Code progress CancellationToken
+   * by the command layer). When it returns true, indexing stops early and the
+   * partial result is returned.
+   */
+  isCancelled?: () => boolean;
+}
+
+/** Summary returned by {@link indexCodebase}. */
+export interface IndexResult {
+  /** Number of files that were read + chunked + stored this pass. */
+  filesIndexed: number;
+  /** Total chunks embedded + stored this pass. */
+  chunksIndexed: number;
+  /** True when the run used incremental git-diff selection. */
+  incremental: boolean;
+  /** True when the vector backend was unavailable (nothing stored). */
+  degraded: boolean;
+  /** Number of stale chunks deleted this pass (modified/removed files). */
+  chunksDeleted: number;
+  /** True when the run was cancelled before completing. */
+  cancelled: boolean;
+  /**
+   * True when the vector store still holds vectors from a previous embedding
+   * model. A non-forced run surfaces this persisted signal; a `--force` run
+   * rebuilds the corpus and clears it (so a forced result reports `false`).
+   */
+  staleIndex: boolean;
+  /** Current HEAD commit recorded for the project, when resolvable. */
+  commit?: string;
+}
+
+/** Options for {@link retrieveCode}. */
+export interface RetrieveCodeOptions {
+  /** Directory that contains `.autoclaw`. */
+  workspaceRoot: string;
+  /** Max results. Defaults to `config.search.defaultLimit`. */
+  limit?: number;
+  /** Pre-resolved config. When omitted it is loaded from disk. */
+  config?: IntelligenceConfig;
+  /** Optional warning sink. */
+  log?: LogFn;
+}
+
+/** A single code retrieval hit. */
+export interface CodeSearchResult {
+  /** Forward-slash workspace-relative file path. */
+  file: string;
+  /** The stored (redacted) chunk content. */
+  content: string;
+  /** Cosine similarity in `[0, 1]` — higher is more similar. */
+  score: number;
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const SOURCE_TAG = 'code-rag';
+
+// ---------------------------------------------------------------------------
+// chunkCode (R4.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Split `content` into line-aware chunks. Lines are accumulated until the
+ * running character count reaches `size`, then a chunk is emitted; the next
+ * chunk re-includes a tail of lines whose combined length fits within `overlap`.
+ *
+ * Defensive behavior:
+ *   - `size <= 0` is treated as 1 so progress is always made.
+ *   - `overlap >= size` (or a tail that would not advance) still advances by at
+ *     least one line, so the loop always terminates.
+ *   - Files smaller than one chunk yield a single chunk spanning all lines.
+ *   - Blank/whitespace-only chunks are skipped.
+ *
+ * @param content the raw file text
+ * @param size    target characters per chunk (config.rag.codeChunkSize)
+ * @param overlap characters of trailing context to repeat (config.rag.codeOverlap)
+ */
+export function chunkCode(content: string, size: number, overlap: number): CodeChunk[] {
+  const chunks: CodeChunk[] = [];
+  if (typeof content !== 'string' || content.length === 0) {
+    return chunks;
+  }
+
+  const effSize = size > 0 ? size : 1;
+  const effOverlap = overlap >= 0 ? overlap : 0;
+  const lines = content.split(/\r?\n/);
+
+  let i = 0; // 0-based index of the first line of the current chunk
+  while (i < lines.length) {
+    const startLine = i + 1; // 1-based
+    const buf: string[] = [];
+    let charCount = 0;
+    let j = i;
+    while (j < lines.length) {
+      buf.push(lines[j]);
+      charCount += lines[j].length + 1; // +1 for the newline
+      j++;
+      if (charCount >= effSize) {
+        break;
+      }
+    }
+    const endLine = j; // 1-based line number of the last included line
+
+    const text = buf.join('\n');
+    if (text.trim() !== '') {
+      chunks.push({ content: text, startLine, endLine });
+    }
+
+    if (j >= lines.length) {
+      break; // consumed the whole file
+    }
+
+    // Re-include a tail of lines that fits within `overlap` characters.
+    const overlapLines = trailingOverlapLines(buf, effOverlap);
+    let next = j - overlapLines;
+    if (next <= i) {
+      next = i + 1; // guarantee forward progress (handles overlap >= size)
+    }
+    i = next;
+  }
+
+  return chunks;
+}
+
+/** Count trailing lines of `buf` whose cumulative length fits within `overlap`. */
+function trailingOverlapLines(buf: string[], overlap: number): number {
+  if (overlap <= 0) {
+    return 0;
+  }
+  let chars = 0;
+  let count = 0;
+  for (let k = buf.length - 1; k >= 0; k--) {
+    chars += buf[k].length + 1;
+    if (chars > overlap) {
+      break;
+    }
+    count++;
+  }
+  return count;
+}
+
+// ---------------------------------------------------------------------------
+// Git helpers
+// ---------------------------------------------------------------------------
+
+/** Default git runner — real `git` via execSync, stderr suppressed. */
+const defaultGitRunner: GitRunner = (args, cwd) =>
+  execSync(`git ${args}`, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+/** Run a git command, returning trimmed stdout or `null` on any failure. */
+function tryGit(runner: GitRunner, args: string, cwd: string): string | null {
+  try {
+    const out = runner(args, cwd);
+    const trimmed = typeof out === 'string' ? out.trim() : '';
+    return trimmed === '' ? null : trimmed;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File walking
+// ---------------------------------------------------------------------------
+
+/** Recursively collect eligible files, honoring ignoredDirs + fileExtensions. */
+function collectFiles(
+  dir: string,
+  ignoredDirs: ReadonlySet<string>,
+  extensions: ReadonlySet<string>,
+  out: string[],
+): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return; // unreadable directory — skip
+  }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!ignoredDirs.has(entry.name)) {
+        collectFiles(full, ignoredDirs, extensions, out);
+      }
+    } else if (entry.isFile()) {
+      const ext = path.extname(entry.name).toLowerCase();
+      if (extensions.has(ext)) {
+        out.push(full);
+      }
+    }
+  }
+}
+
+/** Normalize a filesystem path to an absolute forward-slash form for comparison. */
+function normAbs(p: string): string {
+  return toForwardSlash(path.resolve(p));
+}
+
+// ---------------------------------------------------------------------------
+// last-index.json (per-project namespace, lock-protected)
+// ---------------------------------------------------------------------------
+
+interface LastIndexEntry {
+  commit: string;
+  indexedAt: string;
+}
+
+type LastIndexFile = Record<string, LastIndexEntry>;
+
+function readLastIndex(lastIndexPath: string): LastIndexFile {
+  try {
+    if (!fs.existsSync(lastIndexPath)) {
+      return {};
+    }
+    const parsed = JSON.parse(fs.readFileSync(lastIndexPath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as LastIndexFile;
+    }
+  } catch {
+    // malformed file — treat as no prior state
+  }
+  return {};
+}
+
+function lastCommitFor(lastIndexPath: string, project: string): string | null {
+  const entry = readLastIndex(lastIndexPath)[project];
+  return entry && typeof entry.commit === 'string' && entry.commit !== '' ? entry.commit : null;
+}
+
+/** Merge + persist the current commit for `project`, lock-protected. */
+async function writeLastIndex(
+  lastIndexPath: string,
+  vectorDir: string,
+  project: string,
+  commit: string,
+): Promise<void> {
+  await ensureDir(vectorDir);
+  const release = await acquireLock(lastIndexPath);
+  try {
+    const data = readLastIndex(lastIndexPath);
+    data[project] = { commit, indexedAt: new Date().toISOString() };
+    fs.writeFileSync(lastIndexPath, JSON.stringify(data, null, 2), 'utf8');
+  } finally {
+    release();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// indexCodebase (R4.2-R4.3, R7.1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Index the codebase rooted at `workspaceRoot` into the vector store. Honors
+ * incremental git-diff selection and `--force`, redacts every chunk before
+ * embedding, and tags each embedding with the project namespace + file metadata.
+ */
+export async function indexCodebase(options: IndexCodebaseOptions): Promise<IndexResult> {
+  const { workspaceRoot, force = false } = options;
+  const log: LogFn = options.log ?? (() => undefined);
+  const gitRunner = options.gitRunner ?? defaultGitRunner;
+  const config = options.config ?? loadConfig(workspaceRoot, log);
+  const project = resolveProjectKey(workspaceRoot);
+  const paths = intelligencePaths(workspaceRoot);
+  const signature = getActiveEmbeddingSignature(config);
+
+  const db = await initVectorDB(paths.dbPath, signature, log, { forceRebuild: force });
+  if (db.degraded) {
+    log('rag: vector backend unavailable; indexed 0 files (no-RAG)');
+    db.close();
+    return {
+      filesIndexed: 0,
+      chunksIndexed: 0,
+      incremental: false,
+      degraded: true,
+      chunksDeleted: 0,
+      cancelled: false,
+      staleIndex: false,
+    };
+  }
+
+  try {
+    const ignoredDirs = new Set(config.rag.ignoredDirs);
+    const extensions = new Set<string>(config.rag.fileExtensions.map((e) => e.toLowerCase()));
+
+    const allFiles: string[] = [];
+    collectFiles(workspaceRoot, ignoredDirs, extensions, allFiles);
+
+    // Decide the working set: incremental git-diff selection vs full walk.
+    let filesToIndex = allFiles;
+    let usedIncremental = false;
+    if (!force && config.rag.incremental) {
+      const lastCommit = lastCommitFor(paths.lastIndexPath, project);
+      if (lastCommit) {
+        const diff = tryGit(gitRunner, `diff --name-only ${lastCommit} HEAD`, workspaceRoot);
+        if (diff !== null) {
+          const changed = new Set(
+            diff
+              .split(/\r?\n/)
+              .map((f) => f.trim())
+              .filter((f) => f !== '')
+              .map((f) => normAbs(path.resolve(workspaceRoot, f))),
+          );
+          filesToIndex = allFiles.filter((f) => changed.has(normAbs(f)));
+          usedIncremental = true;
+        } else {
+          log('rag: git diff failed; falling back to a full index');
+        }
+      }
+    }
+
+    let chunksIndexed = 0;
+    let cancelled = false;
+    const records: VectorRecord[] = [];
+    // Delete each (re)indexed file's prior chunks before inserting current ones,
+    // so an edit that shifts chunk line-ranges cannot orphan the old ids.
+    const deleteIdPrefixes: string[] = [];
+    for (const file of filesToIndex) {
+      if (options.isCancelled?.()) {
+        cancelled = true;
+        break;
+      }
+      let raw: string;
+      try {
+        raw = fs.readFileSync(file, 'utf8');
+      } catch {
+        continue; // unreadable file — skip
+      }
+      const relFile = toForwardSlash(path.relative(workspaceRoot, file));
+      deleteIdPrefixes.push(filePrefix(project, relFile));
+      const chunks = chunkCode(raw, config.rag.codeChunkSize, config.rag.codeOverlap);
+      for (const chunk of chunks) {
+        // R7.1 — redact before embed/store. Skip the generic long-token rule for
+        // code: legitimate base64/hashes/URLs/minified lines are not secrets and
+        // blanket-redacting them degrades retrieval. Targeted patterns still run.
+        const redacted = redactSecrets(chunk.content, { skipGenericToken: true });
+        const embedding = await getEmbedding(redacted, config.embedding, log);
+        records.push({
+          id: `${filePrefix(project, relFile)}${chunk.startLine}-${chunk.endLine}`,
+          content: redacted,
+          embedding,
+          source: SOURCE_TAG,
+          project,
+          metadata: {
+            file: relFile,
+            startLine: chunk.startLine,
+            endLine: chunk.endLine,
+          },
+        });
+        chunksIndexed++;
+      }
+    }
+
+    // Single lock + transaction: delete each file's stale chunks, then insert
+    // the fresh ones (R3.4, batched for responsiveness).
+    await db.storeEmbeddings(records, { deleteIdPrefixes });
+
+    // Deletion sweep: drop chunks for files that no longer exist on disk
+    // (deleted/renamed). Compares the store against the freshly-walked tree, so
+    // it converges on both full and incremental runs.
+    let chunksDeleted = 0;
+    if (!cancelled) {
+      chunksDeleted = await sweepDeletedFiles(db, project, workspaceRoot, allFiles, log);
+    }
+
+    // Record the current HEAD for incremental selection next time.
+    const currentCommit = tryGit(gitRunner, 'rev-parse HEAD', workspaceRoot);
+    if (currentCommit) {
+      await writeLastIndex(paths.lastIndexPath, paths.vectorDir, project, currentCommit);
+    }
+
+    return {
+      filesIndexed: filesToIndex.length,
+      chunksIndexed,
+      incremental: usedIncremental,
+      degraded: false,
+      chunksDeleted,
+      cancelled,
+      staleIndex: db.staleIndex,
+      commit: currentCommit ?? undefined,
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/** Stable id prefix for all chunks of one file under the project namespace. */
+function filePrefix(project: string, relFile: string): string {
+  return `${SOURCE_TAG}:${project}:${relFile}:`;
+}
+
+/** Recover the workspace-relative file path from a stored chunk id. */
+function relFileFromId(id: string, project: string): string | null {
+  const prefix = `${SOURCE_TAG}:${project}:`;
+  if (!id.startsWith(prefix)) {
+    return null;
+  }
+  const rest = id.slice(prefix.length);
+  // rest === `<relFile>:<start>-<end>` — the range is the final colon segment.
+  const lastColon = rest.lastIndexOf(':');
+  if (lastColon <= 0) {
+    return null;
+  }
+  return rest.slice(0, lastColon);
+}
+
+/**
+ * Delete stored code chunks whose file no longer exists on disk. Returns the
+ * number of chunks removed. Keeps the RAG index convergent across deletes and
+ * renames, which incremental git-diff selection alone cannot do.
+ */
+async function sweepDeletedFiles(
+  db: Awaited<ReturnType<typeof initVectorDB>>,
+  project: string,
+  workspaceRoot: string,
+  allFiles: string[],
+  log: LogFn,
+): Promise<number> {
+  const onDisk = new Set(allFiles.map((f) => toForwardSlash(path.relative(workspaceRoot, f))));
+  const storedIds = await db.listIds({ project, source: SOURCE_TAG });
+  const staleFiles = new Set<string>();
+  for (const id of storedIds) {
+    const rel = relFileFromId(id, project);
+    if (rel && !onDisk.has(rel)) {
+      staleFiles.add(rel);
+    }
+  }
+  let deleted = 0;
+  for (const rel of staleFiles) {
+    deleted += await db.deleteByIdPrefix(filePrefix(project, rel));
+  }
+  if (deleted > 0) {
+    log(`rag: swept ${deleted} stale chunk(s) from ${staleFiles.size} removed file(s)`);
+  }
+  return deleted;
+}
+
+// ---------------------------------------------------------------------------
+// retrieveCode (R4.4 / D11)
+// ---------------------------------------------------------------------------
+
+/**
+ * Retrieve code chunks semantically similar to `query`, scoped to the current
+ * project namespace. Returns `[]` (never throws) when the backend is degraded.
+ */
+export async function retrieveCode(
+  query: string,
+  options: RetrieveCodeOptions,
+): Promise<CodeSearchResult[]> {
+  const { workspaceRoot } = options;
+  const log: LogFn = options.log ?? (() => undefined);
+  const config = options.config ?? loadConfig(workspaceRoot, log);
+  const project = resolveProjectKey(workspaceRoot);
+  const paths = intelligencePaths(workspaceRoot);
+  const signature = getActiveEmbeddingSignature(config);
+
+  const db = await initVectorDB(paths.dbPath, signature, log);
+  if (db.degraded) {
+    log('rag: vector backend unavailable; retrieveCode returning no results');
+    db.close();
+    return [];
+  }
+
+  try {
+    const limit =
+      typeof options.limit === 'number' && options.limit > 0
+        ? Math.floor(options.limit)
+        : config.search.defaultLimit;
+    const embedding = await getEmbedding(query, config.embedding, log);
+    const hits = await db.semanticVectorSearch(embedding, {
+      limit,
+      minSimilarity: config.search.minSimilarity,
+      project,
+    });
+    return hits.map((h) => ({
+      file: typeof h.metadata?.file === 'string' ? (h.metadata.file as string) : h.source,
+      content: h.content,
+      score: h.score,
+    }));
+  } finally {
+    db.close();
+  }
+}

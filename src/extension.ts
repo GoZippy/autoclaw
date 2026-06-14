@@ -29,6 +29,7 @@ import {
   parseLogEntries,
   parseTodosFromContent,
   getAdapterHealthEntry,
+  isAdapterDetected,
   DEFAULT_ADAPTERS,
   generateNonce,
   shouldShowNotification as shouldShowNotificationHelper,
@@ -67,6 +68,7 @@ import {
 } from './orchestrate';
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
+import { registerIntelligenceCommands } from './intelligence-commands';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -233,6 +235,7 @@ export {
   parseLogEntries,
   parseTodosFromContent,
   getAdapterHealthEntry,
+  isAdapterDetected,
   DEFAULT_ADAPTERS,
   generateNonce,
   shouldShowNotificationHelper,
@@ -805,6 +808,12 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register @autoclaw chat participant (VS Code 1.90+; degrades on older builds / other IDEs)
   registerChatParticipant(
+    context,
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  );
+
+  // Register Intelligence Layer commands (registration only — no I/O at activation)
+  registerIntelligenceCommands(
     context,
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   );
@@ -1460,26 +1469,19 @@ export async function getAdapterHealth(): Promise<AdapterHealth[]> {
   const adapters: { name: string; id: string | null }[] =
     config.get('adapters', DEFAULT_ADAPTERS);
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
+  // Host IDEs (Cursor/Kiro/Windsurf/Antigravity) are VS Code forks, not
+  // extensions loaded inside another editor — detect them via the running app
+  // name. `getExtension('amazon.kiro')` is always undefined inside Kiro itself,
+  // so an extension-id lookup alone wrongly reports the host fork as missing.
+  const hostId = detectIde(vscode.env.appName || '');
+  const hasExtension = (id: string): boolean => !!vscode.extensions.getExtension(id);
 
-  const extensionResults = adapters.map(adapter => {
-    if (adapter.id) {
-      const extension = vscode.extensions.getExtension(adapter.id);
-      return getAdapterHealthEntry(adapter.name, !!extension);
-    }
-    // Standalone host adapters — detected via filesystem markers / appName.
-    if (adapter.name === 'Cursor') {
-      const detected = !!workspaceRoot && hasCursorConfig(workspaceRoot);
-      return getAdapterHealthEntry(adapter.name, detected);
-    }
-    if (adapter.name === 'Antigravity') {
-      const detected = isAntigravityHost ||
-        (!!workspaceRoot && fs.existsSync(path.join(workspaceRoot, '.agent')));
-      return getAdapterHealthEntry(adapter.name, detected);
-    }
-    // Unknown standalone adapter — report as not detected rather than crashing.
-    return getAdapterHealthEntry(adapter.name, false);
-  });
+  const extensionResults = adapters.map(adapter =>
+    getAdapterHealthEntry(
+      adapter.name,
+      isAdapterDetected(adapter, hostId, hasExtension, workspaceRoot)
+    )
+  );
 
   // Check ZippyMesh LLM Router (async network check, cached for 60 s)
   const zmlrUrl = config.get<string>('zippymeshUrl', 'http://localhost:20128');
@@ -1981,6 +1983,7 @@ async function runExportSnapshotCommand(extensionPath: string): Promise<void> {
     workspaceRoot,
     isExtensionInstalled: (id: string) => !!vscode.extensions.getExtension(id),
     isAntigravityHost,
+    hostAppName: vscode.env.appName,
     zippymeshUrl
   };
 
@@ -2049,6 +2052,7 @@ async function runDoctorCommand(
     workspaceRoot,
     isExtensionInstalled: (id: string) => !!vscode.extensions.getExtension(id),
     isAntigravityHost,
+    hostAppName: vscode.env.appName,
     zippymeshUrl,
     kg: {
       enabled: kgEnabled,

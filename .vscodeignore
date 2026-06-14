@@ -40,6 +40,20 @@ out/**/*.ts
 .github/**
 node_modules/.package-lock.json
 
+# Intelligence Layer native peers — declared as optionalDependencies but NOT
+# bundled. They follow the packages/kg-daemon native-peer model: maintainer-/
+# user-installed locally, lazy-required only when a vector backend is used. The
+# always-available `none` embedding provider needs none of them, so excluding
+# them keeps the .vsix lean and packaging reliable.
+node_modules/better-sqlite3/**
+node_modules/sqlite-vec/**
+node_modules/@xenova/**
+node_modules/pg/**
+node_modules/pg-*/**
+node_modules/onnxruntime-node/**
+node_modules/onnxruntime-common/**
+node_modules/@huggingface/**
+
 # OS junk
 .DS_Store
 Thumbs.db

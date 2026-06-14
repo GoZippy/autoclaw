@@ -17,6 +17,7 @@ const SKILL_NAMES = [
   "orchestrate",
   "security-auditor",
   "doc-writer",
+  "intelligence",
 ] as const;
 
 /**

@@ -24,6 +24,7 @@ const SKILL_SOURCES: Record<string, string> = {
   autobuild:   'skills/autobuild/SKILL.md',
   mateam:      'skills/mateam/SKILL.md',
   orchestrate: 'skills/orchestrate/SKILL.md',
+  intelligence: 'skills/intelligence/SKILL.md',
 };
 
 // Maps @autoclaw /command to skill name
@@ -33,6 +34,7 @@ const COMMAND_TO_SKILL: Record<string, string> = {
   mateam:      'mateam',
   orchestrate: 'orchestrate',
   inbox:       'orchestrate',
+  intelligence: 'intelligence',
 };
 
 // Suggested follow-ups per skill
