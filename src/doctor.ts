@@ -29,13 +29,17 @@ import {
   readRegistry,
   parseCron
 } from './autobuild';
+import { detectIde } from './ide-ports';
 
 // Vscode is optional at runtime — passed in via dependency injection so the
 // module can run under plain Mocha without `vscode` being on the import path.
 export interface DoctorVscodeShim {
   workspaceRoot?: string;
   isExtensionInstalled?: (id: string) => boolean;
+  /** Back-compat flag; prefer `hostAppName` which covers all VS Code forks. */
   isAntigravityHost?: boolean;
+  /** `vscode.env.appName` — used to detect host IDE forks (Kiro/Cursor/…). */
+  hostAppName?: string;
   zippymeshUrl?: string;
   /** KG-daemon settings + live state. Optional — tests can omit. */
   kg?: {
@@ -471,6 +475,10 @@ export function buildAdapterInstallationSection(
   const home = os.homedir();
   const isAntigravityHost = !!shim.isAntigravityHost;
   const isInstalled = shim.isExtensionInstalled ?? (() => false);
+  // Host IDE forks (Cursor/Kiro/Windsurf/Antigravity) carry no extension to
+  // resolve in their own extension host — recognise them via the running app
+  // name instead. `spec.host` ids match `detectIde()`'s lowercase output.
+  const hostId = detectIde(shim.hostAppName ?? '');
 
   const hosts: AdapterHostStatus[] = HOST_SPECS.map(spec => {
     const dest = spec.destinationFor({
@@ -479,15 +487,23 @@ export function buildAdapterInstallationSection(
       isAntigravityHost
     });
     const extInstalled = spec.extensionId ? isInstalled(spec.extensionId) : false;
+    const isCurrentHostFork =
+      spec.host === hostId ||
+      (spec.host === 'antigravity' && isAntigravityHost);
+    // A running host fork is "present" even though it exposes no extension.
+    const present = extInstalled || isCurrentHostFork;
+    const hostNote = isCurrentHostFork
+      ? 'host detected via vscode.env.appName'
+      : undefined;
     if (!dest) {
       return {
         host: spec.host,
         extensionId: spec.extensionId,
-        extensionInstalled: extInstalled,
+        extensionInstalled: present,
         destination: '(no workspace open)',
         destinationExists: false,
         expectedFiles: spec.expectedFiles.map(f => ({ file: f, present: false })),
-        notes: 'workspace not open'
+        notes: hostNote ?? 'workspace not open'
       };
     }
     const destinationExists = fs.existsSync(dest);
@@ -495,18 +511,14 @@ export function buildAdapterInstallationSection(
       file: f,
       present: fs.existsSync(path.join(dest, f))
     }));
-    let notes: string | undefined;
-    if (spec.host === 'antigravity' && isAntigravityHost) {
-      notes = 'host detected via vscode.env.appName';
-    }
     return {
       host: spec.host,
       extensionId: spec.extensionId,
-      extensionInstalled: extInstalled,
+      extensionInstalled: present,
       destination: dest,
       destinationExists,
       expectedFiles,
-      notes
+      notes: hostNote
     };
   });
 
