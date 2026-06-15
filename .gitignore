@@ -32,3 +32,6 @@ tsconfig.tsbuildinfo
 
 # Local research / scratch — referenced from specs but not in the repo
 tmp/
+
+# Scratch command-output dumps (transient; never commit)
+*_out.txt

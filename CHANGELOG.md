@@ -50,6 +50,12 @@ and expanded trigger hooks._
 - **Five pre-existing integration-test failures** resolved at root cause
   (`fix/integration-ci-baseline`), and `package-lock` synced with `pg` so
   `npm ci` passes on CI.
+- **Intelligence vector backend is ABI-proof** (`src/intelligence/vector/`) —
+  the RAG store now prefers Node-core `node:sqlite` (ABI-stable, survives
+  IDE/Electron updates) and keeps native `better-sqlite3` as a fallback. Fixes the
+  "vector backend unavailable → no-RAG mode" degradation that hit on Electron ABI
+  bumps; `doctor` now reports the active driver + remediation instead of degrading
+  silently.
 
 ## [3.4.0] - 2026-06-13
 
