@@ -70,6 +70,7 @@ import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistry
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
+import { registerSupport } from './support/support';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -883,6 +884,10 @@ export function activate(context: vscode.ExtensionContext) {
 
   // First-run welcome with IDE-specific guidance
   showWelcomeIfNeeded(context);
+
+  // Support surface: register the Support/Donate panel + rate commands, count
+  // today's activity, and (deferred) show a non-invasive milestone prompt.
+  registerSupport(context);
 }
 
 async function installAdapters(
