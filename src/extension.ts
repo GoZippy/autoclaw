@@ -135,6 +135,7 @@ import {
 } from './kg';
 import {
   startOrchestratorLoop,
+  dispatchWork,
   type OrchestratorLoopHandle,
 } from './orchestratorLoop';
 import {
@@ -683,10 +684,59 @@ export function activate(context: vscode.ExtensionContext) {
     // .autoclaw/orchestrator/hooks.yaml is absent or has no valid rules.
     const hooksRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (hooksRoot) {
+      // Relay client for the `relay` hook action — inert no-op unless the user
+      // has enabled + consented to the cloud relay (same contract as elsewhere).
+      const hookRelay = new CloudRelay({ autoclawDir: path.join(hooksRoot, '.autoclaw') });
       startTriggerHooksRuntime({
         workspaceRoot: hooksRoot,
         log: (line) => console.log(`[autoclaw] ${line}`),
         notify: (m) => { vscode.window.showInformationMessage(m); },
+        // HKS-4: launch_skill — render the skill prompt for the target host and
+        // copy it to the clipboard (the documented "open a session" mechanism),
+        // surfacing a toast the operator can paste into the agent's chat.
+        launchSkill: async (decision) => {
+          const host = decision.target || 'claude-code';
+          const skill = decision.rule.skill || 'orchestrate';
+          const prompt = decision.rule.prompt || renderSkillPrompt(host, skill, skill);
+          try { await vscode.env.clipboard.writeText(prompt); } catch { /* clipboard best-effort */ }
+          vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": ${skill} prompt copied for ${host} — paste into the agent.`);
+        },
+        // HKS-4: spawn_runner — confirm the target is a known runner, then wake it
+        // via the existing dispatch path (the established way runners start work).
+        spawnRunner: async (decision) => {
+          const target = decision.target ?? '';
+          const known = (BUILTIN_RUNNER_IDS as readonly string[]).includes(target);
+          if (!known) { throw new Error(`unknown runner "${target}"`); }
+          vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": spawning runner ${target}.`);
+          const pkg = {
+            type: 'work_package' as const,
+            taskId: `next-${target}`,
+            taskName: `Hook spawn_runner: ${decision.rule.id}`,
+            description: `Runner wake by trigger hook "${decision.rule.id}" on ${decision.rule.on}. via_hook:${decision.rule.id}`,
+            filePaths: [] as string[],
+            successCriteria: ['Start the registered runner and begin assigned work'],
+            sprint: Number(decision.event.payload.sprint ?? 1) || 1,
+            assignToVendor: 'other' as const,
+            priority: 'low' as const,
+            timeBudgetMs: 0,
+          };
+          const res = await dispatchWork(hooksRoot, pkg);
+          if (res === null) { throw new Error('runner dispatch gated or halted'); }
+        },
+        // HKS-5: relay — forward the wake to the target machine's inbox over the
+        // cloud relay. Inert no-op unless the relay is enabled + consented.
+        relay: async (decision) => {
+          const target = decision.target ?? '';
+          const r = await hookRelay.sendInbox([{
+            id: `hook-${decision.rule.id}-${Date.now()}`,
+            to: target,
+            from: 'trigger-hooks',
+            type: 'wake',
+            timestamp: new Date().toISOString(),
+            payload: { via_hook: decision.rule.id, on: decision.rule.on, event: decision.event.payload },
+          }]);
+          if (!r.ok) { throw new Error(`relay send failed: ${r.detail ?? 'unknown'}`); }
+        },
       }).then(runtime => {
         if (runtime.ruleCount > 0) {
           context.subscriptions.push({ dispose: () => { void runtime.stop(); } });

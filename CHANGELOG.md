@@ -92,8 +92,19 @@
   `hook_error`). Runtime rides the existing chokidar InboxWatcher; **zero-config
   no-op** — no hooks.yaml ⇒ no watcher, no behavior change. Starter rules at
   `skills/orchestrate/templates/hooks.starter.yaml`. Spec:
-  `docs/specs/agent-trigger-hooks.spec.md` (HKS-4/5 — launch_skill/spawn_runner/
-  relay actions — still open).
+  `docs/specs/agent-trigger-hooks.spec.md`.
+- **Trigger hooks (HKS-4..5)** — completes the hook layer. Three new actions:
+  `launch_skill` (renders a skill prompt via `renderSkillPrompt` → clipboard +
+  toast, the documented "open a session" mechanism), `spawn_runner` (registry-
+  checked → wakes the runner via the dispatch path), and `relay` (cross-machine
+  wake via `CloudRelay.sendInbox`, inert unless the relay is enabled+consented) —
+  with new `skill`/`prompt`/`runner` rule fields. Four non-message **event
+  sources** land via two leaf modules (`src/hooks/hookEvents.ts` builders +
+  `src/hooks/hookBus.ts` in-process emitter, no import cycles): `heartbeat_stall`
+  + `claim_stale` scanned on a runtime tick (only when a rule listens for them),
+  `consensus` emitted from the bridge evaluate path, `autobuild_fail` emitted
+  from `runWorkflow` on a failed step. All actions audit fired/error; HALT and
+  cooldown still gate every source. Zero-config no-op preserved. +~20 tests.
 - **Fleet HALT kill switch** (`src/hooks/fleetHalt.ts`) — while
   `.autoclaw/orchestrator/HALT` exists, nothing auto-dispatches: trigger hooks
   suppress (audited) and `orchestratorLoop.dispatchWork` refuses (journaled

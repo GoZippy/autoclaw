@@ -159,6 +159,119 @@ suite('intelligence-newsources', function () {
       const future = Date.parse('2030-01-01T00:00:00Z');
       assert.deepStrictEqual(await collect(adapter.extract({ sinceTs: future })), []);
     });
+
+    test('applied edit → applied_edit kept signal (shipped)', async function () {
+      const home = freshDir('home-edit');
+      writeFile(
+        path.join(home, '.claude', 'projects', 'p', 'edit.jsonl'),
+        [
+          JSON.stringify({
+            type: 'assistant',
+            cwd: '/Users/me/proj',
+            timestamp: '2024-01-01T00:00:00Z',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 't1', name: 'Edit', input: { new_string: 'const y = 2;' } }],
+            },
+          }),
+          JSON.stringify({
+            type: 'user',
+            timestamp: '2024-01-01T00:00:05Z',
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false }] },
+          }),
+        ].join('\n'),
+      );
+      const adapter = createClaudeCodeAdapter();
+      await adapter.discover(envFor(home));
+      const [s] = await collect(adapter.extract({}));
+      assert.strictEqual(s.signals.keptCode.length, 1, 'one applied_edit kept signal');
+      assert.strictEqual(s.signals.keptCode[0].reason, 'applied_edit');
+      assert.ok(s.signals.keptCode[0].code.includes('const y = 2;'));
+      assert.notStrictEqual(s.signals.outcome, 'discarded');
+    });
+
+    test('every edit failed → discarded; no kept code', async function () {
+      const home = freshDir('home-fail');
+      writeFile(
+        path.join(home, '.claude', 'projects', 'p', 'fail.jsonl'),
+        [
+          JSON.stringify({
+            type: 'assistant',
+            cwd: '/Users/me/proj',
+            timestamp: '2024-01-01T00:00:00Z',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 't1', name: 'Edit', input: { new_string: 'broken' } }],
+            },
+          }),
+          JSON.stringify({
+            type: 'user',
+            timestamp: '2024-01-01T00:00:05Z',
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'no match', is_error: true }] },
+          }),
+        ].join('\n'),
+      );
+      const adapter = createClaudeCodeAdapter();
+      await adapter.discover(envFor(home));
+      const [s] = await collect(adapter.extract({}));
+      assert.strictEqual(s.signals.keptCode.length, 0, 'failed edit is not kept');
+      assert.strictEqual(s.signals.outcome, 'discarded');
+    });
+
+    test('read-only session stays unknown (no edit attempts)', async function () {
+      const home = freshDir('home-ro');
+      writeFile(
+        path.join(home, '.claude', 'projects', 'p', 'ro.jsonl'),
+        [
+          JSON.stringify({
+            type: 'assistant',
+            cwd: '/Users/me/proj',
+            timestamp: '2024-01-01T00:00:00Z',
+            message: {
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/x' } }],
+            },
+          }),
+        ].join('\n'),
+      );
+      const adapter = createClaudeCodeAdapter();
+      await adapter.discover(envFor(home));
+      const [s] = await collect(adapter.extract({}));
+      assert.strictEqual(s.signals.keptCode.length, 0);
+      assert.strictEqual(s.signals.outcome, undefined, 'read-only ⇒ unknown, not shipped/discarded');
+    });
+
+    test('scopes to the open workspace (other repos excluded)', async function () {
+      const home = freshDir('home-scope');
+      const mk = (dir: string, cwd: string) =>
+        writeFile(
+          path.join(home, '.claude', 'projects', dir, 'a.jsonl'),
+          JSON.stringify({
+            type: 'user',
+            cwd,
+            timestamp: '2024-01-01T00:00:00Z',
+            message: { role: 'user', content: 'hi' },
+          }),
+        );
+      mk('A', '/Users/me/projA');
+      mk('A-sub', '/Users/me/projA/src'); // sub-dir of the workspace ⇒ included
+      mk('B', '/Users/me/projB'); // different repo ⇒ excluded
+
+      const adapter = createClaudeCodeAdapter();
+      // Workspace set ⇒ only projA (and its sub-dir) are emitted.
+      await adapter.discover(envFor(home, '/Users/me/projA'));
+      const scoped = await collect(adapter.extract({}));
+      assert.deepStrictEqual(
+        scoped.map((s) => s.project).sort(),
+        ['/Users/me/projA', '/Users/me/projA/src'],
+      );
+
+      // No workspace ⇒ corpus mode emits every repo.
+      const adapter2 = createClaudeCodeAdapter();
+      await adapter2.discover(envFor(home));
+      const all = await collect(adapter2.extract({}));
+      assert.strictEqual(all.length, 3, 'corpus mode emits all repos');
+    });
   });
 
   // -------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-# AutoClaw trigger hooks — starter rules (agent-trigger-hooks spec, HKS-1..3).
+# AutoClaw trigger hooks — starter rules (agent-trigger-hooks spec, HKS-1..5).
 #
 # Copy this file to `.autoclaw/orchestrator/hooks.yaml` and uncomment the rules
 # you want. No file (or no uncommented rules) = hooks fully off (zero-config
@@ -9,9 +9,18 @@
 #   id                — unique name (audit key + cooldown key)
 #   on                — message | heartbeat_stall | claim_stale | consensus | autobuild_fail
 #   filter            — equality match on event fields; *_gte / *_lte compare numbers
-#   action            — dispatch | notify   (launch_skill / spawn_runner / relay: HKS-4/5, not yet active)
-#   target            — agent id; "{{field}}" templates render from the event
+#   action            — dispatch | notify | launch_skill | spawn_runner | relay
+#   target            — agent id / host / runner / machine; "{{field}}" templates render from the event
+#   skill, prompt     — launch_skill only: which shipped skill, and an optional pre-filled prompt
+#   runner            — spawn_runner only: runner id (defaults to target)
 #   cooldown_seconds  — re-fire floor per rule (default 300)
+#
+# Event fields by source:
+#   message         — type, from, to, task_id, sprint, requires_response
+#   heartbeat_stall — agent_id, seconds_stale
+#   claim_stale     — task_id, agent_id, seconds_stale
+#   consensus       — task_id, status, final_verdict, gate_failed, author_agent_id
+#   autobuild_fail  — workflow, step, exit_code
 #
 # Every firing AND suppression is audited to comms/hooks/audit.jsonl and the
 # comms log (types: hook_fired / hook_suppressed / hook_error).
@@ -39,3 +48,36 @@ hooks:
   #   filter: { seconds_stale_gte: 600 }
   #   action: notify
   #   cooldown_seconds: 900
+
+  # Re-dispatch the author when a review comes back needing changes (HKS-5 source).
+  # - id: redispatch-redgate
+  #   on: consensus
+  #   filter: { final_verdict: needs_changes }
+  #   action: dispatch
+  #   target: "{{author_agent_id}}"
+  #   cooldown_seconds: 300
+
+  # On a failed nightly build, open the orchestrate skill with a pre-filled brief (HKS-4).
+  # - id: build-fail-orchestrate
+  #   on: autobuild_fail
+  #   action: launch_skill
+  #   target: claude-code
+  #   skill: orchestrate
+  #   cooldown_seconds: 600
+
+  # Wake a local runner to pick up a stale claim (HKS-4).
+  # - id: claim-stale-runner
+  #   on: claim_stale
+  #   filter: { seconds_stale_gte: 1800 }
+  #   action: spawn_runner
+  #   target: local-coder
+  #   cooldown_seconds: 1800
+
+  # Forward a review_request to another machine's agent over the cloud relay (HKS-5).
+  # Inert unless you've enabled + consented to the relay ("AutoClaw: Enable Cloud Relay").
+  # - id: relay-review-cross-machine
+  #   on: message
+  #   filter: { type: review_request }
+  #   action: relay
+  #   target: "{{to}}"
+  #   cooldown_seconds: 300

@@ -193,3 +193,30 @@ export {
   LedgerAggregate,
   aggregateRealTokens,
 } from './metrics/ledgerBridge';
+
+// workflow-mining: tool-sequence patterns mined from session transcripts
+export {
+  SessionWorkflow,
+  WorkflowPattern,
+  WorkflowInsights,
+  MineWorkflowsOptions,
+  extractToolSteps,
+  extractSessionWorkflow,
+  mineWorkflows,
+  workflowPatternLabel,
+} from './workflows';
+
+// effectiveness: tool × project matrix + snapshot persistence
+export {
+  EffectivenessCell,
+  EffectivenessMatrix,
+  ComputeEffectivenessOptions,
+  computeEffectiveness,
+} from './effectiveness';
+export {
+  EffectivenessFile,
+  EFFECTIVENESS_FILE_NAME,
+  effectivenessFilePath,
+  getEffectiveness,
+  recordEffectiveness,
+} from './metrics/effectivenessStore';

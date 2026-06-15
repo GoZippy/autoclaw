@@ -47,6 +47,9 @@ import { enrichSessionsWithGitSignals } from './gitSignals';
 import { deriveOutcome } from './ranking';
 import { LearningRunStats, recordLearningRun } from './metrics/store';
 import { aggregateRealTokens } from './metrics/ledgerBridge';
+import { WorkflowInsights, mineWorkflows, workflowPatternLabel } from './workflows';
+import { computeEffectiveness } from './effectiveness';
+import { recordEffectiveness } from './metrics/effectivenessStore';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -82,6 +85,8 @@ export interface LearnSummary {
   patterns: number;
   /** Distinct Source Adapter ids that contributed sessions, sorted. */
   sources: string[];
+  /** Mined successful workflow patterns folded into durable memory this run. */
+  workflowsMined: number;
 }
 
 /** On-disk shape of `preferences.json` (merge target). */
@@ -112,6 +117,8 @@ const DEFAULT_PREFERRED_TOOLS: readonly string[] = ['general-purpose coding agen
 const SOURCE_TAG = 'learn';
 const MAX_PATTERNS = 25;
 const MAX_PATTERN_LEN = 200;
+/** How many mined workflow / anti-workflow patterns to fold into durable memory. */
+const MAX_WORKFLOWS = 5;
 
 // ---------------------------------------------------------------------------
 // Text helpers
@@ -170,6 +177,8 @@ interface Aggregates extends StyleAggregates {
   keptCount: number;
   sources: string[];
   usedDefaults: boolean;
+  /** Mined workflow signal (folded into the pattern sets below). */
+  workflows: WorkflowInsights;
 }
 
 function aggregate(sessions: UnifiedSession[]): Aggregates {
@@ -219,8 +228,26 @@ function aggregate(sessions: UnifiedSession[]): Aggregates {
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([tool]) => tool);
 
-  let successfulPatterns = Array.from(successful).slice(0, MAX_PATTERNS);
-  let avoidedPatterns = Array.from(avoided).slice(0, MAX_PATTERNS);
+  // (workflow-mining) Fold mined tool-sequence patterns into the SAME pattern
+  // sets BEFORE the empty/default check, so a corpus that yields workflow signal
+  // but no per-snippet kept code is still treated as real signal (not defaults).
+  // Workflows are prepended so they rank ahead of single-snippet patterns.
+  const workflows = mineWorkflows(sessions);
+  const successfulList = [
+    ...workflows.successful
+      .slice(0, MAX_WORKFLOWS)
+      .map((p) => `Workflow: ${workflowPatternLabel(p)}`),
+    ...Array.from(successful),
+  ];
+  const avoidedList = [
+    ...workflows.antiPatterns
+      .slice(0, MAX_WORKFLOWS)
+      .map((p) => `Anti-workflow: ${workflowPatternLabel(p)}`),
+    ...Array.from(avoided),
+  ];
+
+  let successfulPatterns = successfulList.slice(0, MAX_PATTERNS);
+  let avoidedPatterns = avoidedList.slice(0, MAX_PATTERNS);
   let preferredTools = tools;
 
   let usedDefaults = false;
@@ -244,6 +271,7 @@ function aggregate(sessions: UnifiedSession[]): Aggregates {
     keptCount,
     sources: Array.from(sourceSet).sort(),
     usedDefaults,
+    workflows,
   };
 }
 
@@ -593,6 +621,7 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
     kept: agg.keptCount,
     patterns: agg.successfulPatterns.length + agg.avoidedPatterns.length,
     sources: agg.sources,
+    workflowsMined: agg.workflows.successful.length,
   };
 
   // (10) Store the distilled-memory embeddings AFTER releasing the preferences
@@ -626,6 +655,15 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
     await recordLearningRun(workspaceRoot, stats);
   } catch (err) {
     log(`learn: recording metrics failed (${(err as Error).message})`);
+  }
+
+  // (effectiveness) Persist the tool × project matrix snapshot from the same
+  // corpus. Best-effort — a snapshot failure never breaks the learn run.
+  try {
+    const matrix = computeEffectiveness(sessions, { now: iso });
+    await recordEffectiveness(workspaceRoot, matrix);
+  } catch (err) {
+    log(`learn: recording effectiveness failed (${(err as Error).message})`);
   }
 
   return summary;
