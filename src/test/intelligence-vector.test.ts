@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { initVectorDB } from '../intelligence/vectorEngine';
+import { initVectorDB } from '../intelligence/vector';
 import { getNoneEmbedding } from '../intelligence/embeddings';
 import { EmbeddingSignature } from '../intelligence/types';
 import { nativeVectorAvailable } from './_vectorBackendAvailable';

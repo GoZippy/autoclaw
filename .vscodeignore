@@ -52,7 +52,26 @@ node_modules/pg/**
 node_modules/pg-*/**
 node_modules/onnxruntime-node/**
 node_modules/onnxruntime-common/**
+node_modules/onnxruntime-web/**
 node_modules/@huggingface/**
+# Transitive deps of @xenova/transformers (the embeddings engine) — lazy-loaded
+# alongside it and never touched by the core extension. The top-level optional
+# dirs above are not enough: these hoist to node_modules root and would otherwise
+# bloat the .vsix by ~135 MB (onnxruntime-web 66M + sharp 50M + protobufjs 19M).
+node_modules/sharp/**
+node_modules/protobufjs/**
+
+# Session/working scratch — logs and ad-hoc output files, never for distribution
+*.log
+*_out.txt
+intel-out.log
+intel-err.log
+.agents/**
+semantic-review/**
+reviews/**
+test-run.log
+*-test.log
+*-test2.log
 
 # OS junk
 .DS_Store

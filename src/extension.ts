@@ -69,6 +69,7 @@ import {
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
+import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -767,7 +768,15 @@ export function activate(context: vscode.ExtensionContext) {
   // Register KDream View Provider
   const kdreamViewProvider = new KDreamViewProvider(context.extensionUri);
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(KDreamViewProvider.viewType, kdreamViewProvider)
+    // retainContextWhenHidden keeps the DOM (and the user's expand/collapse
+    // state) alive when the view is hidden — otherwise switching VS Code tabs
+    // and back reloads the webview from scratch, collapsing every panel.
+    // The Intelligence dashboard and fleet panel already do this.
+    vscode.window.registerWebviewViewProvider(
+      KDreamViewProvider.viewType,
+      kdreamViewProvider,
+      { webviewOptions: { retainContextWhenHidden: true } },
+    )
   );
 
   // Set up file system watcher for state.json
@@ -817,6 +826,10 @@ export function activate(context: vscode.ExtensionContext) {
     context,
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   );
+
+  // Intelligence metrics dashboard (webview view + refresh command + metrics
+  // file watcher). Registration only — no I/O until the view is opened.
+  registerIntelligenceDashboard(context);
 
   // First-run welcome with IDE-specific guidance
   showWelcomeIfNeeded(context);
@@ -3718,10 +3731,14 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     } catch { /* skip */ }
   }
   try {
+    // Pass the active host identity so the card list can mark "you" and render
+    // the persistent identity banner — makes the self-scoped "Awaiting You"
+    // section legible (same data, only the highlight differs per window).
+    const selfId = activeHostAgentId();
     view.webview.postMessage({
       command: 'updateAgentCards',
       data: {
-        html: renderAgentList(fleetAgents, summaries),
+        html: renderAgentList(fleetAgents, summaries, Date.now(), selfId),
         count: fleetAgents.length,
       },
     });

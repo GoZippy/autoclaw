@@ -317,12 +317,14 @@ export function renderDetailRow(label: string, value: string | undefined | null)
 export function renderAgentCard(
   agent: AgentWithLive,
   summary: InboxSummary | null = null,
-  now: number = Date.now()
+  now: number = Date.now(),
+  selfId?: string
 ): string {
   const live = agent.live_status || agent.status || 'detected';
   const hb = agent.heartbeat ?? null;
   const lastBeat = hb?.timestamp || agent.last_heartbeat || null;
   const cardId = `agent-card-${esc(agent.id)}`;
+  const isSelf = !!selfId && agent.id === selfId;
 
   // ── Summary line (always visible) ────────────────────────────────────────
   let head = '<div class="agent-card-head" role="button" tabindex="0" aria-expanded="false" ';
@@ -330,6 +332,12 @@ export function renderAgentCard(
   head += '<span class="card-chevron"></span>';
   head += `<span class="status-pill ${statusBadgeClass(live)}" title="${esc(live)}">${esc(live)}</span>`;
   head += `<span class="agent-name">${esc(agent.name || agent.id)}</span>`;
+  // "you" pill — marks the agent running in THIS window, so the user can tell
+  // why the self-scoped "Awaiting You" section attaches to this agent and not
+  // another. Only one card per window carries it.
+  if (isSelf) {
+    head += '<span class="you-pill" title="This is you — the agent running in this window">you</span>';
+  }
   // Role chip — the single most useful "what is this agent doing on the team"
   // signal, so it sits right after the name on the always-visible summary line.
   head += renderRoleChip(agentRole(agent), true);
@@ -436,7 +444,35 @@ export function renderAgentCard(
 
   body += '</div>';
 
-  return `<div class="agent-card" data-agent-id="${esc(agent.id)}">${head}${body}</div>`;
+  const selfClass = isSelf ? ' is-self' : '';
+  return `<div class="agent-card${selfClass}" data-agent-id="${esc(agent.id)}"${isSelf ? ' data-self="true"' : ''}>${head}${body}</div>`;
+}
+
+/** Render the persistent "you are X" identity banner for the Team view.
+ *
+ * The same logical mailbox renders under a different card in each IDE because
+ * the self-scoped "Awaiting You" section follows whichever agent is running
+ * the window. Without telling the user who "you" are, that looks arbitrary —
+ * this banner makes it legible. Returns '' when the host identity is unknown.
+ */
+export function renderSelfIdentity(
+  agents: readonly AgentWithLive[],
+  selfId?: string
+): string {
+  if (!selfId) { return ''; }
+  const self = agents.find(a => a.id === selfId);
+  const name = self?.name || selfId;
+  const known = !!self;
+  const note = known
+    ? 'The "Awaiting You" section and your inbox counts are scoped to this agent.'
+    : 'This window’s agent is not registered on the team yet.';
+  return (
+    `<div class="self-identity${known ? '' : ' unknown'}" title="${esc(note)}">` +
+    '<span class="self-identity-label">You are</span>' +
+    `<span class="self-identity-name">${esc(name)}</span>` +
+    `<span class="agent-id">${esc(selfId)}</span>` +
+    '</div>'
+  );
 }
 
 /** Render the entire agent list. Returns a string the JS sets as innerHTML.
@@ -448,15 +484,16 @@ export function renderAgentCard(
 export function renderAgentList(
   agents: readonly AgentWithLive[],
   summaries: Record<string, InboxSummary> = {},
-  now: number = Date.now()
+  now: number = Date.now(),
+  selfId?: string
 ): string {
   if (!agents || agents.length === 0) {
     return '<p class="empty">No agents detected.</p>';
   }
 
   const hasRelay = agents.some(isRemoteAgent);
-  const card = (a: AgentWithLive) => renderAgentCard(a, summaries[a.id] ?? null, now);
-  const summary = renderTeamSummary(agents, now);
+  const card = (a: AgentWithLive) => renderAgentCard(a, summaries[a.id] ?? null, now, selfId);
+  const summary = renderSelfIdentity(agents, selfId) + renderTeamSummary(agents, now);
 
   if (!hasRelay) {
     return summary + agents.map(card).join('');

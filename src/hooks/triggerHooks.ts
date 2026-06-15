@@ -24,10 +24,23 @@ import { appendCommsLog } from '../comms';
 import { createInboxWatcher, InboxWatcher } from '../daemon/watcher';
 import { dispatchWork, WorkPackage, VendorKind } from '../orchestratorLoop';
 import { isFleetHalted } from './fleetHalt';
+import {
+  type HookOn, type HookEvent,
+  buildHeartbeatStallEvents, buildClaimStaleEvents, DEFAULT_STALL_THRESHOLD_SECONDS,
+} from './hookEvents';
+import { registerHookHandler } from './hookBus';
 
 // Re-export the kill-switch surface so consumers can import everything
 // hook-related from one module.
 export { HALT_FILE_REL, isFleetHalted, setFleetHalted } from './fleetHalt';
+// Re-export the event surface (types + builders + bus) so consumers keep a
+// single import site even though the leaf modules break the import cycle.
+export {
+  type HookOn, type HookEvent,
+  buildHeartbeatStallEvents, buildClaimStaleEvents, buildConsensusEvent, buildAutobuildFailEvent,
+  DEFAULT_STALL_THRESHOLD_SECONDS,
+} from './hookEvents';
+export { registerHookHandler, emitHookEvent, activeHookHandlerCount } from './hookBus';
 
 const fsPromises = fs.promises;
 
@@ -35,7 +48,6 @@ const fsPromises = fs.promises;
 // Types
 // ---------------------------------------------------------------------------
 
-export type HookOn = 'message' | 'heartbeat_stall' | 'claim_stale' | 'consensus' | 'autobuild_fail';
 export type HookAction = 'dispatch' | 'notify' | 'launch_skill' | 'spawn_runner' | 'relay';
 
 export interface HookRule {
@@ -50,18 +62,14 @@ export interface HookRule {
   action: HookAction;
   /** "{{field}}" templates render from the event payload (e.g. "{{to}}"). */
   target?: string;
+  /** launch_skill: which shipped skill to open (e.g. "orchestrate"). */
+  skill?: string;
+  /** launch_skill: a pre-filled prompt; overrides the default skill prompt. */
+  prompt?: string;
+  /** spawn_runner: runner id to start (defaults to `target`). */
+  runner?: string;
   /** Per-rule re-fire floor. Default 300s. */
   cooldown_seconds?: number;
-}
-
-export interface HookEvent {
-  on: HookOn;
-  payload: Record<string, unknown>;
-  /**
-   * Set when the event was produced by a hook/loop action. Tagged events never
-   * match any rule — a hook cannot trigger a hook (spec: no self-amplification).
-   */
-  via_hook?: string;
 }
 
 /** Mutable runtime state. `matchHooks` updates it for `fire` decisions. */
@@ -175,6 +183,9 @@ export function parseHooksYaml(text: string, onWarn?: (msg: string) => void): Ho
       case 'on': current.on = String(coerce(val)) as HookOn; break;
       case 'action': current.action = String(coerce(val)) as HookAction; break;
       case 'target': current.target = String(coerce(val)); break;
+      case 'skill': current.skill = String(coerce(val)); break;
+      case 'prompt': current.prompt = String(coerce(val)); break;
+      case 'runner': current.runner = String(coerce(val)); break;
       case 'cooldown_seconds': {
         const n = Number(coerce(val));
         if (Number.isFinite(n) && n >= 0) { current.cooldown_seconds = n; }
@@ -315,6 +326,22 @@ export interface HookDeps {
   dispatch?: (target: string, decision: HookDecision) => Promise<void>;
   /** Surface a `notify` action (VS Code toast + output channel in the runtime). */
   notify?: (message: string, decision: HookDecision) => void;
+  /**
+   * `launch_skill` (HKS-4): open a pre-filled skill session for the target host.
+   * The runtime wires this to the launchSkill flow (renderSkillPrompt → clipboard
+   * + toast); tests inject a recorder. The decision carries rule.skill/prompt/target.
+   */
+  launchSkill?: (decision: HookDecision) => Promise<void> | void;
+  /**
+   * `spawn_runner` (HKS-4): start a registered runner for the target. The runtime
+   * resolves the runner from the registry and wakes it via the dispatch path.
+   */
+  spawnRunner?: (decision: HookDecision) => Promise<void> | void;
+  /**
+   * `relay` (HKS-5): forward the event to the target machine's inbox over the
+   * cloud relay (cross-machine wake). Inert unless the relay is configured.
+   */
+  relay?: (decision: HookDecision) => Promise<void> | void;
 }
 
 const COMMS_DIR_REL = path.join('.autoclaw', 'orchestrator', 'comms');
@@ -356,9 +383,37 @@ async function auditHook(
 }
 
 /**
+ * Run an injected action dep, auditing fired/error. Shared by the deps-backed
+ * actions (launch_skill / spawn_runner / relay). When `requireTarget`, an empty
+ * rendered target is a hook_error; a missing dep is always a hook_error.
+ */
+async function runActionDep(
+  decision: HookDecision,
+  deps: HookDeps,
+  fn: ((decision: HookDecision) => Promise<void> | void) | undefined,
+  name: string,
+  requireTarget: boolean
+): Promise<void> {
+  if (requireTarget && !decision.target) {
+    await auditHook(deps.workspaceRoot, decision, 'hook_error', `${decision.rule.action} action with empty target`);
+    return;
+  }
+  if (!fn) {
+    await auditHook(deps.workspaceRoot, decision, 'hook_error', `no ${name} dep wired`);
+    return;
+  }
+  try {
+    await fn(decision);
+    await auditHook(deps.workspaceRoot, decision, 'hook_fired');
+  } catch (e) {
+    await auditHook(deps.workspaceRoot, decision, 'hook_error', e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
  * Execute one decision. Suppressed decisions are audited and skipped. Fired
- * decisions perform their action via the injected deps; unimplemented actions
- * (launch_skill / spawn_runner / relay — HKS-4/5) audit as hook_error.
+ * decisions perform their action via the injected deps; an action whose dep is
+ * not wired audits as hook_error (never throws into the watcher).
  */
 export async function executeHook(decision: HookDecision, deps: HookDeps): Promise<void> {
   if (decision.outcome !== 'fire') {
@@ -389,10 +444,22 @@ export async function executeHook(decision: HookDecision, deps: HookDeps): Promi
       await auditHook(deps.workspaceRoot, decision, 'hook_fired');
       return;
     }
+    // HKS-4: open a pre-filled skill session (target host optional — defaults to current host).
+    case 'launch_skill':
+      await runActionDep(decision, deps, deps.launchSkill, 'launchSkill', false);
+      return;
+    // HKS-4: start a registered runner (target = runner id).
+    case 'spawn_runner':
+      await runActionDep(decision, deps, deps.spawnRunner, 'spawnRunner', true);
+      return;
+    // HKS-5: cross-machine wake over the cloud relay (target = machine/agent).
+    case 'relay':
+      await runActionDep(decision, deps, deps.relay, 'relay', true);
+      return;
     default:
       await auditHook(
         deps.workspaceRoot, decision, 'hook_error',
-        `action "${decision.rule.action}" not implemented yet (HKS-4/5)`
+        `unknown action "${String(decision.rule.action)}"`
       );
   }
 }
@@ -435,11 +502,62 @@ export async function buildHookEventFromMessageFile(filePath: string): Promise<H
   return event;
 }
 
+/**
+ * Run the matcher + executor for one event (shared by the message watcher, the
+ * stall/claim tick, and the in-process bus). Refreshes HALT from disk (override
+ * for tests), executes every decision, and logs the outcome. Returns the
+ * decisions so callers/tests can assert.
+ */
+export async function processHookEvent(
+  event: HookEvent,
+  rules: HookRule[],
+  state: HookRuntimeState,
+  deps: HookDeps,
+  opts: { isHalted?: () => boolean; log?: (line: string) => void; maxFiringsPerHour?: number; now?: number } = {}
+): Promise<HookDecision[]> {
+  state.halted = (opts.isHalted ?? (() => isFleetHalted(deps.workspaceRoot)))();
+  const decisions = matchHooks(rules, event, state, opts.now ?? Date.now(), opts.maxFiringsPerHour);
+  for (const d of decisions) {
+    await executeHook(d, deps);
+    const label = event.payload.type ? `${event.on}:${String(event.payload.type)}` : event.on;
+    opts.log?.(`[hooks] ${d.outcome === 'fire' ? 'fired' : d.outcome}: ${d.rule.id} (${label} → ${d.target ?? '-'})`);
+  }
+  return decisions;
+}
+
+/** Read heartbeats + claims and build the tick's stall/claim_stale events. */
+async function scanTickEvents(workspaceRoot: string, now: number, thresholdSeconds: number): Promise<HookEvent[]> {
+  const commsAbs = path.join(workspaceRoot, COMMS_DIR_REL);
+  const readJsonDir = async (sub: string): Promise<Record<string, unknown>[]> => {
+    const dir = path.join(commsAbs, sub);
+    const out: Record<string, unknown>[] = [];
+    let names: string[];
+    try { names = await fsPromises.readdir(dir); } catch { return out; }
+    for (const n of names) {
+      if (!n.endsWith('.json')) { continue; }
+      try {
+        out.push(JSON.parse((await fsPromises.readFile(path.join(dir, n), 'utf8')).replace(/^﻿/, '')) as Record<string, unknown>);
+      } catch { /* skip malformed */ }
+    }
+    return out;
+  };
+  const heartbeats = (await readJsonDir('heartbeats')) as Array<{ agent_id?: string; timestamp?: string }>;
+  const claims = (await readJsonDir('claims')) as Array<{ task_id?: string; claimed_by?: string; agent_id?: string; claimed_at?: string }>;
+  const hbByAgent = new Map<string, string>();
+  for (const hb of heartbeats) { if (hb.agent_id && hb.timestamp) { hbByAgent.set(hb.agent_id, hb.timestamp); } }
+  return [
+    ...buildHeartbeatStallEvents(heartbeats, now, thresholdSeconds),
+    ...buildClaimStaleEvents(claims, hbByAgent, now, thresholdSeconds),
+  ];
+}
+
 export interface TriggerHooksRuntime {
   /** Loaded rule count (0 ⇒ inert; no watcher was started). */
   readonly ruleCount: number;
   stop(): Promise<void>;
 }
+
+export const DEFAULT_HOOK_TICK_MS = 60_000;
 
 export interface TriggerHooksRuntimeOptions {
   workspaceRoot: string;
@@ -447,6 +565,19 @@ export interface TriggerHooksRuntimeOptions {
   log?: (line: string) => void;
   /** notify-action sink (VS Code toast). */
   notify?: (message: string) => void;
+  /** launch_skill action sink (HKS-4) — render + open/copy a skill prompt. */
+  launchSkill?: (decision: HookDecision) => Promise<void> | void;
+  /** spawn_runner action sink (HKS-4) — start/wake a registered runner. */
+  spawnRunner?: (decision: HookDecision) => Promise<void> | void;
+  /** relay action sink (HKS-5) — forward a wake to a remote machine's inbox. */
+  relay?: (decision: HookDecision) => Promise<void> | void;
+  /** Stall/claim scan interval (ms). Default 60s. */
+  tickIntervalMs?: number;
+  /** heartbeat_stall / claim_stale staleness floor (seconds). Default 600. */
+  stallThresholdSeconds?: number;
+  /** setInterval override for tests (returns a handle passed to clearTimer). */
+  setTimer?: (fn: () => void, ms: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
 }
 
 /**
@@ -490,31 +621,62 @@ export async function startTriggerHooksRuntime(
       const res = await dispatchWork(opts.workspaceRoot, pkg);
       if (res === null) { throw new Error('dispatch gated or halted (see loop journal/audit)'); }
     },
+    launchSkill: opts.launchSkill,
+    spawnRunner: opts.spawnRunner,
+    relay: opts.relay,
   };
 
+  // Serialize all event handling (message / bus / tick) so cooldown + audit
+  // state updates stay ordered.
   let busy = Promise.resolve();
+  const runOnQueue = (make: () => Promise<unknown>): void => {
+    busy = busy.then(make).then(() => undefined)
+      .catch((e) => log(`[hooks] handler error: ${e instanceof Error ? e.message : String(e)}`));
+  };
+
   const watcher: InboxWatcher = createInboxWatcher({
     commsDir: path.join(opts.workspaceRoot, COMMS_DIR_REL),
     onFileAdded: (filePath) => {
-      // Serialize handling so audit/cooldown state updates stay ordered.
-      busy = busy.then(async () => {
+      runOnQueue(async () => {
         const event = await buildHookEventFromMessageFile(filePath);
         if (!event) { return; }
-        state.halted = isFleetHalted(opts.workspaceRoot);
-        const decisions = matchHooks(rules, event, state);
-        for (const d of decisions) {
-          await executeHook(d, deps);
-          log(`[hooks] ${d.outcome === 'fire' ? 'fired' : d.outcome}: ${d.rule.id} (${event.payload.type} → ${d.target ?? '-'})`);
-        }
-      }).catch((e) => log(`[hooks] handler error: ${e instanceof Error ? e.message : String(e)}`));
+        await processHookEvent(event, rules, state, deps, { log });
+      });
     },
     onFallback: (reason) => log(`[hooks] watcher fell back to polling: ${reason}`),
   });
   await watcher.start();
-  log(`[hooks] runtime started — ${rules.length} rule(s) active${watcher.isFallback ? ' (polling mode)' : ''}`);
+
+  // In-process bus: consensus / autobuild_fail events emitted by the bridge and
+  // autobuild run through the same serialized queue.
+  const unregisterBus = registerHookHandler(opts.workspaceRoot, (event) => {
+    runOnQueue(() => processHookEvent(event, rules, state, deps, { log }));
+  });
+
+  // Stall/claim tick — only when a rule actually listens for those sources.
+  const needsTick = rules.some(r => r.on === 'heartbeat_stall' || r.on === 'claim_stale');
+  const tickMs = opts.tickIntervalMs ?? DEFAULT_HOOK_TICK_MS;
+  const threshold = opts.stallThresholdSeconds ?? DEFAULT_STALL_THRESHOLD_SECONDS;
+  const setTimer = opts.setTimer ?? ((fn, ms) => setInterval(fn, ms));
+  const clearTimer = opts.clearTimer ?? ((h) => clearInterval(h as NodeJS.Timeout));
+  let tickHandle: unknown;
+  if (needsTick) {
+    tickHandle = setTimer(() => {
+      runOnQueue(async () => {
+        const events = await scanTickEvents(opts.workspaceRoot, Date.now(), threshold);
+        for (const ev of events) { await processHookEvent(ev, rules, state, deps, { log }); }
+      });
+    }, tickMs);
+  }
+
+  log(`[hooks] runtime started — ${rules.length} rule(s) active${watcher.isFallback ? ' (polling mode)' : ''}${needsTick ? `; stall tick ${Math.round(tickMs / 1000)}s` : ''}`);
 
   return {
     ruleCount: rules.length,
-    stop: async () => { await watcher.stop(); },
+    stop: async () => {
+      unregisterBus();
+      if (tickHandle !== undefined) { clearTimer(tickHandle); }
+      await watcher.stop();
+    },
   };
 }

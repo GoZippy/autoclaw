@@ -6,12 +6,14 @@ A local-first "second brain" for AutoClaw. It ingests past AI coding sessions
 from any tool (plus AutoClaw's own logs), distills what was kept vs. discarded,
 indexes your real codebase, and serves that context back to cut token waste.
 
-> **Status: core loop implemented.** The module skeleton, configuration, on-disk
-> contract, and packaging are in place, and the four core-loop commands `/learn`,
-> `/index-code`, `/retrieve`, and `/search` are now **implemented** and wired into
-> activation and the `@autoclaw` chat surface. The remaining commands below are
-> still **not yet implemented** and arrive in later phases. This skill documents
-> the full planned surface so the capability stays discoverable. Do not claim a
+> **Status: core loop + Wave A implemented.** The module skeleton, configuration,
+> on-disk contract, and packaging are in place. The four core-loop commands
+> `/learn`, `/index-code`, `/retrieve`, and `/search` plus the Wave A commands
+> `/sources`, `/rag-generate`, `/scaffold`, and `/metrics` are now **implemented**
+> and wired into activation and the `@autoclaw` chat surface. Universal session
+> ingestion (Claude Code, Claude Desktop, Kiro, Gemini), git-validated kept
+> signals, the metrics dashboard, and the pluggable Postgres/Ollama backends are
+> live. The `/service` watch command arrives in a later phase. Do not claim a
 > command ran when it is marked *Planned*; say it is not available yet.
 
 ## Operating Rules (read before any sub-command)
@@ -50,10 +52,10 @@ yet and point to what foundation provides (config + on-disk contract).
 | `/index-code` | Implemented (core-loop) | Chunk + embed the workspace codebase into the vector store. Args: `--force` (re-index everything, ignoring the last-index watermark). Output: files indexed and chunk count. |
 | `/retrieve` | Implemented (core-loop) | Retrieve the most relevant code/learning chunks for a query. Usage: `/retrieve <query>`. Output: the top matching chunks with their source paths. |
 | `/search` | Implemented (core-loop) | Semantic search over distilled learnings. Usage: `/search <query> [--limit N]` (cap results at N). Output: ranked learnings with scores. |
-| `/sources` | Planned (universal-ingestion) | List every discovered session source, its tier, availability, and enabled state. |
-| `/scaffold` | Planned (core-loop) | Create the `.autoclaw/` contract dirs and a default `vector/config.json`. |
-| `/rag-generate` | Planned (signal-and-rag) | Build a RAG prompt from retrieved context. |
-| `/metrics` | Planned (metrics-dashboard) | Show token usage, savings, and learning counts. |
+| `/sources` | Implemented (universal-ingestion) | List every discovered session source, its tier, availability, and enabled state; opt-in/disable third-party sources (consent-gated). Discovers Claude Code, Claude Desktop, Kiro, Gemini + AutoClaw-native. |
+| `/scaffold` | Implemented (signal-and-rag) | Emit your learned `agent-style.md` (optionally `--focus "area"`) to prepend to a new agent task. Copied to the clipboard. |
+| `/rag-generate` | Implemented (signal-and-rag) | Build a grounded RAG prompt for a task from retrieved code + learnings + style + memory. Degrades gracefully without a vector backend. Copied to the clipboard. |
+| `/metrics` | Implemented (metrics-dashboard) | Show learning-run counts, kept-rate, and token usage (real vs estimated). A live dashboard view is available under the AutoClaw activity-bar container. |
 | `/service` | Planned (automation-reach) | Run the continuous watch service that ingests new sessions as they land. |
 
 ## Configuration

@@ -36,7 +36,7 @@ import { resolveProjectKey } from './project';
 import { redactSecrets } from './redact';
 import { getEmbedding } from './embeddings';
 import { acquireLock } from './fileLock';
-import { initVectorDB, VectorRecord } from './vectorEngine';
+import { initVectorDB, initVectorBackend, VectorRecord } from './vector';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -343,7 +343,7 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
   const paths = intelligencePaths(workspaceRoot);
   const signature = getActiveEmbeddingSignature(config);
 
-  const db = await initVectorDB(paths.dbPath, signature, log, { forceRebuild: force });
+  const db = await initVectorBackend(config, paths.dbPath, signature, log, { forceRebuild: force });
   if (db.degraded) {
     log('rag: vector backend unavailable; indexed 0 files (no-RAG)');
     db.close();
@@ -533,7 +533,7 @@ export async function retrieveCode(
   const paths = intelligencePaths(workspaceRoot);
   const signature = getActiveEmbeddingSignature(config);
 
-  const db = await initVectorDB(paths.dbPath, signature, log);
+  const db = await initVectorBackend(config, paths.dbPath, signature, log);
   if (db.degraded) {
     log('rag: vector backend unavailable; retrieveCode returning no results');
     db.close();

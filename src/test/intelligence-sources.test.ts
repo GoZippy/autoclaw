@@ -325,9 +325,17 @@ suite('intelligence-sources', function () {
 
   // -------------------------------------------------------------------------
   suite('registry: enablement defaults (D13)', function () {
-    test('default registry exposes the three built-in adapters', function () {
+    test('default registry exposes the built-in + Wave A adapters', function () {
       const reg = createDefaultRegistry();
-      assert.deepStrictEqual(reg.ids().sort(), ['autoclaw-native', 'cursor', 'generic']);
+      assert.deepStrictEqual(reg.ids().sort(), [
+        'autoclaw-native',
+        'claude-code',
+        'claude-desktop',
+        'cursor',
+        'gemini',
+        'generic',
+        'kiro',
+      ]);
     });
 
     test('defaults: native on, cursor + generic off', function () {

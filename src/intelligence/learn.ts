@@ -3,9 +3,11 @@
  * (R5.1-R5.8, R7.1).
  *
  * `learnFromSessions` is the durable-memory gatekeeper. A single run:
- *   1. holds an advisory lock on `preferences.json` for its entire duration (R5.2);
- *   2. collects + dedups sessions from the ENABLED Source Adapters via the
- *      injectable registry, honoring `--last N` (R5.4, R5.5);
+ *   1. collects + dedups sessions, git-validates kept code, and aggregates —
+ *      all lock-free reads/compute (R5.4, R5.5);
+ *   2. holds an advisory lock on `preferences.json` ONLY across the durable
+ *      preference + insight writes — not the slow collect/git work above or the
+ *      embedding/metrics work below — so a concurrent run cannot time out (R5.2);
  *   3. aggregates successful / avoided patterns + preferred tools, falling back
  *      to sensible defaults so the output is never empty (R5.3);
  *   4. redacts every string destined for disk or embeddings (R7.1);
@@ -34,13 +36,17 @@ import { resolveProjectKey } from './project';
 import { redactSecrets } from './redact';
 import { getEmbedding } from './embeddings';
 import { acquireLock } from './fileLock';
-import { initVectorDB, VectorRecord } from './vectorEngine';
+import { initVectorBackend, VectorRecord } from './vector';
 import {
   SourceRegistry,
   createDefaultRegistry,
   resolveEnabledSources,
 } from './sources/registry';
 import { StyleAggregates, generateAgentStyle } from './agentStyle';
+import { enrichSessionsWithGitSignals } from './gitSignals';
+import { deriveOutcome } from './ranking';
+import { LearningRunStats, recordLearningRun } from './metrics/store';
+import { aggregateRealTokens } from './metrics/ledgerBridge';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -133,6 +139,27 @@ function firstMeaningfulLine(code: string): string {
   const lines = redacted.split(/\r?\n/).map((l) => l.trim());
   const first = lines.find((l) => l.length > 0);
   return first ?? redacted.trim();
+}
+
+/** Rough run-token estimate: real usage hints when present, else ~4 chars/token. */
+function estimateTokens(sessions: UnifiedSession[]): number {
+  let total = 0;
+  for (const s of sessions) {
+    const usage = s.signals?.tokenUsage;
+    if (usage) {
+      total += Math.max(0, usage.prompt) + Math.max(0, usage.completion);
+      continue;
+    }
+    let chars = 0;
+    for (const m of s.messages) {
+      chars += (m.text ?? '').length;
+      for (const b of m.codeBlocks ?? []) {
+        chars += (b.code ?? '').length;
+      }
+    }
+    total += Math.ceil(chars / 4);
+  }
+  return total;
 }
 
 // ---------------------------------------------------------------------------
@@ -229,8 +256,9 @@ function buildMemoryRecords(
   distilled: string,
   project: string,
   createdAt: string,
+  gitValidated = false,
 ): LearnedMemory[] {
-  const baseConfidence = agg.usedDefaults ? 0.5 : 0.72;
+  const baseConfidence = agg.usedDefaults ? 0.5 : gitValidated ? 0.85 : 0.72;
   const records: LearnedMemory[] = [];
 
   for (const content of agg.successfulPatterns) {
@@ -431,6 +459,7 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
   const registry = options.registry ?? createDefaultRegistry();
   const project = resolveProjectKey(workspaceRoot);
   const paths = intelligencePaths(workspaceRoot);
+  const runStartedAt = Date.now();
 
   // preferences.json lives beside the vector store (documented contract path).
   const preferencesPath = toForwardSlash(path.join(paths.vectorDir, 'preferences.json'));
@@ -458,40 +487,60 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
   // transformers call may download a model for minutes, and `acquireLock` times
   // out at 15s, so holding the lock across it would make a concurrent /learn
   // fail spuriously. The embedding store is best-effort + degrade-safe.
+  // ---- Compute phase (NO lock held) -------------------------------------
+  // collectSessions, git enrichment (up to ~50 `git show` subprocesses), and
+  // aggregation only READ/COMPUTE — they write nothing durable. Running them
+  // before taking the preferences lock keeps the lock's hold time bounded to the
+  // file writes below, so a concurrent /learn cannot time out against slow git
+  // I/O on a large repo (mirrors the decision that moved embedding out of the
+  // lock; acquireLock times out at 15s).
+
+  // (R5.4 / R5.5) Collect + dedup sessions from enabled adapters, honoring --last N.
+  const sessions = await registry.collectSessions({
+    last: options.last,
+    enabledIds,
+    env,
+    project,
+    log,
+  });
+
+  // (Phase-2 signal-and-rag) Git-validate kept code BEFORE aggregation so
+  // distilled patterns prefer actually-committed code. Offline-safe: no repo
+  // => passthrough, never throws.
+  await enrichSessionsWithGitSignals(sessions, {
+    lookbackDays: 14,
+    minConfidence: 0.55,
+    cwd: workspaceRoot,
+    log,
+  });
+
+  // (R5.3) Aggregate with sensible defaults so output is never empty.
+  const agg = aggregate(sessions);
+  const iso = new Date().toISOString();
+
+  // (R7.1) Everything below is already redacted via clean()/firstMeaningfulLine().
+  const distilled = buildDistilledInsight(agg, sessions.length, focus);
+
+  // (R5.7 / R5.8) Build the durable-memory records — the gate for what persists.
+  // Raise confidence when the run was git-validated (Phase-2 R4.2).
+  const gitValidated = sessions.some((s) => deriveOutcome(s).signalType === 'git_commit');
+  const gitEnriched = gitValidated;
+  const estTokens = estimateTokens(sessions);
+  const records = buildMemoryRecords(agg, distilled, project, iso, gitValidated);
+
+  // (6) Render the timestamped human-readable insight view (no I/O yet).
+  const insightName = `insight-${iso.replace(/[:.]/g, '-')}.md`;
+  const insightPath = toForwardSlash(path.join(paths.learningsDir, insightName));
+  const insightBody = renderInsightFile(records, agg, sessions.length, focus, iso, distilled);
+
+  // ---- Durable preference + insight writes (preferences lock held) -------
+  // (R5.2) Hold the lock ONLY across the preference-related writes, not the
+  // collect/enrich/aggregate work above or the embedding/metrics work below.
   const release = await acquireLock(preferencesPath);
-  let records: LearnedMemory[];
-  let iso: string;
-  let summary: LearnSummary;
   try {
-    // (R5.4 / R5.5) Collect + dedup sessions from enabled adapters, honoring --last N.
-    const sessions = await registry.collectSessions({
-      last: options.last,
-      enabledIds,
-      env,
-      project,
-      log,
-    });
+    fs.writeFileSync(insightPath, insightBody, 'utf8');
 
-    // (R5.3) Aggregate with sensible defaults so output is never empty.
-    const agg = aggregate(sessions);
-    iso = new Date().toISOString();
-
-    // (R7.1) Everything below is already redacted via clean()/firstMeaningfulLine().
-    const distilled = buildDistilledInsight(agg, sessions.length, focus);
-
-    // (R5.7 / R5.8) Build the durable-memory records — the gate for what persists.
-    records = buildMemoryRecords(agg, distilled, project, iso);
-
-    // (6) Timestamped human-readable insight view over the records.
-    const insightName = `insight-${iso.replace(/[:.]/g, '-')}.md`;
-    const insightPath = toForwardSlash(path.join(paths.learningsDir, insightName));
-    fs.writeFileSync(
-      insightPath,
-      renderInsightFile(records, agg, sessions.length, focus, iso, distilled),
-      'utf8',
-    );
-
-    // (7) Merge preferences.json WITHOUT clobbering prior entries (lock already held).
+    // (7) Merge preferences.json WITHOUT clobbering prior entries (lock held).
     const prior = readPreferences(preferencesPath);
     const merged: PreferencesFile = {
       preferredPatterns: mergeUnique(prior.preferredPatterns, agg.successfulPatterns),
@@ -500,57 +549,84 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
       updatedAt: iso,
     };
     fs.writeFileSync(preferencesPath, JSON.stringify(merged, null, 2), 'utf8');
-
-    // (8) Regenerate agent-style.md (lock-protected — separate file).
-    const styleRelease = await acquireLock(agentStylePath);
-    try {
-      fs.writeFileSync(
-        agentStylePath,
-        `${generateAgentStyle(focus, {
-          successfulPatterns: agg.successfulPatterns,
-          avoidedPatterns: agg.avoidedPatterns,
-          preferredTools: agg.preferredTools,
-        })}\n`,
-        'utf8',
-      );
-    } finally {
-      styleRelease();
-    }
-
-    // (9) APPEND a dated summary to MEMORY.md — never overwrite (lock-protected).
-    await ensureDir(path.dirname(paths.memoryPath));
-    const memoryRelease = await acquireLock(paths.memoryPath);
-    try {
-      const entry = renderMemoryEntry(agg, sessions.length, focus, iso);
-      let existing = '';
-      try {
-        if (fs.existsSync(paths.memoryPath)) {
-          existing = fs.readFileSync(paths.memoryPath, 'utf8');
-        }
-      } catch (err) {
-        log(`learn: could not read MEMORY.md (${(err as Error).message}); appending fresh`);
-      }
-      fs.writeFileSync(paths.memoryPath, existing + entry, 'utf8');
-    } finally {
-      memoryRelease();
-    }
-
-    // (11) Capture the run summary while the lock is held.
-    summary = {
-      sessionsAnalyzed: sessions.length,
-      kept: agg.keptCount,
-      patterns: agg.successfulPatterns.length + agg.avoidedPatterns.length,
-      sources: agg.sources,
-    };
   } finally {
     release();
   }
+
+  // (8) Regenerate agent-style.md (its own advisory lock — separate file).
+  const styleRelease = await acquireLock(agentStylePath);
+  try {
+    fs.writeFileSync(
+      agentStylePath,
+      `${generateAgentStyle(focus, {
+        successfulPatterns: agg.successfulPatterns,
+        avoidedPatterns: agg.avoidedPatterns,
+        preferredTools: agg.preferredTools,
+      })}\n`,
+      'utf8',
+    );
+  } finally {
+    styleRelease();
+  }
+
+  // (9) APPEND a dated summary to MEMORY.md — never overwrite (its own lock).
+  await ensureDir(path.dirname(paths.memoryPath));
+  const memoryRelease = await acquireLock(paths.memoryPath);
+  try {
+    const entry = renderMemoryEntry(agg, sessions.length, focus, iso);
+    let existing = '';
+    try {
+      if (fs.existsSync(paths.memoryPath)) {
+        existing = fs.readFileSync(paths.memoryPath, 'utf8');
+      }
+    } catch (err) {
+      log(`learn: could not read MEMORY.md (${(err as Error).message}); appending fresh`);
+    }
+    fs.writeFileSync(paths.memoryPath, existing + entry, 'utf8');
+  } finally {
+    memoryRelease();
+  }
+
+  // (11) The run summary.
+  const summary: LearnSummary = {
+    sessionsAnalyzed: sessions.length,
+    kept: agg.keptCount,
+    patterns: agg.successfulPatterns.length + agg.avoidedPatterns.length,
+    sources: agg.sources,
+  };
 
   // (10) Store the distilled-memory embeddings AFTER releasing the preferences
   // lock. Every LearnedMemory record (procedural / failure / reflection) is
   // embedded — not just the single distilled reflection — so `/search` covers
   // the individual learnings (R6.2), not merely a per-run summary.
   await storeMemoryEmbeddings(paths.dbPath, config, project, records, log);
+
+  // (metrics-dashboard R1.1/R2.4) Record run metrics; attach real tokens from
+  // the existing cost ledger when token logging is enabled. Best-effort — a
+  // metrics failure never breaks the learn run.
+  try {
+    const ledger = await aggregateRealTokens(workspaceRoot, config, { sinceTs: runStartedAt });
+    const stats: LearningRunStats = {
+      ts: iso,
+      sessionsAnalyzed: summary.sessionsAnalyzed,
+      kept: summary.kept,
+      keptRate: summary.sessionsAnalyzed > 0 ? summary.kept / summary.sessionsAnalyzed : 0,
+      patternsLearned: summary.patterns,
+      sources: summary.sources,
+      estTokens,
+      gitEnriched,
+    };
+    if (focus) {
+      stats.focus = focus;
+    }
+    if (ledger.available) {
+      stats.realTokens = ledger.usage;
+      stats.costUsd = ledger.costUsd;
+    }
+    await recordLearningRun(workspaceRoot, stats);
+  } catch (err) {
+    log(`learn: recording metrics failed (${(err as Error).message})`);
+  }
 
   return summary;
 }
@@ -568,7 +644,7 @@ async function storeMemoryEmbeddings(
   }
   try {
     const signature = getActiveEmbeddingSignature(config);
-    const db = await initVectorDB(dbPath, signature, log);
+    const db = await initVectorBackend(config, dbPath, signature, log);
     if (db.degraded) {
       log('learn: vector backend unavailable; learning embeddings not stored');
       db.close();
