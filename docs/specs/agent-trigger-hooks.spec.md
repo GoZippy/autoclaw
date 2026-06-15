@@ -1,7 +1,7 @@
 ---
 spec_id: agent-trigger-hooks
 title: Event-driven trigger hooks — wake agents on comms/build events, with fleet HALT
-status: pilot  # draft | review | pilot | implement | verify | done — HKS-1..3 landed 2026-06-12
+status: implement  # draft | review | pilot | implement | verify | done — HKS-1..3 landed 2026-06-12; HKS-4..5 landed 2026-06-13
 owner: claude-code
 created: 2026-06-12
 updated: 2026-06-12
@@ -165,8 +165,8 @@ are fully unit-tested without fs/vscode.
 | 1 | `HookRule`/`HookEvent` types, yaml loader, pure `matchHooks` (filters, cooldown, HALT, via_hook) + unit tests | claude-code | ✅ **DONE 2026-06-12** — `src/hooks/triggerHooks.ts`; cooldown/cap/HALT/via_hook all unit-tested |
 | 2 | `executeHook` actions: `dispatch` + `notify` + audit writes | claude-code | ✅ **DONE 2026-06-12** — dispatch reuses `orchestratorLoop.dispatchWork` (AF-8 gating + sidecar + shared-inbox wake); audit to `comms/hooks/audit.jsonl` + comms-log; runtime via InboxWatcher (`startTriggerHooksRuntime`, zero-config no-op); starter rules at `skills/orchestrate/templates/hooks.starter.yaml` |
 | 3 | HALT kill switch: file check in hooks + existing dispatch tick + the two VS Code commands | claude-code | ✅ **DONE 2026-06-12** — `src/hooks/fleetHalt.ts` (leaf module); `dispatchWork` gates on it (journaled `dispatch_halted`); `autoclaw.fleet.halt` / `autoclaw.fleet.resume` commands. +18 tests; full suite 973 passing. |
-| 4 | `launch_skill` + `spawn_runner` actions | claude-code | hook can open a pre-filled chat/runner session |
-| 5 | `relay` action (cross-machine wake) + HALT mirroring over relay | claude-code | remote inbox receives the wake |
+| 4 | `launch_skill` + `spawn_runner` actions | claude-code | ✅ **DONE 2026-06-13** — deps-injected executor cases + `skill`/`prompt`/`runner` rule fields; runtime wires `launch_skill`→renderSkillPrompt+clipboard toast, `spawn_runner`→registry-checked dispatch-path wake. Audited fired/error. |
+| 5 | `relay` action (cross-machine wake) + non-message event sources | claude-code | ✅ **DONE 2026-06-13** — `relay`→CloudRelay.sendInbox (inert unless consented); pure builders for heartbeat_stall/claim_stale/consensus/autobuild_fail (`hookEvents.ts`), in-process bus (`hookBus.ts`), runtime stall/claim tick, consensus emit (bridge) + autobuild_fail emit (autobuild runWorkflow). Full HALT-over-relay mirror tracked as a follow-on (the relay action already carries via_hook + honors HALT). |
 
 ## Non-goals
 
