@@ -206,35 +206,41 @@ suite('intelligence-sources', function () {
   // -------------------------------------------------------------------------
   suite('cursor adapter', function () {
     function buildFixtureDb(): string | undefined {
-      let Database: any;
+      // Cursor persists its chat in a better-sqlite3-format `state.vscdb`, so the
+      // fixture must be built with better-sqlite3 specifically. Wrap the WHOLE build:
+      // `require('better-sqlite3')` can succeed while `new Database()` still throws
+      // "Module did not self-register" when the native binding's ABI does not match
+      // the runtime (e.g. the Electron integration host). Returning undefined makes
+      // the caller skip cleanly instead of failing. (node:sqlite passing the shared
+      // nativeVectorAvailable gate does NOT imply better-sqlite3 is usable here.)
       try {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
-        Database = require('better-sqlite3');
+        const Database = require('better-sqlite3');
+        const dir = freshDir('cursor');
+        const dbPath = path.join(dir, 'state.vscdb');
+        const db = new Database(dbPath);
+        db.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)');
+        const chat = {
+          tabs: [
+            {
+              tabId: 't1',
+              bubbles: [
+                { type: 1, text: 'How do I declare a const?' },
+                { type: 2, text: 'Like this:\n```ts\nconst x = 1;\n```' },
+                { type: 1, text: 'looks good, apply' },
+              ],
+            },
+          ],
+        };
+        db.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run(
+          'workbench.panel.aichat.view.aichat.chatdata',
+          JSON.stringify(chat),
+        );
+        db.close();
+        return dbPath;
       } catch {
         return undefined;
       }
-      const dir = freshDir('cursor');
-      const dbPath = path.join(dir, 'state.vscdb');
-      const db = new Database(dbPath);
-      db.exec('CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)');
-      const chat = {
-        tabs: [
-          {
-            tabId: 't1',
-            bubbles: [
-              { type: 1, text: 'How do I declare a const?' },
-              { type: 2, text: 'Like this:\n```ts\nconst x = 1;\n```' },
-              { type: 1, text: 'looks good, apply' },
-            ],
-          },
-        ],
-      };
-      db.prepare('INSERT INTO ItemTable (key, value) VALUES (?, ?)').run(
-        'workbench.panel.aichat.view.aichat.chatdata',
-        JSON.stringify(chat),
-      );
-      db.close();
-      return dbPath;
     }
 
     test('parses chat messages + code blocks and infers keptCode from approval', async function () {
