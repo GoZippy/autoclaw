@@ -26,6 +26,20 @@ import {
 } from '../intelligence/vector';
 import { nativeVectorAvailable } from './_vectorBackendAvailable';
 
+// node:sqlite is a Node-core module, but it is FLAGGED before Node 24 and absent
+// entirely on Node < 22.5. The plain-Node test runner may be an older Node, so the
+// node:sqlite-specific assertions below skip cleanly when the preferred driver is not
+// present — the production code falls back to better-sqlite3 there, and the
+// driver-agnostic suites (transaction round-trip, compat manifest) still cover it.
+let hasNodeSqlite = false;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  require('node:sqlite');
+  hasNodeSqlite = true;
+} catch {
+  hasNodeSqlite = false;
+}
+
 suite('intelligence-vector-driver', function () {
   let tmpRoot: string;
 
@@ -52,6 +66,10 @@ suite('intelligence-vector-driver', function () {
   });
 
   test('preflight reports a healthy, ABI-proof backend in plain Node', function () {
+    if (!hasNodeSqlite) {
+      this.skip();
+      return;
+    }
     const pf = vectorBackendPreflight();
     assert.strictEqual(pf.healthy, true, 'node:sqlite should make the backend healthy');
     assert.strictEqual(pf.active, 'node-sqlite', 'node:sqlite should be the active driver');
@@ -64,12 +82,20 @@ suite('intelligence-vector-driver', function () {
   });
 
   test('probeDriver(node-sqlite) exercises open + sqlite-vec load + vec0 create', function () {
+    if (!hasNodeSqlite) {
+      this.skip();
+      return;
+    }
     const probe = probeDriver('node-sqlite');
     assert.strictEqual(probe.kind, 'node-sqlite');
     assert.strictEqual(probe.available, true, `probe failed: ${probe.error ?? ''}`);
   });
 
   test('openSqliteDriver yields a working handle: prepare/exec/query', function () {
+    if (!hasNodeSqlite) {
+      this.skip();
+      return;
+    }
     const driver = openSqliteDriver(freshDbPath(), () => undefined);
     try {
       assert.strictEqual(driver.kind, 'node-sqlite');

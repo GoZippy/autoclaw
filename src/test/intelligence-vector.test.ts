@@ -156,11 +156,20 @@ suite('intelligence-vector: store -> search round-trip', function () {
 
     assert.ok(fs.existsSync(dbPath), 'db.sqlite file should be persisted');
 
-    // Re-open with a raw node:sqlite handle (the primary driver) to read the meta
-    // row — decoupled from which driver initVectorDB chose.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { DatabaseSync } = require('node:sqlite');
-    const raw = new DatabaseSync(dbPath, { readOnly: true });
+    // Re-open with a raw handle to read the meta row — decoupled from which driver
+    // initVectorDB chose. Prefer the ABI-proof node:sqlite, but fall back to
+    // better-sqlite3 on hosts where node:sqlite is flagged/absent (Node < 24), so the
+    // assertion runs in every runtime instead of throwing ERR_UNKNOWN_BUILTIN_MODULE.
+    let raw: any;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { DatabaseSync } = require('node:sqlite');
+      raw = new DatabaseSync(dbPath, { readOnly: true });
+    } catch {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const Database = require('better-sqlite3');
+      raw = new Database(dbPath, { readonly: true });
+    }
     try {
       const model = raw.prepare(`SELECT value FROM meta WHERE key = ?`).get('model');
       const dimension = raw.prepare(`SELECT value FROM meta WHERE key = ?`).get('dimension');
