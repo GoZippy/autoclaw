@@ -241,6 +241,66 @@ export const DEFAULT_ADAPTERS: AdapterConfig[] = [
 ];
 
 /**
+ * Host IDEs that are *forks* of VS Code rather than extensions loaded inside an
+ * editor (Cursor, Kiro, Windsurf, Antigravity). They are detected by the running
+ * application name — NOT by `vscode.extensions.getExtension(...)`, because the
+ * IDE itself is never registered as an extension in its own extension host. So
+ * `getExtension('amazon.kiro')` returns `undefined` even while running in Kiro.
+ *
+ * Maps an adapter `name` → the lowercase host id reported by `detectIde()`.
+ */
+export const HOST_FORK_IDS: Record<string, string> = {
+  Cursor: 'cursor',
+  Kiro: 'kiro',
+  Windsurf: 'windsurf',
+  Antigravity: 'antigravity'
+};
+
+/** Workspace markers that indicate a fork's project, independent of the host. */
+function hasCursorMarker(workspaceRoot: string): boolean {
+  return ['.cursorrules', '.cursor'].some(f =>
+    fs.existsSync(path.join(workspaceRoot, f))
+  );
+}
+
+/**
+ * Decides whether an adapter should report as "detected/installed". Any one of
+ * three independent signals suffices:
+ *   1. We are running *as* this host IDE fork (appName → `hostId`).
+ *   2. The adapter's VS Code extension is installed in the current host.
+ *   3. A fork's workspace marker is present (Cursor `.cursor*`, Antigravity
+ *      `.agent/`) — covers a fork's project opened in a different editor.
+ *
+ * Signal 1 is checked first so host forks are reported correctly even though
+ * their extension id (if any) can never resolve inside their own extension host.
+ *
+ * @param adapter       adapter config (name + optional extension id)
+ * @param hostId        result of `detectIde(appName)`
+ * @param hasExtension  predicate: is this extension id installed?
+ * @param workspaceRoot open workspace root, if any
+ */
+export function isAdapterDetected(
+  adapter: AdapterConfig,
+  hostId: string,
+  hasExtension: (id: string) => boolean,
+  workspaceRoot: string | undefined
+): boolean {
+  if (HOST_FORK_IDS[adapter.name] && HOST_FORK_IDS[adapter.name] === hostId) {
+    return true;
+  }
+  if (adapter.id && hasExtension(adapter.id)) {
+    return true;
+  }
+  if (adapter.name === 'Cursor') {
+    return !!workspaceRoot && hasCursorMarker(workspaceRoot);
+  }
+  if (adapter.name === 'Antigravity') {
+    return !!workspaceRoot && fs.existsSync(path.join(workspaceRoot, '.agent'));
+  }
+  return false;
+}
+
+/**
  * Checks if ZippyMesh LLM Router is running locally.
  *
  * "Healthy" requires more than a 200 OK on the port — many unrelated services

@@ -6,7 +6,7 @@ import {
   extractPlatform, payloadExcerpt, filterAwaitingYou, renderAwaitingYou,
   renderFabricHealth, bridgeTooltip, kgTooltip, kgClickCommand,
   agentHost, isRemoteAgent, agentRole, renderRoleChip, renderTeamSummary,
-  renderSessionList,
+  renderSessionList, renderSelfIdentity,
   type AgentWithLive, type InboxSummary, type AwaitingYouRow, type FabricHealth,
 } from '../webview-render';
 import type { Message, RegisteredAgent, Heartbeat } from '../comms';
@@ -223,6 +223,50 @@ suite('webview-render — agent cards', () => {
     (a.heartbeat as Heartbeat).queue_depth = 12;
     const html = renderAgentCard(a, null);
     assert.match(html, /queue-bar warn/);
+  });
+
+  // ── Tier 2: "you are X" identity + self markers ──────────────────────────
+  test('renderSelfIdentity returns empty string when host identity unknown', () => {
+    assert.strictEqual(renderSelfIdentity([makeFullAgent()], undefined), '');
+    assert.strictEqual(renderSelfIdentity([makeFullAgent()], ''), '');
+  });
+
+  test('renderSelfIdentity names the host agent and shows its id', () => {
+    const html = renderSelfIdentity([makeFullAgent(), makeMinimalAgent()], 'kiro');
+    assert.match(html, /class="self-identity"/);
+    assert.match(html, /You are/);
+    assert.match(html, /self-identity-name">Kiro</);
+    assert.match(html, /class="agent-id">kiro</);
+  });
+
+  test('renderSelfIdentity marks an unregistered host with the .unknown class', () => {
+    const html = renderSelfIdentity([makeFullAgent()], 'ghost-agent');
+    assert.match(html, /class="self-identity unknown"/);
+    assert.match(html, /self-identity-name">ghost-agent</);
+  });
+
+  test('renderAgentCard adds the "you" pill + is-self class only for selfId match', () => {
+    const self = renderAgentCard(makeFullAgent(), null, Date.now(), 'kiro');
+    assert.match(self, /class="you-pill"/);
+    assert.match(self, /class="agent-card is-self"/);
+    assert.match(self, /data-self="true"/);
+    const other = renderAgentCard(makeFullAgent(), null, Date.now(), 'cursor');
+    assert.ok(!/you-pill/.test(other), 'non-self card must not carry the you pill');
+    assert.ok(!/is-self/.test(other), 'non-self card must not carry is-self');
+  });
+
+  test('renderAgentList prepends the identity banner and marks exactly one self card', () => {
+    const html = renderAgentList([makeFullAgent(), makeMinimalAgent()], {}, Date.now(), 'cursor');
+    assert.match(html, /class="self-identity"/);
+    assert.strictEqual((html.match(/is-self/g) || []).length, 1, 'exactly one self card');
+    assert.strictEqual((html.match(/you-pill/g) || []).length, 1, 'exactly one you pill');
+  });
+
+  test('renderAgentList omits identity markers when no selfId is given', () => {
+    const html = renderAgentList([makeFullAgent(), makeMinimalAgent()]);
+    assert.ok(!/self-identity/.test(html));
+    assert.ok(!/you-pill/.test(html));
+    assert.ok(!/is-self/.test(html));
   });
 });
 

@@ -167,6 +167,7 @@ suite('Program Registry — cross-repo comms tail', () => {
         { timestamp: '2026-05-21T03:00:00Z', type: 't', from: 'a', message: 'new' },
       ],
     });
+    await ensureProgramRegistry(ws);
     const tail = await tailCrossRepoComms(ws, { limit: 2 });
     assert.deepStrictEqual(tail.map(e => e.message), ['mid', 'new']);
   });

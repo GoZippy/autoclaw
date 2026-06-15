@@ -1,9 +1,25 @@
 # Changelog
 
-## [3.4.0] - 2026-06-13
+## [3.4.1]
 
-_The dev-team-in-a-box release: fleet visibility + evidence-grounded gates +
-reputation routing + memory provenance + trigger hooks._
+### Fixed
+
+- **Team view no longer resets on data updates** (`src/webview/kdream-dashboard.js`,
+  `src/extension.ts`) — expanded agent cards, collapsible sections, and per-task
+  message-threads now persist their open/closed state across refresh ticks and
+  full webview reloads (via `vscode.getState`/`setState`), and the panel sets
+  `retainContextWhenHidden` so switching VS Code tabs no longer reloads it from
+  scratch. Previously every data tick re-ran `innerHTML` and snapped all panels shut.
+- **Mis-attributed inbox counts made explicit** (`src/webview-render.ts`,
+  `src/webview/kdream-dashboard.css`) — the Team view now shows a "You are
+  &lt;agent&gt;" identity banner and highlights the self card (`is-self`), so the
+  self-scoped Awaiting-You counts read unambiguously in every IDE instead of
+  appearing to move between agents per window.
+- **Build gate unblocked** (`src/test/agentCardPublisher.test.ts`) — the
+  `AgentRegistry` fixture was missing the required `last_heartbeat` and `status`
+  fields of `RegisteredAgent`, breaking `tsc`/`test:unit`.
+
+## [Unreleased]
 
 ### Added
 
@@ -76,8 +92,19 @@ reputation routing + memory provenance + trigger hooks._
   `hook_error`). Runtime rides the existing chokidar InboxWatcher; **zero-config
   no-op** — no hooks.yaml ⇒ no watcher, no behavior change. Starter rules at
   `skills/orchestrate/templates/hooks.starter.yaml`. Spec:
-  `docs/specs/agent-trigger-hooks.spec.md` (HKS-4/5 — launch_skill/spawn_runner/
-  relay actions — still open).
+  `docs/specs/agent-trigger-hooks.spec.md`.
+- **Trigger hooks (HKS-4..5)** — completes the hook layer. Three new actions:
+  `launch_skill` (renders a skill prompt via `renderSkillPrompt` → clipboard +
+  toast, the documented "open a session" mechanism), `spawn_runner` (registry-
+  checked → wakes the runner via the dispatch path), and `relay` (cross-machine
+  wake via `CloudRelay.sendInbox`, inert unless the relay is enabled+consented) —
+  with new `skill`/`prompt`/`runner` rule fields. Four non-message **event
+  sources** land via two leaf modules (`src/hooks/hookEvents.ts` builders +
+  `src/hooks/hookBus.ts` in-process emitter, no import cycles): `heartbeat_stall`
+  + `claim_stale` scanned on a runtime tick (only when a rule listens for them),
+  `consensus` emitted from the bridge evaluate path, `autobuild_fail` emitted
+  from `runWorkflow` on a failed step. All actions audit fired/error; HALT and
+  cooldown still gate every source. Zero-config no-op preserved. +~20 tests.
 - **Fleet HALT kill switch** (`src/hooks/fleetHalt.ts`) — while
   `.autoclaw/orchestrator/HALT` exists, nothing auto-dispatches: trigger hooks
   suppress (audited) and `orchestratorLoop.dispatchWork` refuses (journaled

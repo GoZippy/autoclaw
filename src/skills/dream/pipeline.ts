@@ -271,10 +271,18 @@ export function driftCheck(
       continue; // historical facts are allowed to reference gone code
     }
     const text = `${fact.subject} ${fact.content}`;
+    // A path/symbol present in BOTH subject and content (the scanned text is
+    // `subject + ' ' + content`) must be reported once per fact, not twice.
+    const seenPaths = new Set<string>();
+    const seenSymbols = new Set<string>();
 
     for (const m of text.matchAll(PATH_REF)) {
       const ref = m[1].replace(/\\/g, '/');
+      if (seenPaths.has(ref)) {
+        continue; // already reported this path for this fact
+      }
       if (!fileSet.has(ref)) {
+        seenPaths.add(ref);
         findings.push({
           fact_id: fact.id,
           kind: 'broken_file_ref',
@@ -287,6 +295,10 @@ export function driftCheck(
       const ref = m[1];
       // Only flag identifier-shaped spans that look like code, not prose.
       if (ref.length >= 3 && !symbolSet.has(ref)) {
+        if (seenSymbols.has(ref)) {
+          continue; // already reported this symbol for this fact
+        }
+        seenSymbols.add(ref);
         findings.push({
           fact_id: fact.id,
           kind: 'renamed_symbol',

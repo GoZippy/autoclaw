@@ -18,6 +18,8 @@ import {
 } from './orchestrate';
 import { buildCapsule, writeCapsule, summarizeCapsule, readCapsule, listCapsules } from './evidence';
 import { recordOutcomeOnce } from './reputation';
+import { buildConsensusEvent } from './hooks/hookEvents';
+import { emitHookEvent } from './hooks/hookBus';
 import { verifyBiscuitToken } from './biscuit';
 import { verifySvid } from './svid';
 
@@ -370,6 +372,12 @@ export function createBridgeServer(
             message: `${token.agent_id} evaluated ${tid}: ${summarizeCapsule(capsule)}`,
           });
           bus.publish('consensus', result);
+          // HKS-5: emit a consensus event so trigger hooks can react (e.g.
+          // re-dispatch the author on needs_changes). Best-effort, in-process.
+          void emitHookEvent(buildConsensusEvent({
+            task_id: tid, status: result.status, final_verdict: result.final_verdict,
+            gate_checks: result.gate_checks, author_agent_id: author,
+          }), config.workspaceRoot);
           return json(res, 200, { ...result, run_id: capsule.run_id });
         }
         // Evidence capsules (crabbox run-handle analog). List by task, or fetch one

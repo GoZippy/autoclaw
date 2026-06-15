@@ -29,6 +29,7 @@ import {
   parseLogEntries,
   parseTodosFromContent,
   getAdapterHealthEntry,
+  isAdapterDetected,
   DEFAULT_ADAPTERS,
   generateNonce,
   shouldShowNotification as shouldShowNotificationHelper,
@@ -67,6 +68,10 @@ import {
 } from './orchestrate';
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
+import { registerIntelligenceCommands } from './intelligence-commands';
+import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
+import { registerSupport } from './support/support';
+import { registerLicensing } from './licensing/licensing';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -132,6 +137,7 @@ import {
 } from './kg';
 import {
   startOrchestratorLoop,
+  dispatchWork,
   type OrchestratorLoopHandle,
 } from './orchestratorLoop';
 import {
@@ -233,6 +239,7 @@ export {
   parseLogEntries,
   parseTodosFromContent,
   getAdapterHealthEntry,
+  isAdapterDetected,
   DEFAULT_ADAPTERS,
   generateNonce,
   shouldShowNotificationHelper,
@@ -679,10 +686,59 @@ export function activate(context: vscode.ExtensionContext) {
     // .autoclaw/orchestrator/hooks.yaml is absent or has no valid rules.
     const hooksRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (hooksRoot) {
+      // Relay client for the `relay` hook action — inert no-op unless the user
+      // has enabled + consented to the cloud relay (same contract as elsewhere).
+      const hookRelay = new CloudRelay({ autoclawDir: path.join(hooksRoot, '.autoclaw') });
       startTriggerHooksRuntime({
         workspaceRoot: hooksRoot,
         log: (line) => console.log(`[autoclaw] ${line}`),
         notify: (m) => { vscode.window.showInformationMessage(m); },
+        // HKS-4: launch_skill — render the skill prompt for the target host and
+        // copy it to the clipboard (the documented "open a session" mechanism),
+        // surfacing a toast the operator can paste into the agent's chat.
+        launchSkill: async (decision) => {
+          const host = decision.target || 'claude-code';
+          const skill = decision.rule.skill || 'orchestrate';
+          const prompt = decision.rule.prompt || renderSkillPrompt(host, skill, skill);
+          try { await vscode.env.clipboard.writeText(prompt); } catch { /* clipboard best-effort */ }
+          vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": ${skill} prompt copied for ${host} — paste into the agent.`);
+        },
+        // HKS-4: spawn_runner — confirm the target is a known runner, then wake it
+        // via the existing dispatch path (the established way runners start work).
+        spawnRunner: async (decision) => {
+          const target = decision.target ?? '';
+          const known = (BUILTIN_RUNNER_IDS as readonly string[]).includes(target);
+          if (!known) { throw new Error(`unknown runner "${target}"`); }
+          vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": spawning runner ${target}.`);
+          const pkg = {
+            type: 'work_package' as const,
+            taskId: `next-${target}`,
+            taskName: `Hook spawn_runner: ${decision.rule.id}`,
+            description: `Runner wake by trigger hook "${decision.rule.id}" on ${decision.rule.on}. via_hook:${decision.rule.id}`,
+            filePaths: [] as string[],
+            successCriteria: ['Start the registered runner and begin assigned work'],
+            sprint: Number(decision.event.payload.sprint ?? 1) || 1,
+            assignToVendor: 'other' as const,
+            priority: 'low' as const,
+            timeBudgetMs: 0,
+          };
+          const res = await dispatchWork(hooksRoot, pkg);
+          if (res === null) { throw new Error('runner dispatch gated or halted'); }
+        },
+        // HKS-5: relay — forward the wake to the target machine's inbox over the
+        // cloud relay. Inert no-op unless the relay is enabled + consented.
+        relay: async (decision) => {
+          const target = decision.target ?? '';
+          const r = await hookRelay.sendInbox([{
+            id: `hook-${decision.rule.id}-${Date.now()}`,
+            to: target,
+            from: 'trigger-hooks',
+            type: 'wake',
+            timestamp: new Date().toISOString(),
+            payload: { via_hook: decision.rule.id, on: decision.rule.on, event: decision.event.payload },
+          }]);
+          if (!r.ok) { throw new Error(`relay send failed: ${r.detail ?? 'unknown'}`); }
+        },
       }).then(runtime => {
         if (runtime.ruleCount > 0) {
           context.subscriptions.push({ dispose: () => { void runtime.stop(); } });
@@ -764,7 +820,15 @@ export function activate(context: vscode.ExtensionContext) {
   // Register KDream View Provider
   const kdreamViewProvider = new KDreamViewProvider(context.extensionUri);
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(KDreamViewProvider.viewType, kdreamViewProvider)
+    // retainContextWhenHidden keeps the DOM (and the user's expand/collapse
+    // state) alive when the view is hidden — otherwise switching VS Code tabs
+    // and back reloads the webview from scratch, collapsing every panel.
+    // The Intelligence dashboard and fleet panel already do this.
+    vscode.window.registerWebviewViewProvider(
+      KDreamViewProvider.viewType,
+      kdreamViewProvider,
+      { webviewOptions: { retainContextWhenHidden: true } },
+    )
   );
 
   // Set up file system watcher for state.json
@@ -809,8 +873,26 @@ export function activate(context: vscode.ExtensionContext) {
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   );
 
+  // Register Intelligence Layer commands (registration only — no I/O at activation)
+  registerIntelligenceCommands(
+    context,
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  );
+
+  // Intelligence metrics dashboard (webview view + refresh command + metrics
+  // file watcher). Registration only — no I/O until the view is opened.
+  registerIntelligenceDashboard(context);
+
   // First-run welcome with IDE-specific guidance
   showWelcomeIfNeeded(context);
+
+  // Support surface: register the Support/Donate panel + rate commands, count
+  // today's activity, and (deferred) show a non-invasive milestone prompt.
+  registerSupport(context);
+
+  // Commercial licensing + BYO-key. Registers commands only; gates nothing
+  // local. Hosted features opt in via requireHosted() from licensing.ts.
+  registerLicensing(context);
 }
 
 async function installAdapters(
@@ -1460,26 +1542,19 @@ export async function getAdapterHealth(): Promise<AdapterHealth[]> {
   const adapters: { name: string; id: string | null }[] =
     config.get('adapters', DEFAULT_ADAPTERS);
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
+  // Host IDEs (Cursor/Kiro/Windsurf/Antigravity) are VS Code forks, not
+  // extensions loaded inside another editor — detect them via the running app
+  // name. `getExtension('amazon.kiro')` is always undefined inside Kiro itself,
+  // so an extension-id lookup alone wrongly reports the host fork as missing.
+  const hostId = detectIde(vscode.env.appName || '');
+  const hasExtension = (id: string): boolean => !!vscode.extensions.getExtension(id);
 
-  const extensionResults = adapters.map(adapter => {
-    if (adapter.id) {
-      const extension = vscode.extensions.getExtension(adapter.id);
-      return getAdapterHealthEntry(adapter.name, !!extension);
-    }
-    // Standalone host adapters — detected via filesystem markers / appName.
-    if (adapter.name === 'Cursor') {
-      const detected = !!workspaceRoot && hasCursorConfig(workspaceRoot);
-      return getAdapterHealthEntry(adapter.name, detected);
-    }
-    if (adapter.name === 'Antigravity') {
-      const detected = isAntigravityHost ||
-        (!!workspaceRoot && fs.existsSync(path.join(workspaceRoot, '.agent')));
-      return getAdapterHealthEntry(adapter.name, detected);
-    }
-    // Unknown standalone adapter — report as not detected rather than crashing.
-    return getAdapterHealthEntry(adapter.name, false);
-  });
+  const extensionResults = adapters.map(adapter =>
+    getAdapterHealthEntry(
+      adapter.name,
+      isAdapterDetected(adapter, hostId, hasExtension, workspaceRoot)
+    )
+  );
 
   // Check ZippyMesh LLM Router (async network check, cached for 60 s)
   const zmlrUrl = config.get<string>('zippymeshUrl', 'http://localhost:20128');
@@ -1981,6 +2056,7 @@ async function runExportSnapshotCommand(extensionPath: string): Promise<void> {
     workspaceRoot,
     isExtensionInstalled: (id: string) => !!vscode.extensions.getExtension(id),
     isAntigravityHost,
+    hostAppName: vscode.env.appName,
     zippymeshUrl
   };
 
@@ -2049,6 +2125,7 @@ async function runDoctorCommand(
     workspaceRoot,
     isExtensionInstalled: (id: string) => !!vscode.extensions.getExtension(id),
     isAntigravityHost,
+    hostAppName: vscode.env.appName,
     zippymeshUrl,
     kg: {
       enabled: kgEnabled,
@@ -3714,10 +3791,14 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     } catch { /* skip */ }
   }
   try {
+    // Pass the active host identity so the card list can mark "you" and render
+    // the persistent identity banner — makes the self-scoped "Awaiting You"
+    // section legible (same data, only the highlight differs per window).
+    const selfId = activeHostAgentId();
     view.webview.postMessage({
       command: 'updateAgentCards',
       data: {
-        html: renderAgentList(fleetAgents, summaries),
+        html: renderAgentList(fleetAgents, summaries, Date.now(), selfId),
         count: fleetAgents.length,
       },
     });

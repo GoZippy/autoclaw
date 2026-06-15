@@ -211,6 +211,55 @@ th {
 .status-pill.status-offline { background: var(--vscode-charts-red); }
 .status-pill.status-detected { background: var(--vscode-descriptionForeground); }
 
+/* ── "You are X" identity (Tier 2) ─────────────────────────────────── */
+/* Persistent banner at the top of the Team agent list naming the agent
+   running in this window — makes the self-scoped "Awaiting You" legible. */
+.self-identity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  border: 1px solid var(--vscode-textLink-foreground);
+  border-radius: 4px;
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  font-size: 0.8em;
+}
+.self-identity.unknown {
+  border-color: var(--vscode-panel-border);
+  opacity: 0.85;
+}
+.self-identity-label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+.self-identity-name {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+/* "you" pill on the self agent's card head. */
+.you-pill {
+  display: inline-block;
+  font-size: 0.65em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  background: var(--vscode-textLink-foreground);
+  color: var(--vscode-editor-background);
+}
+
+/* Highlight the card for the agent running in this window. */
+.agent-card.is-self {
+  border-color: var(--vscode-textLink-foreground);
+  box-shadow: inset 2px 0 0 var(--vscode-textLink-foreground);
+}
+
 .agent-name { font-weight: 600; flex-shrink: 0; }
 .agent-id {
   color: var(--vscode-descriptionForeground);

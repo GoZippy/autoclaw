@@ -4,6 +4,9 @@
  * Pure logic + filesystem operations only. No `vscode` imports here so the
  * module can be unit-tested under plain Mocha.
  *
+ * (Emits an `autobuild_fail` hook event on a failed run via the leaf hookBus —
+ * no heavy imports, no-op when no hooks runtime is registered.)
+ *
  * Workflow YAML schema (the *only* fields this loader honours):
  *   name:    string
  *   cron:    "minute hour day-of-month month day-of-week"
@@ -33,6 +36,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, spawnSync } from 'child_process';
+import { buildAutobuildFailEvent } from './hooks/hookEvents';
+import { emitHookEvent } from './hooks/hookBus';
 
 const DEFAULT_STEP_TIMEOUT_SECONDS = 120;
 const MAX_LOG_BYTES = 1024 * 1024; // 1 MB per log
@@ -771,6 +776,16 @@ export async function runWorkflow(
   log.write(`\nfinished: ${finishedAt.toISOString()}\n`);
   log.write(`status:   ${passed ? 'passed' : 'failed'}\n`);
   log.close();
+
+  // HKS-5: emit an autobuild_fail event for the first failed/timed-out step so
+  // trigger hooks can react (notify / dispatch a fixer). Best-effort, in-process;
+  // `cwd` is the workspace root. No-op when no hooks runtime is registered.
+  if (!passed) {
+    const failed = results.find(r => (r.exitCode !== 0 || r.timedOut) && !r.skipped);
+    if (failed) {
+      void emitHookEvent(buildAutobuildFailEvent(wf.name, failed.id, failed.exitCode), cwd);
+    }
+  }
 
   // Best-effort log pruning so the runs/ directory doesn't grow unbounded.
   const keep = typeof options.maxLogsPerWorkflow === 'number'

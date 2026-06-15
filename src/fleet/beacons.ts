@@ -77,7 +77,11 @@ export function workspaceBeaconDir(commsDir: string): string {
 /** Derive a stable workspace slug from an absolute path (folder basename). */
 export function workspaceSlug(workspacePath?: string): string {
   if (!workspacePath) { return ''; }
-  const base = path.basename(workspacePath.replace(/[\\/]+$/, ''));
+  // Split on both POSIX and Windows separators so the slug is identical
+  // regardless of host OS (Node's path.basename is platform-specific).
+  const trimmed = workspacePath.replace(/[\\/]+$/, '');
+  const segs = trimmed.split(/[\\/]+/);
+  const base = segs[segs.length - 1] ?? '';
   return base.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
 }
 

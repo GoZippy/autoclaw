@@ -16,6 +16,14 @@ tsconfig.tsbuildinfo
 # AutoClaw KDream data
 .autoclaw/
 
+# Agent task-coordination runtime (mailbox, task/context state, review artifacts)
+.agents/
+# Intelligence Layer generated runtime data (covered by .autoclaw/ above; listed
+# explicitly per the intelligence-foundation contract so it's never committed):
+#   .autoclaw/vector/db.sqlite   — sqlite-vec store
+#   .autoclaw/.locks/            — advisory file locks
+#   .autoclaw/history/           — per-source extraction watermarks
+
 # IDE workspace state — runtime data, not product code
 .voidspec/
 .kilo/

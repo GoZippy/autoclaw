@@ -19,6 +19,8 @@ import {
   parseLogEntries,
   parseTodosFromContent,
   getAdapterHealthEntry,
+  isAdapterDetected,
+  HOST_FORK_IDS,
   DEFAULT_ADAPTERS,
   generateNonce,
   shouldShowNotification,
@@ -370,6 +372,70 @@ Line 3`;
           assert.ok(adapter.id, `Adapter ${adapter.name} should have an id`);
         }
       }
+    });
+  });
+
+  // ============================================
+  // 10b. isAdapterDetected() Tests
+  // ============================================
+
+  suite('isAdapterDetected()', function () {
+    const never = (_id: string): boolean => false;
+    const kiro = DEFAULT_ADAPTERS.find(a => a.name === 'Kiro')!;
+    const windsurf = DEFAULT_ADAPTERS.find(a => a.name === 'Windsurf')!;
+    const cursor = DEFAULT_ADAPTERS.find(a => a.name === 'Cursor')!;
+    const antigravity = DEFAULT_ADAPTERS.find(a => a.name === 'Antigravity')!;
+    const claudeCode = DEFAULT_ADAPTERS.find(a => a.name === 'Claude Code')!;
+
+    test('detects a host fork by app name even when its extension is absent', function () {
+      // Reproduces the original bug: running inside Kiro, getExtension('amazon.kiro')
+      // is undefined, but the host must still report as detected.
+      assert.strictEqual(isAdapterDetected(kiro, 'kiro', never, undefined), true);
+      assert.strictEqual(isAdapterDetected(windsurf, 'windsurf', never, undefined), true);
+      assert.strictEqual(isAdapterDetected(cursor, 'cursor', never, undefined), true);
+      assert.strictEqual(isAdapterDetected(antigravity, 'antigravity', never, undefined), true);
+    });
+
+    test('a host fork is NOT detected from a different host', function () {
+      // Running inside Kiro should not light up Windsurf/Cursor/etc.
+      assert.strictEqual(isAdapterDetected(windsurf, 'kiro', never, undefined), false);
+      assert.strictEqual(isAdapterDetected(cursor, 'kiro', never, undefined), false);
+      assert.strictEqual(isAdapterDetected(kiro, 'cursor', never, undefined), false);
+    });
+
+    test('a genuine extension is detected via the extension predicate', function () {
+      const has = (id: string): boolean => id === 'Anthropic.claude-code';
+      assert.strictEqual(isAdapterDetected(claudeCode, 'vscode', has, undefined), true);
+      assert.strictEqual(isAdapterDetected(claudeCode, 'vscode', never, undefined), false);
+    });
+
+    test('Cursor falls back to a workspace marker when not the host', function () {
+      const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-cursor-'));
+      try {
+        assert.strictEqual(isAdapterDetected(cursor, 'vscode', never, ws), false);
+        fs.mkdirSync(path.join(ws, '.cursor'));
+        assert.strictEqual(isAdapterDetected(cursor, 'vscode', never, ws), true);
+      } finally {
+        fs.rmSync(ws, { recursive: true, force: true });
+      }
+    });
+
+    test('Antigravity falls back to a .agent/ workspace marker', function () {
+      const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-ag-'));
+      try {
+        assert.strictEqual(isAdapterDetected(antigravity, 'vscode', never, ws), false);
+        fs.mkdirSync(path.join(ws, '.agent'));
+        assert.strictEqual(isAdapterDetected(antigravity, 'vscode', never, ws), true);
+      } finally {
+        fs.rmSync(ws, { recursive: true, force: true });
+      }
+    });
+
+    test('HOST_FORK_IDS covers every standalone host fork', function () {
+      assert.deepStrictEqual(
+        new Set(Object.keys(HOST_FORK_IDS)),
+        new Set(['Cursor', 'Kiro', 'Windsurf', 'Antigravity'])
+      );
     });
   });
 
