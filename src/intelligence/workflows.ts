@@ -79,6 +79,9 @@ export interface MineWorkflowsOptions {
   maxN?: number;
   /** Minimum distinct sessions a sub-sequence needs to be ranked. Default 3. */
   minSupport?: number;
+  /** Minimum DECIDED sessions (shipped+discarded) for a ship rate to be trusted.
+   *  Guards against a "100%" computed off one or two decided sessions. Default 3. */
+  minDecided?: number;
   /** shipRate at/above which a pattern is "successful". Default 0.6. */
   shipThreshold?: number;
   /** shipRate at/below which a pattern is an "anti-pattern". Default 0.34. */
@@ -210,6 +213,7 @@ export function mineWorkflows(
   const minN = Math.max(1, options.minN ?? 2);
   const maxN = Math.max(minN, options.maxN ?? 3);
   const minSupport = Math.max(1, options.minSupport ?? 3);
+  const minDecided = Math.max(1, options.minDecided ?? 3);
   const shipThreshold = options.shipThreshold ?? 0.6;
   const antiThreshold = options.antiThreshold ?? 0.34;
   const collapse = options.collapseConsecutive ?? true;
@@ -260,7 +264,7 @@ export function mineWorkflows(
     .map(toPattern);
 
   const successful = patterns
-    .filter((p) => p.shipRate >= shipThreshold && p.shipped > 0)
+    .filter((p) => p.shipped + p.discarded >= minDecided && p.shipRate >= shipThreshold && p.shipped > 0)
     .sort(
       (a, b) =>
         b.shipRate - a.shipRate ||
@@ -271,7 +275,7 @@ export function mineWorkflows(
     .slice(0, maxPatterns);
 
   const antiPatterns = patterns
-    .filter((p) => p.discarded > 0 && p.shipRate <= antiThreshold)
+    .filter((p) => p.shipped + p.discarded >= minDecided && p.discarded > 0 && p.shipRate <= antiThreshold)
     .sort(
       (a, b) =>
         a.shipRate - b.shipRate ||
@@ -292,8 +296,12 @@ export function mineWorkflows(
 // Labels (consumed by learn.ts when folding workflows into durable memory)
 // ---------------------------------------------------------------------------
 
-/** A compact human label: `Read → Edit → Bash (ships 86%, n=14)`. */
+/**
+ * A compact human label: `Read → Edit → Bash (ships 86%, n=14)`. `n` is the
+ * DECIDED support (shipped + discarded) — the base the percentage is actually
+ * computed over — not the raw total (which includes unlabeled sessions).
+ */
 export function workflowPatternLabel(p: WorkflowPattern): string {
   const pct = Math.round(p.shipRate * 100);
-  return `${p.label} (ships ${pct}%, n=${p.total})`;
+  return `${p.label} (ships ${pct}%, n=${p.shipped + p.discarded})`;
 }

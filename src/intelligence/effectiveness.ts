@@ -174,7 +174,10 @@ export function computeEffectiveness(
 
     const tAcc = byTool.get(tool) ?? emptyAcc(tool, ALL, ALL);
     byTool.set(tool, tAcc);
-    const tpKey = `${tool}::${project}`;
+    // Case-insensitive project key so case/drive-case variants of the SAME repo
+    // (e.g. `K:/x` vs `k:/x`, identical on a case-insensitive FS) merge into one
+    // row instead of splitting the matrix. Display keeps the first-seen casing.
+    const tpKey = `${tool.toLowerCase()}::${project.toLowerCase()}`;
     const tpAcc = byToolProject.get(tpKey) ?? emptyAcc(tool, project, label);
     byToolProject.set(tpKey, tpAcc);
 

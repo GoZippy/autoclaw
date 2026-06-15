@@ -25,17 +25,136 @@ import {
   AdapterCapabilities,
   AdapterEnv,
   ExtractOptions,
+  KeptCode,
   MessageRole,
   SessionMessage,
+  SessionSignals,
   SourceAdapter,
   SourcePresence,
   UnifiedSession,
 } from '../types';
 import { toForwardSlash } from '../paths';
+import { redactSecrets } from '../redact';
 import { coerceTs, makeMessage, makeProvenance, mapRole } from './parse';
 
 const ADAPTER_ID = 'claude-code';
 const DISPLAY_NAME = 'Claude Code';
+
+/**
+ * Tool names that write code to disk. A successful one (its `tool_result` is not
+ * `is_error`) is an `applied_edit` kept signal; a session that ATTEMPTS edits but
+ * has every one fail is treated as `discarded`. This transcript-derived outcome
+ * signal (no git required) gives the workflow miner + effectiveness matrix both
+ * a positive and a negative pole.
+ */
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'str_replace']);
+
+/** Max applied-edit code snippets retained per session (keeps memory bounded). */
+const MAX_KEPT_PER_SESSION = 5;
+
+/** One observed edit attempt: the tool_use id + a representative code snippet. */
+interface EditAttempt {
+  id?: string;
+  code: string;
+}
+
+/** Pull the written code out of an edit tool's `input`, best-effort. */
+function editCodeFromInput(input: unknown): string {
+  if (!input || typeof input !== 'object') {
+    return '';
+  }
+  const i = input as Record<string, unknown>;
+  if (typeof i.new_string === 'string') {
+    return i.new_string;
+  }
+  if (typeof i.content === 'string') {
+    return i.content;
+  }
+  if (typeof i.new_source === 'string') {
+    return i.new_source;
+  }
+  if (Array.isArray(i.edits)) {
+    // MultiEdit: concatenate each edit's replacement text.
+    return i.edits
+      .map((e) =>
+        e && typeof e === 'object' && typeof (e as Record<string, unknown>).new_string === 'string'
+          ? ((e as Record<string, unknown>).new_string as string)
+          : '',
+      )
+      .filter((s) => s)
+      .join('\n');
+  }
+  return '';
+}
+
+/**
+ * Scan one message's `content` blocks for edit `tool_use` attempts and
+ * `tool_result` outcomes, accumulating into the per-file collectors. A no-op
+ * when `content` is a plain string (older transcripts) — those carry no
+ * structured outcome and stay `unknown`.
+ */
+function scanOutcomeBlocks(
+  content: unknown,
+  edits: EditAttempt[],
+  resultIsError: Map<string, boolean>,
+): void {
+  if (!Array.isArray(content)) {
+    return;
+  }
+  for (const block of content) {
+    if (!block || typeof block !== 'object') {
+      continue;
+    }
+    const b = block as Record<string, unknown>;
+    if (b.type === 'tool_use' && typeof b.name === 'string' && EDIT_TOOLS.has(b.name)) {
+      edits.push({
+        id: typeof b.id === 'string' ? b.id : undefined,
+        code: editCodeFromInput(b.input),
+      });
+    } else if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
+      resultIsError.set(b.tool_use_id, b.is_error === true);
+    }
+  }
+}
+
+/**
+ * Collapse the per-file edit attempts + tool_result outcomes into
+ * {@link SessionSignals}: applied edits become `applied_edit` kept signals
+ * (⇒ shipped); a session whose edits ALL failed is `discarded`; a read-only
+ * session (no edit attempts) stays `unknown`.
+ */
+function buildOutcomeSignals(
+  edits: EditAttempt[],
+  resultIsError: Map<string, boolean>,
+): SessionSignals {
+  const keptCode: KeptCode[] = [];
+  let applied = 0;
+  let failed = 0;
+  for (const e of edits) {
+    if (!e.id || !resultIsError.has(e.id)) {
+      continue; // no matching result (truncated transcript) — ignore, don't guess
+    }
+    if (resultIsError.get(e.id) === true) {
+      failed++;
+      continue;
+    }
+    applied++;
+    const code = e.code.trim();
+    if (code && keptCode.length < MAX_KEPT_PER_SESSION) {
+      keptCode.push({ code: redactSecrets(code), reason: 'applied_edit', confidence: 0.6 });
+    }
+  }
+
+  const signals: SessionSignals = { keptCode };
+  if (applied > 0) {
+    if (keptCode.length === 0) {
+      signals.outcome = 'shipped'; // edits landed but carried no capturable code
+    }
+  } else if (failed > 0) {
+    signals.outcome = 'discarded'; // attempted edits, every one failed
+  }
+  return signals;
+}
 
 const CAPABILITIES: AdapterCapabilities = {
   fullTranscripts: true,
@@ -151,6 +270,9 @@ export function readClaudeTranscript(
   }
 
   const messages: SessionMessage[] = [];
+  // Transcript-derived outcome collectors: edit attempts + their result errors.
+  const edits: EditAttempt[] = [];
+  const resultIsError = new Map<string, boolean>();
   let startedAt: number | undefined;
   let endedAt: number | undefined;
   let project: string | undefined;
@@ -194,6 +316,10 @@ export function readClaudeTranscript(
       continue;
     }
 
+    // Harvest structured edit attempts / results BEFORE the content is flattened
+    // to text (the flatten step discards block types + tool_use ids).
+    scanOutcomeBlocks(messageObj.content, edits, resultIsError);
+
     const role: MessageRole = mapRole(messageObj.role ?? rec.type, 'assistant');
     const text = flattenClaudeContent(messageObj.content);
     if (text.trim() === '') {
@@ -222,9 +348,35 @@ export function readClaudeTranscript(
     endedAt,
     title: title ?? `${tool} session ${id}`,
     messages,
-    signals: { keptCode: [] },
+    signals: buildOutcomeSignals(edits, resultIsError),
     provenance: makeProvenance(adapterId, toForwardSlash(file)),
   };
+}
+
+/**
+ * Normalize a project/cwd path for comparison + grouping: forward slashes,
+ * lower-cased drive letter (Windows `K:` vs `k:`), no trailing slash. Keeps the
+ * rest of the path case intact so genuinely distinct repos stay distinct.
+ */
+export function normalizeProjectPath(p: string): string {
+  let out = toForwardSlash(p).replace(/\/+$/, '');
+  out = out.replace(/^([a-zA-Z]):/, (_m, d: string) => `${d.toLowerCase()}:`);
+  return out;
+}
+
+/**
+ * True when `sessionProject` (a session's cwd) belongs to `workspaceRoot` — an
+ * exact match or a sub-directory. Used to scope `/learn` to the open workspace
+ * so sessions from OTHER repos are never analyzed (and never git-validated
+ * against the wrong repo).
+ */
+function sessionInWorkspace(sessionProject: string | undefined, workspaceRoot: string): boolean {
+  if (!sessionProject) {
+    return false;
+  }
+  const ws = normalizeProjectPath(workspaceRoot);
+  const sp = normalizeProjectPath(sessionProject);
+  return sp === ws || sp.startsWith(`${ws}/`);
 }
 
 class ClaudeCodeAdapter implements SourceAdapter {
@@ -267,6 +419,13 @@ class ClaudeCodeAdapter implements SourceAdapter {
     if (!dir) {
       return;
     }
+    // Scope to the open workspace when one is known, so /learn never analyzes (or
+    // git-validates) sessions that belong to OTHER repos. With no workspaceRoot
+    // (corpus-wide mining) every session is emitted with its real project.
+    const workspaceRoot =
+      this.env?.workspaceRoot && this.env.workspaceRoot.trim() !== ''
+        ? this.env.workspaceRoot
+        : undefined;
     let emitted = 0;
     for (const file of listJsonlRecursive(dir)) {
       const session = readClaudeTranscript(
@@ -276,6 +435,9 @@ class ClaudeCodeAdapter implements SourceAdapter {
         this.env?.workspaceRoot,
       );
       if (!session) {
+        continue;
+      }
+      if (workspaceRoot && !sessionInWorkspace(session.project, workspaceRoot)) {
         continue;
       }
       if (typeof opts.sinceTs === 'number' && session.startedAt < opts.sinceTs) {
