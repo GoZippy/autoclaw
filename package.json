@@ -36,6 +36,9 @@
   "homepage": "https://github.com/GoZippy/autoclaw#readme",
   "license": "SEE LICENSE IN LICENSE",
   "qna": "marketplace",
+  "sponsor": {
+    "url": "https://github.com/GoZippy/autoclaw/blob/master/SUPPORT.md"
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -97,6 +100,30 @@
       {
         "command": "autoclaw.enableAll",
         "title": "AutoClaw: Enable All Autonomous Features"
+      },
+      {
+        "command": "autoclaw.support.open",
+        "title": "AutoClaw: Support / Donate"
+      },
+      {
+        "command": "autoclaw.support.rate",
+        "title": "AutoClaw: Rate AutoClaw"
+      },
+      {
+        "command": "autoclaw.license.enter",
+        "title": "AutoClaw: Enter License Key"
+      },
+      {
+        "command": "autoclaw.license.status",
+        "title": "AutoClaw: License Status"
+      },
+      {
+        "command": "autoclaw.license.clear",
+        "title": "AutoClaw: Remove License Key"
+      },
+      {
+        "command": "autoclaw.byok.set",
+        "title": "AutoClaw: Set My Own API Key (BYO)"
       },
       {
         "command": "autoclaw.intelligence.learn",
@@ -372,6 +399,54 @@
     "configuration": {
       "title": "AutoClaw",
       "properties": {
+        "autoclaw.support.prompts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show occasional, non-invasive prompts to rate, review, or support AutoClaw (at usage-day 15, 30, 90, then every 90). Each milestone prompts at most once and includes a permanent opt-out."
+        },
+        "autoclaw.support.donationUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Square (or any) payment link for one-time donations. Leave blank to use the bundled placeholder."
+        },
+        "autoclaw.support.customAmountUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Payment link for a custom donation amount."
+        },
+        "autoclaw.support.proUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Checkout/subscription link for a commercial (Pro/Teams) license."
+        },
+        "autoclaw.support.reviewVscodeUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Override the VS Code Marketplace review deep-link."
+        },
+        "autoclaw.support.reviewOpenVsxUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Override the Open VSX review deep-link."
+        },
+        "autoclaw.support.feedbackUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Where less-than-happy ratings send the user for private feedback (defaults to the GitHub issues page)."
+        },
+        "autoclaw.support.contactEmail": {
+          "type": "string",
+          "default": "",
+          "description": "Commercial-license / enterprise contact email."
+        },
+        "autoclaw.support.cryptoWallets": {
+          "type": "object",
+          "default": {},
+          "description": "Crypto donation addresses, mapping coin symbol to wallet address. Example: { \"BTC\": \"bc1...\", \"ETH\": \"0x...\" }.",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
         "autoclaw.agentRoles": {
           "type": "object",
           "default": {},
@@ -616,7 +691,7 @@
     "pretest": "tsc -p ./",
     "test": "vscode-test",
     "test:integration": "vscode-test",
-    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js out/test/bridge.test.js out/test/comms.test.js out/test/manifest-probe.test.js out/test/reconcile.test.js out/test/kg-lifecycle.test.js out/test/fabric.test.js out/test/agent-card.test.js out/test/webview-rendering.test.js out/test/roles.test.js out/test/board-rendering.test.js out/test/program-plane.test.js out/test/biscuit.test.js out/test/hatchet.test.js out/test/svid.test.js out/test/metrics.test.js out/test/orchestrator.test.js out/test/lmd.test.js out/test/watchdog-reconcile.test.js out/test/orchestratorLoop.test.js out/test/mcp.test.js out/test/runner-loop-service.test.js out/test/runner-claude-code.test.js out/test/inboxState.test.js out/test/personas-loader.test.js out/test/llm-types.test.js out/test/llm-zippymesh.test.js out/test/llm-ollama.test.js out/test/llm-oracle.test.js out/test/llm-cost-ledger.test.js out/test/llm-registry.test.js out/test/llm-failsafe-install.test.js out/test/llm-install.test.js out/test/llm-peer-server.test.js out/test/runner-local-coder.test.js out/test/peerReview.test.js out/test/voteWriter.test.js out/test/cloudRelay.test.js out/test/personaMemory.test.js out/test/llmWriteTools.test.js out/test/memory-provenance.test.js out/test/extensionActivate.test.js out/test/cloudForwarding.test.js out/test/agentTypes.test.js out/test/fabricOnboarding.test.js out/test/fabricRoutingGovernance.test.js out/test/relayServer.test.js out/test/board.test.js out/test/voidspec.test.js out/test/triggerHooks.test.js out/test/reputation.test.js out/test/evidence.test.js out/test/budget.test.js out/test/skillLauncher.test.js out/test/fleet-architecture.test.js out/test/fleet-beacons.test.js out/test/intelligence-foundation.test.js out/test/intelligence-skill.test.js out/test/intelligence-project.test.js out/test/intelligence-redact.test.js out/test/intelligence-embeddings.test.js out/test/intelligence-vector.test.js out/test/intelligence-sources.test.js out/test/intelligence-ragcode.test.js out/test/intelligence-learn.test.js out/test/intelligence-workflows.test.js out/test/intelligence-effectiveness.test.js out/test/intelligence-remediation.test.js out/test/intelligence-remediation-v2.test.js out/test/intelligence-discovery.test.js out/test/intelligence-newsources.test.js out/test/intelligence-gitsignals.test.js out/test/intelligence-ragprompt.test.js out/test/intelligence-metrics-store.test.js out/test/intelligence-namespaces.test.js out/test/intelligence-dimensionguard.test.js out/test/intelligence-postgres.test.js out/test/mcpScoping.test.js out/test/programRegistry.test.js out/test/lmd-gossip.test.js out/test/memory.test.js out/test/fabricRouter.test.js out/test/retention.test.js out/test/chatInjector.test.js out/test/agentCardPublisher.test.js out/test/fabricRouteTool.test.js",
+    "test:unit": "tsc -p ./ && mocha --ui tdd --timeout 30000 out/test/extension.test.js out/test/skills.test.js out/test/autobuild.test.js out/test/doctor.test.js out/test/orchestrate.test.js out/test/bridge.test.js out/test/comms.test.js out/test/manifest-probe.test.js out/test/reconcile.test.js out/test/kg-lifecycle.test.js out/test/fabric.test.js out/test/agent-card.test.js out/test/webview-rendering.test.js out/test/roles.test.js out/test/board-rendering.test.js out/test/program-plane.test.js out/test/biscuit.test.js out/test/hatchet.test.js out/test/svid.test.js out/test/metrics.test.js out/test/orchestrator.test.js out/test/lmd.test.js out/test/watchdog-reconcile.test.js out/test/orchestratorLoop.test.js out/test/mcp.test.js out/test/runner-loop-service.test.js out/test/runner-claude-code.test.js out/test/inboxState.test.js out/test/personas-loader.test.js out/test/llm-types.test.js out/test/llm-zippymesh.test.js out/test/llm-ollama.test.js out/test/llm-oracle.test.js out/test/llm-cost-ledger.test.js out/test/llm-registry.test.js out/test/llm-failsafe-install.test.js out/test/llm-install.test.js out/test/llm-peer-server.test.js out/test/runner-local-coder.test.js out/test/peerReview.test.js out/test/voteWriter.test.js out/test/cloudRelay.test.js out/test/personaMemory.test.js out/test/llmWriteTools.test.js out/test/memory-provenance.test.js out/test/extensionActivate.test.js out/test/cloudForwarding.test.js out/test/agentTypes.test.js out/test/fabricOnboarding.test.js out/test/fabricRoutingGovernance.test.js out/test/relayServer.test.js out/test/board.test.js out/test/voidspec.test.js out/test/triggerHooks.test.js out/test/reputation.test.js out/test/evidence.test.js out/test/budget.test.js out/test/skillLauncher.test.js out/test/fleet-architecture.test.js out/test/fleet-beacons.test.js out/test/intelligence-foundation.test.js out/test/intelligence-skill.test.js out/test/intelligence-project.test.js out/test/intelligence-redact.test.js out/test/intelligence-embeddings.test.js out/test/intelligence-vector.test.js out/test/intelligence-sources.test.js out/test/intelligence-ragcode.test.js out/test/intelligence-learn.test.js out/test/intelligence-workflows.test.js out/test/intelligence-effectiveness.test.js out/test/intelligence-remediation.test.js out/test/intelligence-remediation-v2.test.js out/test/intelligence-discovery.test.js out/test/intelligence-newsources.test.js out/test/intelligence-gitsignals.test.js out/test/intelligence-ragprompt.test.js out/test/intelligence-metrics-store.test.js out/test/intelligence-namespaces.test.js out/test/intelligence-dimensionguard.test.js out/test/intelligence-postgres.test.js out/test/mcpScoping.test.js out/test/programRegistry.test.js out/test/lmd-gossip.test.js out/test/memory.test.js out/test/fabricRouter.test.js out/test/retention.test.js out/test/chatInjector.test.js out/test/agentCardPublisher.test.js out/test/fabricRouteTool.test.js out/test/support.test.js out/test/licensing.test.js",
     "generate:check": "node -e \"const {generatePlanSummary}=require('./out/orchestrator/planSummaryGenerator');const {generateAllSprintMarkdowns}=require('./out/orchestrator/sprintMarkdownGenerator');const path=require('path');const root=process.cwd();Promise.all([generatePlanSummary({workspaceRoot:root}),generateAllSprintMarkdowns(path.join(root,'.autoclaw/orchestrator/sprints'))]).then(()=>{const{execSync}=require('child_process');try{execSync('git diff --exit-code .autoclaw/orchestrator/sprints/',{stdio:'inherit'})}catch{process.exit(1)}}).catch(e=>{console.error(e);process.exit(1)})\"",
     "sample:snapshot": "node scripts/sample-snapshot.js",
     "sample:autobuild": "node scripts/sample-autobuild-run.js",
