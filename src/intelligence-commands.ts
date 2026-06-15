@@ -38,6 +38,7 @@ import {
   generateRAGPrompt,
   buildScaffold,
   getDashboardData,
+  getEffectiveness,
 } from './intelligence';
 
 const OUTPUT_CHANNEL_NAME = 'AutoClaw — Intelligence';
@@ -107,11 +108,13 @@ async function runLearn(workspaceRoot: string): Promise<void> {
 
   logLine(
     `learn: analyzed ${summary.sessionsAnalyzed} session(s), ` +
-      `${summary.kept} kept signal(s), ${summary.patterns} pattern(s) from ` +
+      `${summary.kept} kept signal(s), ${summary.patterns} pattern(s), ` +
+      `${summary.workflowsMined} workflow(s) from ` +
       `source(s): ${summary.sources.join(', ') || '(none)'}`,
   );
   void vscode.window.showInformationMessage(
-    `Intelligence: learned ${summary.patterns} pattern(s) from ${summary.sessionsAnalyzed} session(s).`,
+    `Intelligence: learned ${summary.patterns} pattern(s) + ${summary.workflowsMined} workflow(s) ` +
+      `from ${summary.sessionsAnalyzed} session(s).`,
   );
 }
 
@@ -454,6 +457,40 @@ async function runMetrics(workspaceRoot: string): Promise<void> {
   );
 }
 
+async function runEffectiveness(workspaceRoot: string): Promise<void> {
+  getChannel().show(true);
+  const matrix = getEffectiveness(workspaceRoot);
+  if (matrix.byTool.length === 0) {
+    logLine('effectiveness: no matrix recorded yet. Run /learn first.');
+    void vscode.window.showInformationMessage(
+      'Intelligence: no effectiveness data yet. Run /learn to build the matrix.',
+    );
+    return;
+  }
+  logLine(`Intelligence — Effectiveness (from ${matrix.totalSessions} session(s)):`);
+  logLine('  By tool (ship rate · sessions · kept/session · tokens/kept):');
+  for (const c of matrix.byTool) {
+    logLine(
+      `    ${c.tool}: ${(c.shipRate * 100).toFixed(0)}% · ${c.sessions} sess · ` +
+        `${c.keptPerSession.toFixed(2)} kept/sess · ${Math.round(c.tokensPerKept)} tok/kept`,
+    );
+  }
+  // Show the strongest tool×project rows (already ranked best-first).
+  const topRows = matrix.byToolProject.slice(0, 15);
+  if (topRows.length > 0) {
+    logLine('  Top tool × project rows:');
+    for (const c of topRows) {
+      logLine(
+        `    ${c.tool} @ ${c.projectLabel}: ${(c.shipRate * 100).toFixed(0)}% · ${c.sessions} sess`,
+      );
+    }
+  }
+  const best = matrix.byTool[0];
+  void vscode.window.showInformationMessage(
+    `Intelligence: best tool ${best.tool} (${(best.shipRate * 100).toFixed(0)}% ship over ${best.sessions} session(s)).`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -525,6 +562,10 @@ export function registerIntelligenceCommands(
     vscode.commands.registerCommand(
       'autoclaw.intelligence.metrics',
       withWorkspace(getWorkspaceRoot, runMetrics),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.effectiveness',
+      withWorkspace(getWorkspaceRoot, runEffectiveness),
     ),
   );
 }
