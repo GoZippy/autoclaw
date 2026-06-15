@@ -30,6 +30,7 @@ import {
   parseCron
 } from './autobuild';
 import { detectIde } from './ide-ports';
+import { vectorBackendPreflight, VectorBackendPreflight } from './intelligence/vector';
 
 // Vscode is optional at runtime — passed in via dependency injection so the
 // module can run under plain Mocha without `vscode` being on the import path.
@@ -180,6 +181,22 @@ export interface GitHealthSection {
   notes: string[];
 }
 
+/**
+ * Health of the intelligence vector backend (the SQLite + sqlite-vec store that
+ * powers RAG). Surfaces which driver is live and whether it is the ABI-fragile
+ * native one, so an IDE/Electron update that breaks the fallback is visible and
+ * actionable instead of a silent degrade to no-RAG.
+ */
+export interface VectorBackendSection {
+  /** `node-sqlite` (ABI-proof) | `better-sqlite3` (fallback) | `none`. */
+  active: VectorBackendPreflight['active'];
+  healthy: boolean;
+  abiProof: boolean;
+  runtime: VectorBackendPreflight['runtime'];
+  drivers: VectorBackendPreflight['drivers'];
+  remediation: string | null;
+}
+
 export interface DoctorReport {
   generatedAt: string;
   extensionPath: string;
@@ -196,6 +213,38 @@ export interface DoctorReport {
   skillsSource: SkillsSourceSection;
   autobuild: AutobuildSection;
   kgDaemon: KgDaemonSection;
+  vectorBackend: VectorBackendSection;
+}
+
+/**
+ * Probe the intelligence vector backend's drivers and summarise their health.
+ * Read-only; never throws (a probe failure becomes an unhealthy section).
+ */
+export function buildVectorBackendSection(): VectorBackendSection {
+  try {
+    const pf = vectorBackendPreflight();
+    return {
+      active: pf.active,
+      healthy: pf.healthy,
+      abiProof: pf.abiProof,
+      runtime: pf.runtime,
+      drivers: pf.drivers,
+      remediation: pf.remediation
+    };
+  } catch (e) {
+    return {
+      active: 'none',
+      healthy: false,
+      abiProof: false,
+      runtime: {
+        node: process.version,
+        modules: process.versions.modules,
+        electron: process.versions.electron ?? null
+      },
+      drivers: [],
+      remediation: `vector preflight failed: ${(e as Error).message}`
+    };
+  }
 }
 
 const SKILL_NAMES = ['kdream', 'autobuild', 'mateam'] as const;
@@ -904,6 +953,7 @@ export async function runDoctor(
   const skillsSource = buildSkillsSourceSection(extensionPath);
   const autobuild = buildAutobuildSection(workspaceRoot);
   const kgDaemon = buildKgDaemonSection(extensionPath, shim.kg);
+  const vectorBackend = buildVectorBackendSection();
   const zmlr = await checkZippyMeshHealth(zippymeshUrl);
 
   return {
@@ -921,7 +971,8 @@ export async function runDoctor(
     zmlr,
     skillsSource,
     autobuild,
-    kgDaemon
+    kgDaemon,
+    vectorBackend
   };
 }
 
@@ -1122,6 +1173,21 @@ export function renderReport(report: DoctorReport): string {
         `  - ${w.name}: cron="${cronStatus}" status=${w.status} lastRun=${w.lastRun ?? '(never)'}${fileStatus}`
       );
     }
+  }
+  lines.push('');
+
+  // Vector backend (intelligence RAG store)
+  lines.push('## Vector Backend (Intelligence RAG)');
+  const vb = report.vectorBackend;
+  const health = !vb.healthy ? 'UNAVAILABLE (no-RAG)' : vb.abiProof ? 'ok (ABI-proof)' : 'ok (native fallback — fragile)';
+  lines.push(`  status:         ${health}`);
+  lines.push(`  active driver:  ${vb.active}`);
+  lines.push(`  runtime:        node ${vb.runtime.node} / ABI ${vb.runtime.modules}${vb.runtime.electron ? ` / electron ${vb.runtime.electron}` : ''}`);
+  for (const d of vb.drivers) {
+    lines.push(`  - ${d.kind}: ${d.available ? 'available' : `unavailable${d.error ? ` (${d.error})` : ''}`}`);
+  }
+  if (vb.remediation) {
+    lines.push(`  remediation:    ${vb.remediation}`);
   }
   lines.push('');
 

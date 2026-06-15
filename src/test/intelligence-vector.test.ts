@@ -156,10 +156,11 @@ suite('intelligence-vector: store -> search round-trip', function () {
 
     assert.ok(fs.existsSync(dbPath), 'db.sqlite file should be persisted');
 
-    // Re-open with a raw better-sqlite3 handle to read the meta row.
+    // Re-open with a raw node:sqlite handle (the primary driver) to read the meta
+    // row — decoupled from which driver initVectorDB chose.
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Database = require('better-sqlite3');
-    const raw = new Database(dbPath, { readonly: true });
+    const { DatabaseSync } = require('node:sqlite');
+    const raw = new DatabaseSync(dbPath, { readOnly: true });
     try {
       const model = raw.prepare(`SELECT value FROM meta WHERE key = ?`).get('model');
       const dimension = raw.prepare(`SELECT value FROM meta WHERE key = ?`).get('dimension');
