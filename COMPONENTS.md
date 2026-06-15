@@ -28,6 +28,7 @@ community contribution helps everyone without giving away the core engine.
 | `src/skills/**` | Skill loading / dispatch glue. |
 | `src/hooks/**` | Event-hook trigger surface (the public hook contract other tools integrate against). |
 | `src/support/**` | Donation / review / support UI (this monetization surface itself is open). |
+| `src/licensing/**` | Offline license-key verification + BYO-key glue. Open by design — it only verifies; the signing private key is held by Zippy Technologies and never shipped. |
 | `docs/**` | Documentation. |
 | `media/**`, `resources/**` | Icons and static assets. |
 | `scripts/**` | Build and developer tooling scripts. |

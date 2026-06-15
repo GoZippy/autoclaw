@@ -71,6 +71,7 @@ import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerSupport } from './support/support';
+import { registerLicensing } from './licensing/licensing';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -888,6 +889,10 @@ export function activate(context: vscode.ExtensionContext) {
   // Support surface: register the Support/Donate panel + rate commands, count
   // today's activity, and (deferred) show a non-invasive milestone prompt.
   registerSupport(context);
+
+  // Commercial licensing + BYO-key. Registers commands only; gates nothing
+  // local. Hosted features opt in via requireHosted() from licensing.ts.
+  registerLicensing(context);
 }
 
 async function installAdapters(
