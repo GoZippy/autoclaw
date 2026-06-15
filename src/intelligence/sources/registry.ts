@@ -40,6 +40,9 @@ import { createClaudeCodeAdapter } from './claudeCode';
 import { createClaudeDesktopAdapter } from './claudeDesktop';
 import { createKiroAdapter } from './kiro';
 import { createGeminiAdapter } from './gemini';
+import { createClineRooAdapter } from './clineRoo';
+import { createContinueAdapter } from './continue';
+import { createKilocodeAdapter } from './kilocode';
 
 // ---------------------------------------------------------------------------
 // Enablement defaults (D13)
@@ -54,6 +57,9 @@ export const DEFAULT_SOURCE_ENABLED: Readonly<Record<string, boolean>> = {
   'claude-desktop': false,
   kiro: false,
   gemini: false,
+  'cline-roo': false,
+  continue: false,
+  kilocode: false,
 };
 
 /**
@@ -389,6 +395,9 @@ export function createDefaultRegistry(): SourceRegistry {
   registry.registerAdapter(createClaudeDesktopAdapter());
   registry.registerAdapter(createKiroAdapter());
   registry.registerAdapter(createGeminiAdapter());
+  registry.registerAdapter(createClineRooAdapter());
+  registry.registerAdapter(createContinueAdapter());
+  registry.registerAdapter(createKilocodeAdapter());
   return registry;
 }
 

@@ -1,0 +1,12 @@
+# GitHub funding config — drives the "Sponsor" button on the repo page.
+# Fill in real values as you create each account. Leave a key blank/removed
+# until its account exists (GitHub hides blanks).
+
+# github: [GoZippy]          # uncomment once a GitHub Sponsors profile exists
+# ko_fi:                     # uncomment if/when you create a Ko-fi
+# open_collective:           # uncomment if/when you create an Open Collective
+
+# Custom links show as-is. Replace the TODO placeholders with your real URLs.
+custom:
+  - "https://github.com/GoZippy/autoclaw/blob/master/SUPPORT.md"   # all the ways to support
+  # - "https://square.link/u/REPLACE_ME"                            # TODO: your Square donation link
