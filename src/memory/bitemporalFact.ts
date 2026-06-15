@@ -338,6 +338,11 @@ export function factAsOf(
   validAt: string,
   knownAt: string = validAt,
 ): BitemporalFact | undefined {
+  // A fact's window-close (`valid_to`) is only *known* once the superseding
+  // fact has been recorded — so a point query at transaction-time `knownAt`
+  // must ignore a close that was not yet known then. Index facts by id so the
+  // successor's `recorded_at` can be looked up via `superseded_by`.
+  const byId = new Map(facts.map((f) => [f.id, f]));
   const candidates = facts.filter((f) => {
     if (f.subject !== subject) {
       return false;
@@ -349,7 +354,16 @@ export function factAsOf(
       return false; // not yet valid at the valid-time cut-off
     }
     if (f.valid_to !== null && f.valid_to <= validAt) {
-      return false; // valid window already closed
+      // The valid window appears closed — but only exclude the fact if that
+      // close was *known* by `knownAt`. The close becomes known when the
+      // superseding fact is recorded; fall back to `valid_to` when there is
+      // no superseding fact in the set (a manual close, known immediately).
+      const successor =
+        f.superseded_by !== null ? byId.get(f.superseded_by) : undefined;
+      const closeKnownAt = successor ? successor.recorded_at : f.valid_to;
+      if (closeKnownAt <= knownAt) {
+        return false; // window-close was already known at the transaction cut-off
+      }
     }
     return true;
   });
