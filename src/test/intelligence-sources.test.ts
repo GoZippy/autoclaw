@@ -325,15 +325,18 @@ suite('intelligence-sources', function () {
 
   // -------------------------------------------------------------------------
   suite('registry: enablement defaults (D13)', function () {
-    test('default registry exposes the built-in + Wave A adapters', function () {
+    test('default registry exposes the built-in + Wave A + Tier-3 adapters', function () {
       const reg = createDefaultRegistry();
       assert.deepStrictEqual(reg.ids().sort(), [
         'autoclaw-native',
         'claude-code',
         'claude-desktop',
+        'cline-roo',
+        'continue',
         'cursor',
         'gemini',
         'generic',
+        'kilocode',
         'kiro',
       ]);
     });
