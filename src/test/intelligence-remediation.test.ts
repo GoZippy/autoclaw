@@ -25,7 +25,7 @@ import * as path from 'path';
 
 import { indexCodebase, retrieveCode, GitRunner } from '../intelligence/ragCode';
 import { learnFromSessions } from '../intelligence/learn';
-import { initVectorDB } from '../intelligence/vectorEngine';
+import { initVectorDB } from '../intelligence/vector';
 import { redactSecrets } from '../intelligence/redact';
 import { getNoneEmbedding } from '../intelligence/embeddings';
 import { defaultConfig } from '../intelligence/config';

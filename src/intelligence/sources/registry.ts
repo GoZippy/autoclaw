@@ -36,6 +36,10 @@ import {
 import { createAutoclawNativeAdapter } from './autoclawNative';
 import { createCursorAdapter } from './cursor';
 import { createGenericAdapter } from './generic';
+import { createClaudeCodeAdapter } from './claudeCode';
+import { createClaudeDesktopAdapter } from './claudeDesktop';
+import { createKiroAdapter } from './kiro';
+import { createGeminiAdapter } from './gemini';
 
 // ---------------------------------------------------------------------------
 // Enablement defaults (D13)
@@ -46,6 +50,10 @@ export const DEFAULT_SOURCE_ENABLED: Readonly<Record<string, boolean>> = {
   'autoclaw-native': true,
   cursor: false,
   generic: false,
+  'claude-code': false,
+  'claude-desktop': false,
+  kiro: false,
+  gemini: false,
 };
 
 /**
@@ -377,6 +385,10 @@ export function createDefaultRegistry(): SourceRegistry {
   registry.registerAdapter(createAutoclawNativeAdapter());
   registry.registerAdapter(createCursorAdapter());
   registry.registerAdapter(createGenericAdapter());
+  registry.registerAdapter(createClaudeCodeAdapter());
+  registry.registerAdapter(createClaudeDesktopAdapter());
+  registry.registerAdapter(createKiroAdapter());
+  registry.registerAdapter(createGeminiAdapter());
   return registry;
 }
 

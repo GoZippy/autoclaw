@@ -29,9 +29,15 @@ import {
   loadConfig,
   getActiveEmbeddingSignature,
   intelligencePaths,
-  initVectorDB,
+  initVectorBackend,
   getEmbedding,
   resolveProjectKey,
+  listSources,
+  setSourceEnabled,
+  pendingConsentSources,
+  generateRAGPrompt,
+  buildScaffold,
+  getDashboardData,
 } from './intelligence';
 
 const OUTPUT_CHANNEL_NAME = 'AutoClaw — Intelligence';
@@ -265,7 +271,7 @@ async function runSearch(workspaceRoot: string): Promise<void> {
     async () => {
       const config = loadConfig(workspaceRoot, log);
       const { dbPath } = intelligencePaths(workspaceRoot);
-      const db = await initVectorDB(dbPath, getActiveEmbeddingSignature(config), log);
+      const db = await initVectorBackend(config, dbPath, getActiveEmbeddingSignature(config), log);
       if (db.degraded) {
         log('search: vector backend unavailable; no results');
         db.close();
@@ -315,6 +321,137 @@ async function runSearch(workspaceRoot: string): Promise<void> {
       logLine(match.content);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Wave A command handlers (sources / rag-generate / scaffold / metrics)
+// ---------------------------------------------------------------------------
+
+async function runSources(workspaceRoot: string): Promise<void> {
+  const log: LogFn = logLine;
+  getChannel().show(true);
+
+  // First-run consent: present available, undecided third-party sources (R3.4).
+  const consent = await pendingConsentSources({ workspaceRoot, log });
+  if (consent.toPrompt.length > 0) {
+    const picks = await vscode.window.showQuickPick(
+      consent.toPrompt.map((id) => ({ label: id, picked: false })),
+      {
+        canPickMany: true,
+        placeHolder: 'Enable ingestion for these third-party sources? (opt-in, local-only)',
+      },
+    );
+    if (picks) {
+      const chosen = new Set(picks.map((p) => p.label));
+      for (const id of consent.toPrompt) {
+        await setSourceEnabled(workspaceRoot, id, chosen.has(id), log);
+      }
+    }
+  }
+
+  const rows = await listSources({ workspaceRoot, countSessions: true, log });
+  logLine('Intelligence — Sources:');
+  for (const r of rows) {
+    logLine(
+      `  [tier ${r.tier}] ${r.displayName} (${r.id}): ${r.enabled ? 'enabled' : 'disabled'}, ` +
+        `${r.available ? 'available' : 'unavailable'}` +
+        (typeof r.sessionCount === 'number' ? `, ${r.sessionCount} session(s)` : '') +
+        (r.locations[0] ? ` @ ${r.locations[0]}` : '') +
+        (r.hint && !r.available ? ` — ${r.hint}` : ''),
+    );
+  }
+
+  const action = await vscode.window.showQuickPick(
+    rows.map((r) => ({
+      label: `${r.enabled ? 'Disable' : 'Enable'} ${r.displayName}`,
+      id: r.id,
+      enable: !r.enabled,
+    })),
+    { placeHolder: 'Toggle a source (Esc to skip)' },
+  );
+  if (action) {
+    await setSourceEnabled(workspaceRoot, action.id, action.enable, log);
+    void vscode.window.showInformationMessage(
+      `Intelligence: ${action.enable ? 'enabled' : 'disabled'} ${action.id}.`,
+    );
+  }
+}
+
+async function runRagGenerate(workspaceRoot: string): Promise<void> {
+  const task = await vscode.window.showInputBox({
+    prompt: 'Describe the task for a RAG-augmented prompt',
+    placeHolder: 'e.g. Add pagination to the /users endpoint',
+  });
+  if (!task) {
+    return;
+  }
+  const log: LogFn = logLine;
+  getChannel().show(true);
+  logLine(`rag-generate: "${task}"`);
+
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'AutoClaw Intelligence: generating RAG prompt…',
+      cancellable: false,
+    },
+    () => generateRAGPrompt(task, { workspaceRoot, log }),
+  );
+
+  await vscode.env.clipboard.writeText(result.prompt);
+  logLine(
+    `rag-generate: ${result.usedCode ? `${result.codeHits} code chunk(s)` : 'no code (degraded/empty)'}, ` +
+      `${result.learningHits} learning(s); copied to clipboard.`,
+  );
+  for (const note of result.notes) {
+    logLine(`rag-generate: note — ${note}`);
+  }
+  logLine('--- RAG PROMPT ---');
+  logLine(result.prompt);
+  void vscode.window.showInformationMessage(
+    `Intelligence: RAG prompt copied to clipboard${result.usedCode ? '' : ' (code retrieval unavailable)'}.`,
+  );
+}
+
+async function runScaffold(workspaceRoot: string): Promise<void> {
+  const focus = await vscode.window.showInputBox({
+    prompt: 'Focus area for the scaffold (optional)',
+    placeHolder: 'e.g. error handling',
+  });
+  // empty string = no focus; undefined = user cancelled
+  if (focus === undefined) {
+    return;
+  }
+  getChannel().show(true);
+  const scaffold = buildScaffold({ workspaceRoot, focus: focus.trim() || undefined });
+  await vscode.env.clipboard.writeText(scaffold);
+  logLine(`scaffold:${focus.trim() ? ` focus="${focus.trim()}"` : ''} copied to clipboard.`);
+  logLine('--- SCAFFOLD ---');
+  logLine(scaffold);
+  void vscode.window.showInformationMessage('Intelligence: scaffold copied to clipboard.');
+}
+
+async function runMetrics(workspaceRoot: string): Promise<void> {
+  getChannel().show(true);
+  const data = getDashboardData(workspaceRoot);
+  if (data.empty) {
+    logLine('metrics: no learning runs recorded yet. Run /learn first.');
+    void vscode.window.showInformationMessage(
+      'Intelligence: no metrics yet. Run /learn to record a run.',
+    );
+    return;
+  }
+  const s = data.summary;
+  logLine('Intelligence — Metrics:');
+  logLine(`  runs: ${s.totalRuns}, sessions: ${s.totalSessions}, patterns: ${s.totalPatterns}`);
+  logLine(`  avg kept rate: ${(s.avgKeptRate * 100).toFixed(1)}%`);
+  logLine(
+    `  tokens: ${s.tokens.hasReal ? `${s.tokens.real} real` : `${s.tokens.estimated} estimated`}` +
+      (s.totalCostUsd > 0 ? `, cost $${s.totalCostUsd.toFixed(4)}` : ''),
+  );
+  void vscode.window.showInformationMessage(
+    `Intelligence: ${s.totalRuns} run(s), avg kept ${(s.avgKeptRate * 100).toFixed(0)}%.`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -372,6 +509,22 @@ export function registerIntelligenceCommands(
     vscode.commands.registerCommand(
       'autoclaw.intelligence.search',
       withWorkspace(getWorkspaceRoot, runSearch),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.sources',
+      withWorkspace(getWorkspaceRoot, runSources),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.ragGenerate',
+      withWorkspace(getWorkspaceRoot, runRagGenerate),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.scaffold',
+      withWorkspace(getWorkspaceRoot, runScaffold),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.metrics',
+      withWorkspace(getWorkspaceRoot, runMetrics),
     ),
   );
 }

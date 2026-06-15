@@ -1,5 +1,7 @@
 /**
- * vectorEngine.ts — sqlite-vec vector store for the AutoClaw Intelligence Layer.
+ * vector/sqliteVec.ts — sqlite-vec vector store for the AutoClaw Intelligence
+ * Layer (relocated from the core-loop `vectorEngine.ts`; selected by the
+ * `vector/index.ts` backend factory when `config.backend === 'sqlite-vec'`).
  *
  * Owns the embedding persistence + semantic-search round-trip described by the
  * core-loop design (R3.1-R3.5, D11):
@@ -20,11 +22,11 @@
  * No `vscode` import; no work or native require at module load time.
  */
 
-import { DEFAULT_CONFIG } from './config';
-import { LogFn } from './config';
-import { EmbeddingSignature } from './types';
-import { ensureDir } from './paths';
-import { acquireLock } from './fileLock';
+import { DEFAULT_CONFIG } from '../config';
+import { LogFn } from '../config';
+import { EmbeddingSignature } from '../types';
+import { ensureDir } from '../paths';
+import { acquireLock } from '../fileLock';
 
 // ---------------------------------------------------------------------------
 // Public types

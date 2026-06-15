@@ -3,6 +3,29 @@
 (function () {
   const vscode = acquireVsCodeApi();
 
+  // ── Persistent UI state ───────────────────────────────────────────
+  // The Team view re-renders agent cards / board / awaiting-you via
+  // innerHTML on every data tick, which nukes any expand/collapse the
+  // user had open. We keep the user's view state here (source of truth)
+  // and re-apply it after each render. vscode.getState/setState persist
+  // it across full webview reloads (tab switch, window reload, restart).
+  //   sections: { [sectionId]: bool }  — only user-overridden sections
+  //   agents:   { [agentId]: true }    — open agent cards
+  //   threads:  { [taskId]: true }     — open board message-threads
+  const _saved = vscode.getState() || {};
+  const uiState = {
+    sections: (_saved && _saved.sections) || {},
+    agents: (_saved && _saved.agents) || {},
+    threads: (_saved && _saved.threads) || {},
+  };
+  function saveUiState() {
+    vscode.setState({
+      sections: uiState.sections,
+      agents: uiState.agents,
+      threads: uiState.threads,
+    });
+  }
+
   // ── Quick-action buttons ──────────────────────────────────────────
   document.getElementById('btn-launch-skill')?.addEventListener('click', () => {
     vscode.postMessage({ command: 'launchSkill' });
@@ -29,17 +52,37 @@
 
   // ── Collapsible sections ──────────────────────────────────────────
   document.querySelectorAll('.section-header').forEach(header => {
-    header.addEventListener('click', () => {
-      header.parentElement.classList.toggle('open');
-    });
+    const section = header.parentElement;
+    const key = section && section.id;
+    const toggle = () => {
+      const open = section.classList.toggle('open');
+      header.setAttribute('aria-expanded', String(open));
+      if (key) { uiState.sections[key] = open; saveUiState(); }
+    };
+    header.addEventListener('click', toggle);
     // Keyboard accessibility
     header.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        header.parentElement.classList.toggle('open');
+        toggle();
       }
     });
   });
+
+  // Re-apply any section open/closed state the user previously chose.
+  // Runs once at load (DOM is ready — this script is at end of <body>).
+  function restoreSections() {
+    document.querySelectorAll('.panel-section').forEach(section => {
+      const key = section.id;
+      if (key && Object.prototype.hasOwnProperty.call(uiState.sections, key)) {
+        const open = !!uiState.sections[key];
+        section.classList.toggle('open', open);
+        const head = section.querySelector('.section-header');
+        if (head) head.setAttribute('aria-expanded', String(open));
+      }
+    });
+  }
+  restoreSections();
 
   // ── Message handler ───────────────────────────────────────────────
   window.addEventListener('message', event => {
@@ -116,6 +159,17 @@
         }
       });
     });
+    // Re-apply expansion the user had open before this data tick.
+    el.querySelectorAll('.agent-card').forEach(card => {
+      const id = card.getAttribute('data-agent-id');
+      if (id && uiState.agents[id]) {
+        card.classList.add('open');
+        const head = card.querySelector('.agent-card-head');
+        if (head) head.setAttribute('aria-expanded', 'true');
+        const body = card.querySelector('.agent-card-body');
+        if (body) body.removeAttribute('hidden');
+      }
+    });
   }
 
   function toggleAgentCard(head) {
@@ -126,6 +180,11 @@
     const body = head.parentElement?.querySelector('.agent-card-body');
     if (body) {
       if (isOpen) body.removeAttribute('hidden'); else body.setAttribute('hidden', '');
+    }
+    const id = card.getAttribute('data-agent-id');
+    if (id) {
+      if (isOpen) uiState.agents[id] = true; else delete uiState.agents[id];
+      saveUiState();
     }
   }
 
@@ -139,8 +198,14 @@
     setBadge('awaiting-you-badge', String(count));
     const section = document.getElementById('awaiting-you-section');
     if (section) {
-      // Auto-open when there is anything to show.
-      if (count > 0) section.classList.add('open');
+      // Respect the user's explicit choice if they've toggled this section;
+      // otherwise auto-open when there is anything awaiting them.
+      if (Object.prototype.hasOwnProperty.call(uiState.sections, 'awaiting-you-section')) {
+        const open = !!uiState.sections['awaiting-you-section'];
+        section.classList.toggle('open', open);
+      } else if (count > 0) {
+        section.classList.add('open');
+      }
     }
     // Wire Reply buttons (question / generic items)
     el.querySelectorAll('.reply-btn').forEach(btn => {
@@ -254,7 +319,23 @@
         if (opening) thread.removeAttribute('hidden'); else thread.setAttribute('hidden', '');
         btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
         card.classList.toggle('thread-open', opening);
+        const tid = card.getAttribute('data-task-id');
+        if (tid) {
+          if (opening) uiState.threads[tid] = true; else delete uiState.threads[tid];
+          saveUiState();
+        }
       });
+    });
+    // Re-apply any threads the user had expanded before this data tick.
+    el.querySelectorAll('.board-card').forEach(card => {
+      const tid = card.getAttribute('data-task-id');
+      if (tid && uiState.threads[tid]) {
+        const thread = card.querySelector('.task-thread');
+        const btn = card.querySelector('.thread-toggle');
+        if (thread) thread.removeAttribute('hidden');
+        if (btn) btn.setAttribute('aria-expanded', 'true');
+        card.classList.add('thread-open');
+      }
     });
   }
 

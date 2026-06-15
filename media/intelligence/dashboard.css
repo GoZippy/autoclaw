@@ -1,0 +1,200 @@
+/*
+ * dashboard.css — Intelligence metrics dashboard styling.
+ * Themed entirely with VS Code webview CSS variables (no hard-coded palette)
+ * so it tracks light/dark/high-contrast themes. No external fonts / no CDN.
+ */
+
+:root {
+  --gap: 12px;
+  --radius: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: var(--gap);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background, transparent);
+}
+
+/* ---- Toolbar -------------------------------------------------------------- */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--gap);
+}
+
+button.action {
+  flex: 1 1 auto;
+  min-width: 56px;
+  padding: 6px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: var(--radius);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  font-size: inherit;
+}
+
+button.action:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button.action.ghost {
+  flex: 0 0 auto;
+  min-width: 34px;
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+}
+
+button.action:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
+/* ---- Empty + error states ------------------------------------------------- */
+
+.empty-state {
+  text-align: center;
+  padding: 32px 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.empty-title {
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.empty-hint {
+  margin: 0;
+  font-size: 0.92em;
+}
+
+.error-banner {
+  padding: 8px 10px;
+  margin-bottom: var(--gap);
+  border-radius: var(--radius);
+  background: var(--vscode-inputValidation-errorBackground, rgba(255, 0, 0, 0.1));
+  border: 1px solid var(--vscode-inputValidation-errorBorder, red);
+  color: var(--vscode-foreground);
+}
+
+/* ---- Summary cards -------------------------------------------------------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: var(--gap);
+  margin-bottom: var(--gap);
+}
+
+.card {
+  padding: 10px;
+  border-radius: var(--radius);
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--vscode-widget-border, transparent);
+}
+
+.card .value {
+  font-size: 1.5em;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.card .label {
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 4px;
+}
+
+/* ---- Charts --------------------------------------------------------------- */
+
+.chart-block {
+  margin-bottom: var(--gap);
+}
+
+.chart-title {
+  font-size: 0.95em;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+canvas.chart {
+  width: 100%;
+  height: auto;
+  display: block;
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.05));
+  border-radius: var(--radius);
+}
+
+.legend {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 4px;
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.swatch {
+  width: 11px;
+  height: 11px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.swatch-real {
+  background: var(--vscode-charts-blue, #3794ff);
+}
+
+.swatch-est {
+  background: var(--vscode-charts-yellow, #cca700);
+}
+
+/* ---- Recent runs ---------------------------------------------------------- */
+
+.recent-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recent-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.06));
+  font-size: 0.85em;
+}
+
+.recent-row .when {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.recent-row .meta {
+  color: var(--vscode-foreground);
+  text-align: right;
+}
+
+.badge-real {
+  color: var(--vscode-charts-blue, #3794ff);
+}
+
+.badge-est {
+  color: var(--vscode-charts-yellow, #cca700);
+}

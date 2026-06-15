@@ -20,7 +20,7 @@ import * as path from 'path';
 
 import { indexCodebase, GitRunner } from '../intelligence/ragCode';
 import { learnFromSessions } from '../intelligence/learn';
-import { initVectorDB } from '../intelligence/vectorEngine';
+import { initVectorDB } from '../intelligence/vector';
 import { getNoneEmbedding } from '../intelligence/embeddings';
 import { defaultConfig } from '../intelligence/config';
 import { resolveProjectKey } from '../intelligence/project';

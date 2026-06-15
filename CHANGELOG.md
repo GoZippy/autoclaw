@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.4.1]
+
+### Fixed
+
+- **Team view no longer resets on data updates** (`src/webview/kdream-dashboard.js`,
+  `src/extension.ts`) — expanded agent cards, collapsible sections, and per-task
+  message-threads now persist their open/closed state across refresh ticks and
+  full webview reloads (via `vscode.getState`/`setState`), and the panel sets
+  `retainContextWhenHidden` so switching VS Code tabs no longer reloads it from
+  scratch. Previously every data tick re-ran `innerHTML` and snapped all panels shut.
+- **Mis-attributed inbox counts made explicit** (`src/webview-render.ts`,
+  `src/webview/kdream-dashboard.css`) — the Team view now shows a "You are
+  &lt;agent&gt;" identity banner and highlights the self card (`is-self`), so the
+  self-scoped Awaiting-You counts read unambiguously in every IDE instead of
+  appearing to move between agents per window.
+- **Build gate unblocked** (`src/test/agentCardPublisher.test.ts`) — the
+  `AgentRegistry` fixture was missing the required `last_heartbeat` and `status`
+  fields of `RegisteredAgent`, breaking `tsc`/`test:unit`.
+
 ## [Unreleased]
 
 ### Added
