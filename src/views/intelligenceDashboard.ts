@@ -42,6 +42,7 @@ const ACTION_COMMANDS: Record<string, string> = {
   'install-backend': 'autoclaw.intelligence.installBackend',
   relocate: 'autoclaw.intelligence.relocateBackend',
   'system-tier': 'autoclaw.intelligence.systemTier',
+  steering: 'autoclaw.intelligence.generateSteering',
 };
 
 /** Settings query the ⚙ button opens (the Intelligence settings). */

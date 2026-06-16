@@ -41,7 +41,9 @@ import {
   promoteInsight,
   readSystemLearnings,
   searchSystemLearnings,
+  parseInsightItems,
 } from './intelligence/systemStore';
+import { buildSteeringMarkdown } from './intelligence/steering';
 import {
   LogFn,
   learnFromSessions,
@@ -252,11 +254,8 @@ function recordProjectInSystemTier(
  * into the cross-project system store (deduped). No-op unless a system dir is set.
  * Best-effort.
  */
-function promoteLatestInsightToSystem(workspaceRoot: string): void {
-  const sys = systemPaths(systemDirSetting());
-  if (!sys) {
-    return;
-  }
+/** Read the newest `insight-*.md` from the project's learnings dir, or undefined. */
+function latestInsightMarkdown(workspaceRoot: string): string | undefined {
   try {
     const learningsDir = intelligencePaths(workspaceRoot).learningsDir;
     const insights = fs
@@ -265,9 +264,24 @@ function promoteLatestInsightToSystem(workspaceRoot: string): void {
       .map((f) => ({ f, m: fs.statSync(path.join(learningsDir, f)).mtimeMs }))
       .sort((a, b) => b.m - a.m);
     if (insights.length === 0) {
-      return;
+      return undefined;
     }
-    const md = fs.readFileSync(path.join(learningsDir, insights[0].f), 'utf8');
+    return fs.readFileSync(path.join(learningsDir, insights[0].f), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+function promoteLatestInsightToSystem(workspaceRoot: string): void {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    return;
+  }
+  const md = latestInsightMarkdown(workspaceRoot);
+  if (!md) {
+    return;
+  }
+  try {
     const res = promoteInsight(sys, {
       project: workspaceRoot,
       insightMarkdown: md,
@@ -279,6 +293,60 @@ function promoteLatestInsightToSystem(workspaceRoot: string): void {
   } catch {
     /* best effort */
   }
+}
+
+/**
+ * `autoclaw.intelligence.generateSteering` — write a steering file from the
+ * distilled learnings (latest insight + optional system tier) so any agent can
+ * pick up this project's learned conventions. Writes `<workspace>/.autoclaw/steering.md`.
+ */
+async function runGenerateSteering(workspaceRoot: string): Promise<void> {
+  const md = latestInsightMarkdown(workspaceRoot);
+  if (!md) {
+    void vscode.window.showWarningMessage(
+      'Intelligence: no learnings yet. Run "Learn from Sessions" first, then generate steering.',
+    );
+    return;
+  }
+  const items = parseInsightItems(md);
+  const byKind = (kind: string): string[] => items.filter((i) => i.kind === kind).map((i) => i.text);
+
+  const sys = systemPaths(systemDirSetting());
+  const systemLearnings = sys
+    ? readSystemLearnings(sys).slice(-12).map((l) => ({ text: l.text, kind: l.kind, project: path.basename(l.project) }))
+    : undefined;
+
+  const steering = buildSteeringMarkdown({
+    projectName: path.basename(workspaceRoot),
+    generatedAt: new Date().toISOString(),
+    patterns: byKind('pattern'),
+    avoid: byKind('avoid'),
+    tools: byKind('tool'),
+    systemLearnings,
+  });
+
+  const outPath = path.join(intelligencePaths(workspaceRoot).root, 'steering.md');
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, steering, 'utf8');
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed to write steering file: ${String(err)}`);
+    return;
+  }
+  logLine(`generate-steering: wrote ${toForwardSlashLocal(outPath)}`);
+  const choice = await vscode.window.showInformationMessage(
+    `Intelligence: steering written to .autoclaw/steering.md (${items.length} learned item(s)).`,
+    'Open',
+  );
+  if (choice === 'Open') {
+    const doc = await vscode.workspace.openTextDocument(outPath);
+    void vscode.window.showTextDocument(doc);
+  }
+}
+
+/** Local forward-slash helper for log output (paths.ts' toForwardSlash is host-free too). */
+function toForwardSlashLocal(p: string): string {
+  return p.replace(/\\/g, '/');
 }
 
 async function runRetrieve(workspaceRoot: string): Promise<void> {
@@ -311,7 +379,8 @@ async function runRetrieve(workspaceRoot: string): Promise<void> {
 
   if (hits.length === 0) {
     logLine('retrieve: no matching chunks. The index may be empty or degraded.');
-    void vscode.window.showInformationMessage(`Intelligence: no matches. ${GUIDANCE}`);
+    appendSystemTierCrossRef(query);
+    void vscode.window.showInformationMessage(`Intelligence: no local matches. ${GUIDANCE}`);
     return;
   }
 
@@ -319,6 +388,7 @@ async function runRetrieve(workspaceRoot: string): Promise<void> {
   for (const hit of hits) {
     logLine(`  ${hit.score.toFixed(3)}  ${hit.file}`);
   }
+  appendSystemTierCrossRef(query);
 
   const picked = await vscode.window.showQuickPick(
     hits.map((h) => ({
@@ -390,7 +460,8 @@ async function runSearch(workspaceRoot: string): Promise<void> {
 
   if (results.length === 0) {
     logLine('search: no matching knowledge. The store may be empty or degraded.');
-    void vscode.window.showInformationMessage(`Intelligence: no matches. ${GUIDANCE}`);
+    appendSystemTierCrossRef(query);
+    void vscode.window.showInformationMessage(`Intelligence: no local matches. ${GUIDANCE}`);
     return;
   }
 
@@ -399,6 +470,7 @@ async function runSearch(workspaceRoot: string): Promise<void> {
     const file = typeof r.metadata?.file === 'string' ? (r.metadata.file as string) : r.source;
     logLine(`  ${r.score.toFixed(3)}  [${r.source}] ${file}`);
   }
+  appendSystemTierCrossRef(query);
 
   const picked = await vscode.window.showQuickPick(
     results.map((r) => {
@@ -418,6 +490,39 @@ async function runSearch(workspaceRoot: string): Promise<void> {
       logLine(`--- [${match.source}] (score ${match.score.toFixed(3)}) ---`);
       logLine(match.content);
     }
+  }
+}
+
+/**
+ * Local→system retrieval fallback: when the system tier is enabled, surface
+ * matching cross-project learnings AND which other projects know about the query
+ * (from the registry) alongside the local results. No-op when systemDir is unset.
+ */
+function appendSystemTierCrossRef(query: string): void {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    return;
+  }
+  try {
+    const ch = getChannel();
+    const hits = searchSystemLearnings(sys, query, 6);
+    if (hits.length > 0) {
+      ch.appendLine(`  ↳ cross-project system knowledge (${hits.length}):`);
+      for (const h of hits) {
+        ch.appendLine(`      [${h.kind}/${h.tier}] ${h.text}   — ${path.basename(h.project)}`);
+      }
+    }
+    // Which other projects mention the query (registry name/topic match).
+    const tokens = query.toLowerCase().split(/\W+/).filter((t) => t.length >= 3);
+    const projects = readRegistry(sys.registryPath).projects.filter((p) => {
+      const hay = `${p.name} ${(p.topics ?? []).join(' ')}`.toLowerCase();
+      return tokens.some((t) => hay.includes(t));
+    });
+    if (projects.length > 0) {
+      ch.appendLine(`  ↳ projects that may know about this: ${projects.map((p) => p.name).join(', ')}`);
+    }
+  } catch {
+    /* best effort — cross-ref is additive */
   }
 }
 
@@ -884,6 +989,10 @@ export function registerIntelligenceCommands(
     vscode.commands.registerCommand('autoclaw.intelligence.systemTier', () => runSystemTier()),
     vscode.commands.registerCommand('autoclaw.intelligence.relocateBackend', () =>
       runRelocateBackend(context, getWorkspaceRoot()),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.generateSteering',
+      withWorkspace(getWorkspaceRoot, runGenerateSteering),
     ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.learn',
