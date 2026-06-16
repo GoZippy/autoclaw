@@ -28,6 +28,11 @@ import {
   VEC_DIR_ENV,
 } from './intelligence/installBackend';
 import {
+  resolveBackendDir,
+  gatherStorageStatus,
+  formatBytes,
+} from './intelligence/storage';
+import {
   LogFn,
   learnFromSessions,
   indexCodebase,
@@ -527,9 +532,26 @@ function withWorkspace(
   };
 }
 
-/** Persistent per-user dir that holds the installed `sqlite-vec` native peer. */
-function nativePeerDir(context: vscode.ExtensionContext): string {
-  return path.join(context.globalStorageUri.fsPath, 'native');
+/** The optional `autoclaw.intelligence.backendDir` setting (empty ⇒ unset). */
+function backendDirSetting(): string | undefined {
+  const v = vscode.workspace.getConfiguration('autoclaw.intelligence').get<string>('backendDir');
+  return v && v.trim() !== '' ? v : undefined;
+}
+
+/** The optional `autoclaw.intelligence.systemDir` setting (cross-project tier). */
+function systemDirSetting(): string | undefined {
+  const v = vscode.workspace.getConfiguration('autoclaw.intelligence').get<string>('systemDir');
+  return v && v.trim() !== '' ? v : undefined;
+}
+
+/**
+ * Where the `sqlite-vec` native peer installs. Defaults PROJECT-LOCAL
+ * (`<workspace>/.autoclaw/native`) so nothing is forced onto C:; the
+ * `backendDir` setting overrides; the extension globalStorage is only a
+ * last-resort fallback when there is no workspace.
+ */
+function backendDir(context: vscode.ExtensionContext, workspaceRoot: string | undefined): string {
+  return resolveBackendDir(workspaceRoot, backendDirSetting(), context.globalStorageUri.fsPath);
 }
 
 /** Pinned `sqlite-vec` version from the extension manifest's optionalDependencies. */
@@ -538,9 +560,12 @@ function pinnedSqliteVecVersion(context: vscode.ExtensionContext): string {
   return typeof opt['sqlite-vec'] === 'string' ? opt['sqlite-vec'] : 'latest';
 }
 
-/** Point the host-free vector loader at the persistent install dir when present. */
-function wireInstalledBackend(context: vscode.ExtensionContext): void {
-  const dir = nativePeerDir(context);
+/** Point the host-free vector loader at the installed backend when present. */
+function wireInstalledBackend(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): void {
+  const dir = backendDir(context, workspaceRoot);
   if (isBackendInstalled(dir)) {
     process.env[VEC_DIR_ENV] = dir;
   }
@@ -548,18 +573,22 @@ function wireInstalledBackend(context: vscode.ExtensionContext): void {
 
 /**
  * `autoclaw.intelligence.installBackend` — install the `sqlite-vec` native peer
- * (the `vec0` loadable) into a persistent per-user dir so RAG/indexing works in
- * the packaged extension, where the native peers are excluded from the `.vsix`.
- * The SQLite engine itself is Node-core `node:sqlite` (no install). Idempotent +
- * re-runnable.
+ * (the `vec0` loadable) so RAG/indexing works in the packaged extension, where
+ * the native peers are excluded from the `.vsix`. Installs PROJECT-LOCAL by
+ * default (`<workspace>/.autoclaw/native`, configurable via `backendDir`) — never
+ * forced onto C:. The SQLite engine itself is Node-core `node:sqlite` (no
+ * install). Idempotent + re-runnable.
  */
-async function runInstallBackend(context: vscode.ExtensionContext): Promise<void> {
-  const dir = nativePeerDir(context);
+async function runInstallBackend(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  const dir = backendDir(context, workspaceRoot);
   const version = pinnedSqliteVecVersion(context);
   const result = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: `AutoClaw Intelligence: installing vector backend (sqlite-vec@${version})…`,
+      title: `AutoClaw Intelligence: installing vector backend (sqlite-vec@${version}) → ${dir}…`,
       cancellable: false,
     },
     () => Promise.resolve(installVectorBackend({ targetDir: dir, version, log: logLine })),
@@ -567,9 +596,9 @@ async function runInstallBackend(context: vscode.ExtensionContext): Promise<void
 
   if (result.ok) {
     process.env[VEC_DIR_ENV] = result.installedDir ?? dir;
-    logLine(`install-backend: ready (${result.loadablePath}).`);
+    logLine(`install-backend: ready at ${result.installedDir ?? dir} (${result.loadablePath}).`);
     void vscode.window.showInformationMessage(
-      'Intelligence vector backend installed. Run "Index Codebase" to build the RAG index.',
+      `Intelligence vector backend installed (${dir}). Run "Index Codebase" to build the RAG index.`,
     );
     return;
   }
@@ -577,6 +606,64 @@ async function runInstallBackend(context: vscode.ExtensionContext): Promise<void
   void vscode.window.showErrorMessage(
     `Intelligence backend install failed: ${result.error}. ` +
       'Ensure node:sqlite is available (Node 24 / recent Electron) and npm is on PATH.',
+  );
+}
+
+/**
+ * `autoclaw.intelligence.status` — a visibility report: WHERE every store lives
+ * (project root, vector index, backend dir, optional system tier), HOW MUCH data
+ * is there, the index watermark, and the learn summary. Read-only.
+ */
+async function runStatus(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  if (!workspaceRoot) {
+    void vscode.window.showWarningMessage('AutoClaw Intelligence: open a workspace folder first.');
+    return;
+  }
+  const paths = intelligencePaths(workspaceRoot);
+  const bdir = backendDir(context, workspaceRoot);
+  const status = gatherStorageStatus({
+    workspaceRoot,
+    contractRoot: paths.root,
+    dbPath: paths.dbPath,
+    lastIndexPath: paths.lastIndexPath,
+    backendDir: bdir,
+    backendInstalled: isBackendInstalled(bdir),
+    systemDir: systemDirSetting(),
+  });
+  const s = getDashboardData(workspaceRoot).summary;
+
+  const ch = getChannel();
+  ch.show(true);
+  ch.appendLine('────────────────────────────────────────────────────────');
+  ch.appendLine('AutoClaw Intelligence — Status');
+  ch.appendLine('────────────────────────────────────────────────────────');
+  ch.appendLine('STORAGE (locations + sizes):');
+  ch.appendLine(`  project data : ${status.projectRoot.path}  (${formatBytes(status.projectRoot.sizeBytes)})`);
+  ch.appendLine(`  vector index : ${status.index.dbPath}  (${formatBytes(status.index.dbSizeBytes)})`);
+  ch.appendLine(
+    `  backend      : ${status.backend.path}  (${status.backend.installed ? 'installed' : 'NOT installed'})`,
+  );
+  ch.appendLine(
+    `  system tier  : ${status.system.enabled ? `${(status.system as { path: string }).path}` : 'disabled (set autoclaw.intelligence.systemDir to enable)'}`,
+  );
+  ch.appendLine('INDEX:');
+  ch.appendLine(
+    `  last indexed : ${status.index.indexedAt ?? '(never)'}${status.index.commit ? `  @ ${status.index.commit.slice(0, 8)}` : ''}`,
+  );
+  ch.appendLine('LEARN:');
+  ch.appendLine(
+    `  sessions=${s.totalSessions}  patterns=${s.totalPatterns}  kept-rate=${(s.avgKeptRate * 100).toFixed(1)}%  runs=${s.totalRuns}`,
+  );
+  ch.appendLine(
+    `  tokens(est)=${s.tokens.estimated}  cost=$${s.totalCostUsd.toFixed(4)}`,
+  );
+  ch.appendLine('────────────────────────────────────────────────────────');
+
+  void vscode.window.showInformationMessage(
+    `Intelligence: index ${formatBytes(status.index.dbSizeBytes)} at ${status.index.dbPath} · ${s.totalSessions} sessions learned. Details in the "AutoClaw — Intelligence" output.`,
   );
 }
 
@@ -590,10 +677,13 @@ export function registerIntelligenceCommands(
   context: vscode.ExtensionContext,
   getWorkspaceRoot: () => string | undefined,
 ): void {
-  wireInstalledBackend(context);
+  wireInstalledBackend(context, getWorkspaceRoot());
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.intelligence.installBackend', () =>
-      runInstallBackend(context),
+      runInstallBackend(context, getWorkspaceRoot()),
+    ),
+    vscode.commands.registerCommand('autoclaw.intelligence.status', () =>
+      runStatus(context, getWorkspaceRoot()),
     ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.learn',
