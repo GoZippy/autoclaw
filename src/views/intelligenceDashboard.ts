@@ -43,6 +43,7 @@ const ACTION_COMMANDS: Record<string, string> = {
   relocate: 'autoclaw.intelligence.relocateBackend',
   'system-tier': 'autoclaw.intelligence.systemTier',
   steering: 'autoclaw.intelligence.generateSteering',
+  scaffold: 'autoclaw.intelligence.generateScaffold',
 };
 
 /** Settings query the ⚙ button opens (the Intelligence settings). */
