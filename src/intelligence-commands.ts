@@ -31,7 +31,13 @@ import {
   resolveBackendDir,
   gatherStorageStatus,
   formatBytes,
+  systemPaths,
 } from './intelligence/storage';
+import {
+  ensureSystemStore,
+  upsertProject,
+  readRegistry,
+} from './intelligence/systemStore';
 import {
   LogFn,
   learnFromSessions,
@@ -127,6 +133,10 @@ async function runLearn(workspaceRoot: string): Promise<void> {
     `Intelligence: learned ${summary.patterns} pattern(s) + ${summary.workflowsMined} workflow(s) ` +
       `from ${summary.sessionsAnalyzed} session(s).`,
   );
+  recordProjectInSystemTier(workspaceRoot, {
+    learnSessions: summary.sessionsAnalyzed,
+    lastLearnedAt: new Date().toISOString(),
+  });
 }
 
 async function runIndexCode(workspaceRoot: string): Promise<void> {
@@ -195,6 +205,41 @@ async function runIndexCode(workspaceRoot: string): Promise<void> {
   void vscode.window.showInformationMessage(
     `Intelligence: indexed ${result.filesIndexed} file(s) / ${result.chunksIndexed} chunk(s).`,
   );
+  recordProjectInSystemTier(workspaceRoot, {
+    indexChunks: result.chunksIndexed,
+    lastIndexedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Register the project + run stats in the cross-project system registry. No-op
+ * unless `autoclaw.intelligence.systemDir` is configured. Best-effort: never
+ * blocks or throws into the command.
+ */
+function recordProjectInSystemTier(
+  workspaceRoot: string,
+  fields: {
+    indexChunks?: number;
+    lastIndexedAt?: string;
+    learnSessions?: number;
+    lastLearnedAt?: string;
+  },
+): void {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    return;
+  }
+  try {
+    ensureSystemStore(sys);
+    upsertProject(sys.registryPath, {
+      path: workspaceRoot,
+      name: path.basename(workspaceRoot),
+      ...fields,
+    });
+    logLine(`system-tier: registered ${path.basename(workspaceRoot)} in ${sys.registryPath}`);
+  } catch {
+    /* best effort */
+  }
 }
 
 async function runRetrieve(workspaceRoot: string): Promise<void> {
@@ -668,6 +713,50 @@ async function runStatus(
 }
 
 /**
+ * `autoclaw.intelligence.systemTier` — view the cross-project SYSTEM tier: its
+ * store location and the project↔store registry (which projects have intelligence,
+ * how much). Off until `autoclaw.intelligence.systemDir` is set.
+ */
+async function runSystemTier(): Promise<void> {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    const choice = await vscode.window.showInformationMessage(
+      'The cross-project system intelligence tier is OFF. Set "autoclaw.intelligence.systemDir" to a directory (any drive) to enable it.',
+      'Open Settings',
+    );
+    if (choice === 'Open Settings') {
+      void vscode.commands.executeCommand(
+        'workbench.action.openSettings',
+        'autoclaw.intelligence.systemDir',
+      );
+    }
+    return;
+  }
+  ensureSystemStore(sys);
+  const reg = readRegistry(sys.registryPath);
+  const ch = getChannel();
+  ch.show(true);
+  ch.appendLine('────────────────────────────────────────────────────────');
+  ch.appendLine('AutoClaw Intelligence — System Tier (cross-project)');
+  ch.appendLine('────────────────────────────────────────────────────────');
+  ch.appendLine(`  store    : ${sys.root}`);
+  ch.appendLine(`  registry : ${sys.registryPath}`);
+  ch.appendLine(`  projects : ${reg.projects.length}`);
+  for (const p of reg.projects) {
+    ch.appendLine(
+      `   • ${p.name}  (${p.path})` +
+        `${p.indexChunks != null ? `  chunks=${p.indexChunks}` : ''}` +
+        `${p.learnSessions != null ? `  sessions=${p.learnSessions}` : ''}` +
+        `${p.lastIndexedAt ? `  indexed=${p.lastIndexedAt.slice(0, 10)}` : ''}`,
+    );
+  }
+  ch.appendLine('────────────────────────────────────────────────────────');
+  void vscode.window.showInformationMessage(
+    `Intelligence system tier: ${reg.projects.length} project(s) registered at ${sys.root}.`,
+  );
+}
+
+/**
  * Register the Intelligence commands. Registration is side-effect free beyond
  * pushing disposables onto `context.subscriptions` and pointing the vector
  * loader at an already-installed backend; no intelligence I/O runs until a
@@ -685,6 +774,7 @@ export function registerIntelligenceCommands(
     vscode.commands.registerCommand('autoclaw.intelligence.status', () =>
       runStatus(context, getWorkspaceRoot()),
     ),
+    vscode.commands.registerCommand('autoclaw.intelligence.systemTier', () => runSystemTier()),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.learn',
       withWorkspace(getWorkspaceRoot, runLearn),
