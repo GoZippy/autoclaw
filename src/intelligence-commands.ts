@@ -19,8 +19,14 @@
  */
 
 import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
+import {
+  installVectorBackend,
+  isBackendInstalled,
+  VEC_DIR_ENV,
+} from './intelligence/installBackend';
 import {
   LogFn,
   learnFromSessions,
@@ -521,16 +527,74 @@ function withWorkspace(
   };
 }
 
+/** Persistent per-user dir that holds the installed `sqlite-vec` native peer. */
+function nativePeerDir(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, 'native');
+}
+
+/** Pinned `sqlite-vec` version from the extension manifest's optionalDependencies. */
+function pinnedSqliteVecVersion(context: vscode.ExtensionContext): string {
+  const opt = (context.extension?.packageJSON?.optionalDependencies ?? {}) as Record<string, string>;
+  return typeof opt['sqlite-vec'] === 'string' ? opt['sqlite-vec'] : 'latest';
+}
+
+/** Point the host-free vector loader at the persistent install dir when present. */
+function wireInstalledBackend(context: vscode.ExtensionContext): void {
+  const dir = nativePeerDir(context);
+  if (isBackendInstalled(dir)) {
+    process.env[VEC_DIR_ENV] = dir;
+  }
+}
+
 /**
- * Register the four Intelligence commands. Registration is side-effect free
- * beyond pushing disposables onto `context.subscriptions`; no intelligence I/O
- * runs until a command is invoked.
+ * `autoclaw.intelligence.installBackend` — install the `sqlite-vec` native peer
+ * (the `vec0` loadable) into a persistent per-user dir so RAG/indexing works in
+ * the packaged extension, where the native peers are excluded from the `.vsix`.
+ * The SQLite engine itself is Node-core `node:sqlite` (no install). Idempotent +
+ * re-runnable.
+ */
+async function runInstallBackend(context: vscode.ExtensionContext): Promise<void> {
+  const dir = nativePeerDir(context);
+  const version = pinnedSqliteVecVersion(context);
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `AutoClaw Intelligence: installing vector backend (sqlite-vec@${version})…`,
+      cancellable: false,
+    },
+    () => Promise.resolve(installVectorBackend({ targetDir: dir, version, log: logLine })),
+  );
+
+  if (result.ok) {
+    process.env[VEC_DIR_ENV] = result.installedDir ?? dir;
+    logLine(`install-backend: ready (${result.loadablePath}).`);
+    void vscode.window.showInformationMessage(
+      'Intelligence vector backend installed. Run "Index Codebase" to build the RAG index.',
+    );
+    return;
+  }
+  logLine(`install-backend: FAILED — ${result.error}`);
+  void vscode.window.showErrorMessage(
+    `Intelligence backend install failed: ${result.error}. ` +
+      'Ensure node:sqlite is available (Node 24 / recent Electron) and npm is on PATH.',
+  );
+}
+
+/**
+ * Register the Intelligence commands. Registration is side-effect free beyond
+ * pushing disposables onto `context.subscriptions` and pointing the vector
+ * loader at an already-installed backend; no intelligence I/O runs until a
+ * command is invoked.
  */
 export function registerIntelligenceCommands(
   context: vscode.ExtensionContext,
   getWorkspaceRoot: () => string | undefined,
 ): void {
+  wireInstalledBackend(context);
   context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.intelligence.installBackend', () =>
+      runInstallBackend(context),
+    ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.learn',
       withWorkspace(getWorkspaceRoot, runLearn),

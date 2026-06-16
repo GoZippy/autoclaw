@@ -55,11 +55,26 @@ export interface SqliteDriver {
  */
 export const DEFAULT_DRIVER_ORDER: readonly SqliteDriverKind[] = ['node-sqlite', 'better-sqlite3'];
 
-/** Resolve the `sqlite-vec` loadable-extension path (lazy require). */
+/** Resolve the `sqlite-vec` loadable-extension path (lazy require).
+ *
+ * Tries the bundled/dev `sqlite-vec` first; on failure falls back to the user
+ * dir installed by `autoclaw.intelligence.installBackend` (pointed to by the
+ * `AUTOCLAW_SQLITE_VEC_DIR` env var). The packaged `.vsix` excludes the native
+ * peers, so this fallback is the supported path for installed end users. */
 function sqliteVecLoadablePath(): string {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const sqliteVec = require('sqlite-vec');
-  return sqliteVec.getLoadablePath();
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sqliteVec = require('sqlite-vec');
+    return sqliteVec.getLoadablePath();
+  } catch (err) {
+    const dir = process.env.AUTOCLAW_SQLITE_VEC_DIR;
+    if (dir && dir.trim() !== '') {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const sqliteVec = require(require('path').join(dir, 'node_modules', 'sqlite-vec'));
+      return sqliteVec.getLoadablePath();
+    }
+    throw err;
+  }
 }
 
 /** Open `dbPath` with `node:sqlite` and load the sqlite-vec extension. */
