@@ -32,6 +32,7 @@ import {
   gatherStorageStatus,
   formatBytes,
   systemPaths,
+  relocateStore,
 } from './intelligence/storage';
 import {
   ensureSystemStore,
@@ -757,6 +758,53 @@ async function runSystemTier(): Promise<void> {
 }
 
 /**
+ * `autoclaw.intelligence.relocateBackend` — move the installed vector backend
+ * (sqlite-vec) to a new directory/drive and persist the choice in the
+ * `backendDir` setting. Post-install control over where data lives.
+ */
+async function runRelocateBackend(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  const current = backendDir(context, workspaceRoot);
+  const target = await vscode.window.showInputBox({
+    title: 'Relocate Intelligence Vector Backend',
+    prompt: 'New directory for the sqlite-vec backend (any drive). Its contents will be moved here.',
+    value: current,
+    ignoreFocusOut: true,
+  });
+  if (!target || target.trim() === '' || target.trim() === current) {
+    return;
+  }
+  const dest = target.trim();
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `AutoClaw Intelligence: relocating backend → ${dest}…`,
+      cancellable: false,
+    },
+    () => Promise.resolve(relocateStore(current, dest)),
+  );
+
+  if (!result.ok) {
+    logLine(`relocate-backend: FAILED — ${result.error}`);
+    void vscode.window.showErrorMessage(
+      `Relocate failed: ${result.error}. (If the backend is in use, reload the window and retry.)`,
+    );
+    return;
+  }
+  // Persist the choice so future resolves + installs use the new dir.
+  await vscode.workspace
+    .getConfiguration('autoclaw.intelligence')
+    .update('backendDir', dest, vscode.ConfigurationTarget.Global);
+  process.env[VEC_DIR_ENV] = dest;
+  logLine(`relocate-backend: moved ${formatBytes(result.movedBytes ?? 0)} → ${result.to}`);
+  void vscode.window.showInformationMessage(
+    `Intelligence backend relocated to ${result.to} (${formatBytes(result.movedBytes ?? 0)}). Reload the window if retrieval was active.`,
+  );
+}
+
+/**
  * Register the Intelligence commands. Registration is side-effect free beyond
  * pushing disposables onto `context.subscriptions` and pointing the vector
  * loader at an already-installed backend; no intelligence I/O runs until a
@@ -775,6 +823,9 @@ export function registerIntelligenceCommands(
       runStatus(context, getWorkspaceRoot()),
     ),
     vscode.commands.registerCommand('autoclaw.intelligence.systemTier', () => runSystemTier()),
+    vscode.commands.registerCommand('autoclaw.intelligence.relocateBackend', () =>
+      runRelocateBackend(context, getWorkspaceRoot()),
+    ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.learn',
       withWorkspace(getWorkspaceRoot, runLearn),
