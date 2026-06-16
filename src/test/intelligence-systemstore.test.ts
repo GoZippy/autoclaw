@@ -14,6 +14,10 @@ import {
   readRegistry,
   upsertProject,
   classifyTier,
+  parseInsightItems,
+  promoteInsight,
+  readSystemLearnings,
+  searchSystemLearnings,
 } from '../intelligence/systemStore';
 
 let tmpRoot: string;
@@ -93,6 +97,74 @@ suite('intelligence — system tier (cross-project)', () => {
       );
       assert.strictEqual(classifyTier('the Foo widget renders the Bar panel'), 'project');
       assert.strictEqual(classifyTier(''), 'project');
+    });
+  });
+
+  const INSIGHT = [
+    '# Insight — 2026-06-16T05:53:09.313Z',
+    '',
+    '- Sessions analyzed: 6',
+    '- Sources: autoclaw-native',
+    '',
+    '## Successful Patterns (procedural)',
+    '',
+    '- Make focused, single-responsibility changes and verify them with tests.',
+    '- Match existing project conventions for naming and structure.',
+    '',
+    '## Patterns to Avoid (failure)',
+    '',
+    '- Avoid large speculative rewrites that are not backed by tests.',
+    '',
+    '## Preferred Tools',
+    '',
+    '- general-purpose coding agent',
+    '',
+    '## Reflection',
+    '',
+    'Analyzed 6 session(s). This prose paragraph must NOT be captured as a bullet.',
+  ].join('\n');
+
+  suite('promote insights → system learnings (v2)', () => {
+    test('parseInsightItems captures only the distilled pattern bullets', () => {
+      const items = parseInsightItems(INSIGHT);
+      // 2 patterns + 1 avoid + 1 tool = 4; the top metadata bullets + Reflection prose excluded
+      assert.strictEqual(items.length, 4);
+      assert.deepStrictEqual(
+        items.map((i) => i.kind).sort(),
+        ['avoid', 'pattern', 'pattern', 'tool'],
+      );
+      assert.ok(items.every((i) => !/Sessions analyzed/.test(i.text)), 'metadata excluded');
+    });
+
+    test('promoteInsight writes deduped learnings; re-promoting the same insight adds nothing', () => {
+      const sys = systemPaths(freshDir('sysl'))!;
+      const first = promoteInsight(sys, { project: 'K:/proj/alpha', insightMarkdown: INSIGHT, capturedAt: '2026-06-16T00:00:00Z' });
+      assert.strictEqual(first.scanned, 4);
+      assert.strictEqual(first.promoted, 4);
+      assert.strictEqual(readSystemLearnings(sys).length, 4);
+
+      const again = promoteInsight(sys, { project: 'K:/proj/alpha', insightMarkdown: INSIGHT });
+      assert.strictEqual(again.promoted, 0, 'identical bullets are deduped by content hash');
+      assert.strictEqual(readSystemLearnings(sys).length, 4);
+
+      // a different project contributing one shared + one new bullet adds only the new one
+      const other = promoteInsight(sys, {
+        project: 'K:/proj/beta',
+        insightMarkdown: '## Preferred Tools\n- general-purpose coding agent\n## Successful Patterns\n- Pin dependency versions for reproducible builds.',
+      });
+      assert.strictEqual(other.promoted, 1);
+    });
+
+    test('searchSystemLearnings ranks by token overlap and tags provenance', () => {
+      const sys = systemPaths(freshDir('syss'))!;
+      promoteInsight(sys, { project: 'K:/proj/alpha', insightMarkdown: INSIGHT });
+      const hits = searchSystemLearnings(sys, 'tests rewrites', 10);
+      assert.ok(hits.length >= 1);
+      // the "speculative rewrites ... backed by tests" bullet matches both tokens → top
+      assert.ok(/rewrites/.test(hits[0].text));
+      assert.strictEqual(hits[0].project, 'K:/proj/alpha');
+      assert.ok(hits[0].score >= 1);
+      assert.deepStrictEqual(searchSystemLearnings(sys, '', 10), []);
     });
   });
 });

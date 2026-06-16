@@ -12,6 +12,7 @@
  * malformed store. The command layer reads the configured dir and passes it in.
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -153,4 +154,176 @@ export function classifyTier(text: string): Tier {
     return 'project';
   }
   return SYSTEM_PATTERNS.some((re) => re.test(text)) ? 'system' : 'project';
+}
+
+// ---------------------------------------------------------------------------
+// System learnings store (the queryable cross-project knowledge — v2)
+// ---------------------------------------------------------------------------
+
+/** A distilled learning promoted to the cross-project system store. */
+export interface SystemLearning {
+  /** Stable content hash (dedup key). */
+  id: string;
+  /** The learning text. */
+  text: string;
+  /** Which distilled section it came from. */
+  kind: 'pattern' | 'avoid' | 'tool';
+  /** classifyTier label (metadata; all distilled patterns are cross-project). */
+  tier: Tier;
+  /** Project that contributed it (forward-slash). */
+  project: string;
+  /** ISO timestamp the caller stamps (kept out of this module for determinism). */
+  capturedAt?: string;
+}
+
+/** The JSONL holding promoted system learnings. */
+export function systemLearningsPath(sys: SystemPaths): string {
+  return toForwardSlash(path.join(sys.learningsDir, 'system-learnings.jsonl'));
+}
+
+function hashText(text: string): string {
+  return crypto.createHash('sha1').update(text.replace(/\s+/g, ' ').trim().toLowerCase()).digest('hex').slice(0, 16);
+}
+
+/**
+ * Parse a learn `insight-*.md` into the distilled-pattern bullets worth keeping
+ * cross-project: the "Successful Patterns", "Patterns to Avoid", and "Preferred
+ * Tools" sections. The top metadata block + "Reflection" prose are skipped.
+ */
+export function parseInsightItems(markdown: string): Array<{ text: string; kind: SystemLearning['kind'] }> {
+  const sectionKind: Record<string, SystemLearning['kind']> = {
+    'successful patterns': 'pattern',
+    'patterns to avoid': 'avoid',
+    'preferred tools': 'tool',
+  };
+  const out: Array<{ text: string; kind: SystemLearning['kind'] }> = [];
+  let current: SystemLearning['kind'] | undefined;
+  for (const raw of markdown.split(/\r?\n/)) {
+    const line = raw.trim();
+    const h = line.match(/^##\s+(.*)$/);
+    if (h) {
+      const name = h[1].toLowerCase().replace(/\(.*?\)/g, '').trim();
+      current = sectionKind[name];
+      continue;
+    }
+    if (!current) {
+      continue;
+    }
+    const b = line.match(/^[-*]\s+(.+)$/);
+    if (b && b[1].trim().length >= 3) {
+      out.push({ text: b[1].trim(), kind: current });
+    }
+  }
+  return out;
+}
+
+/** Read all promoted system learnings (corruption-tolerant). */
+export function readSystemLearnings(sys: SystemPaths): SystemLearning[] {
+  const out: SystemLearning[] = [];
+  let raw: string;
+  try {
+    raw = fs.readFileSync(systemLearningsPath(sys), 'utf8');
+  } catch {
+    return out;
+  }
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.trim() === '') {
+      continue;
+    }
+    try {
+      const o = JSON.parse(line) as SystemLearning;
+      if (o && typeof o.text === 'string' && typeof o.id === 'string') {
+        out.push(o);
+      }
+    } catch {
+      /* skip malformed line */
+    }
+  }
+  return out;
+}
+
+export interface PromoteResult {
+  scanned: number;
+  promoted: number;
+}
+
+/**
+ * Promote the distilled pattern bullets of a learn insight into the system store,
+ * deduped by content hash across projects/runs. Appends new ones to the JSONL.
+ * Best-effort; returns counts. `capturedAt` is stamped by the caller for testability.
+ */
+export function promoteInsight(
+  sys: SystemPaths,
+  args: { project: string; insightMarkdown: string; capturedAt?: string },
+): PromoteResult {
+  const items = parseInsightItems(args.insightMarkdown);
+  if (items.length === 0) {
+    return { scanned: 0, promoted: 0 };
+  }
+  ensureSystemStore(sys);
+  const existing = new Set(readSystemLearnings(sys).map((l) => l.id));
+  const project = toForwardSlash(args.project);
+  const fresh: SystemLearning[] = [];
+  for (const it of items) {
+    const id = hashText(it.text);
+    if (existing.has(id)) {
+      continue;
+    }
+    existing.add(id);
+    fresh.push({
+      id,
+      text: it.text,
+      kind: it.kind,
+      tier: classifyTier(it.text),
+      project,
+      capturedAt: args.capturedAt,
+    });
+  }
+  if (fresh.length > 0) {
+    try {
+      fs.appendFileSync(
+        systemLearningsPath(sys),
+        fresh.map((l) => JSON.stringify(l)).join('\n') + '\n',
+        'utf8',
+      );
+    } catch {
+      return { scanned: items.length, promoted: 0 };
+    }
+  }
+  return { scanned: items.length, promoted: fresh.length };
+}
+
+export interface SystemSearchHit extends SystemLearning {
+  /** Number of query tokens matched (ranking). */
+  score: number;
+}
+
+/**
+ * Search the system learnings by case-insensitive token overlap. Returns the
+ * top `limit` hits, best first. A cross-project recall surface for retrieval.
+ */
+export function searchSystemLearnings(
+  sys: SystemPaths,
+  query: string,
+  limit = 10,
+): SystemSearchHit[] {
+  const tokens = query.toLowerCase().split(/\W+/).filter((t) => t.length >= 2);
+  if (tokens.length === 0) {
+    return [];
+  }
+  const hits: SystemSearchHit[] = [];
+  for (const l of readSystemLearnings(sys)) {
+    const hay = l.text.toLowerCase();
+    let score = 0;
+    for (const t of tokens) {
+      if (hay.includes(t)) {
+        score++;
+      }
+    }
+    if (score > 0) {
+      hits.push({ ...l, score });
+    }
+  }
+  hits.sort((a, b) => b.score - a.score);
+  return hits.slice(0, Math.max(1, limit));
 }

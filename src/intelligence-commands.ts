@@ -38,6 +38,9 @@ import {
   ensureSystemStore,
   upsertProject,
   readRegistry,
+  promoteInsight,
+  readSystemLearnings,
+  searchSystemLearnings,
 } from './intelligence/systemStore';
 import {
   LogFn,
@@ -138,6 +141,7 @@ async function runLearn(workspaceRoot: string): Promise<void> {
     learnSessions: summary.sessionsAnalyzed,
     lastLearnedAt: new Date().toISOString(),
   });
+  promoteLatestInsightToSystem(workspaceRoot);
 }
 
 async function runIndexCode(workspaceRoot: string): Promise<void> {
@@ -238,6 +242,40 @@ function recordProjectInSystemTier(
       ...fields,
     });
     logLine(`system-tier: registered ${path.basename(workspaceRoot)} in ${sys.registryPath}`);
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
+ * After a learn run, promote the distilled pattern bullets of the newest insight
+ * into the cross-project system store (deduped). No-op unless a system dir is set.
+ * Best-effort.
+ */
+function promoteLatestInsightToSystem(workspaceRoot: string): void {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    return;
+  }
+  try {
+    const learningsDir = intelligencePaths(workspaceRoot).learningsDir;
+    const insights = fs
+      .readdirSync(learningsDir)
+      .filter((f) => /^insight-.*\.md$/.test(f))
+      .map((f) => ({ f, m: fs.statSync(path.join(learningsDir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    if (insights.length === 0) {
+      return;
+    }
+    const md = fs.readFileSync(path.join(learningsDir, insights[0].f), 'utf8');
+    const res = promoteInsight(sys, {
+      project: workspaceRoot,
+      insightMarkdown: md,
+      capturedAt: new Date().toISOString(),
+    });
+    if (res.promoted > 0) {
+      logLine(`system-tier: promoted ${res.promoted}/${res.scanned} distilled learning(s) to ${sys.root}`);
+    }
   } catch {
     /* best effort */
   }
@@ -735,14 +773,16 @@ async function runSystemTier(): Promise<void> {
   }
   ensureSystemStore(sys);
   const reg = readRegistry(sys.registryPath);
+  const learnings = readSystemLearnings(sys);
   const ch = getChannel();
   ch.show(true);
   ch.appendLine('────────────────────────────────────────────────────────');
   ch.appendLine('AutoClaw Intelligence — System Tier (cross-project)');
   ch.appendLine('────────────────────────────────────────────────────────');
-  ch.appendLine(`  store    : ${sys.root}`);
-  ch.appendLine(`  registry : ${sys.registryPath}`);
-  ch.appendLine(`  projects : ${reg.projects.length}`);
+  ch.appendLine(`  store     : ${sys.root}`);
+  ch.appendLine(`  registry  : ${sys.registryPath}`);
+  ch.appendLine(`  projects  : ${reg.projects.length}`);
+  ch.appendLine(`  learnings : ${learnings.length} (distilled cross-project patterns)`);
   for (const p of reg.projects) {
     ch.appendLine(
       `   • ${p.name}  (${p.path})` +
@@ -752,8 +792,27 @@ async function runSystemTier(): Promise<void> {
     );
   }
   ch.appendLine('────────────────────────────────────────────────────────');
+
+  // Offer a cross-project search over the promoted learnings.
+  const query = await vscode.window.showInputBox({
+    title: 'Search System Intelligence',
+    prompt: `Search ${learnings.length} cross-project learning(s) — leave empty to skip`,
+    ignoreFocusOut: true,
+  });
+  if (query && query.trim() !== '') {
+    const hits = searchSystemLearnings(sys, query.trim(), 15);
+    ch.appendLine(`\nSearch "${query.trim()}" → ${hits.length} hit(s):`);
+    for (const h of hits) {
+      ch.appendLine(`   [${h.kind}/${h.tier}] ${h.text}   — ${path.basename(h.project)}`);
+    }
+    ch.appendLine('────────────────────────────────────────────────────────');
+    void vscode.window.showInformationMessage(
+      `System search "${query.trim()}": ${hits.length} hit(s). See the "AutoClaw — Intelligence" output.`,
+    );
+    return;
+  }
   void vscode.window.showInformationMessage(
-    `Intelligence system tier: ${reg.projects.length} project(s) registered at ${sys.root}.`,
+    `Intelligence system tier: ${reg.projects.length} project(s), ${learnings.length} learning(s) at ${sys.root}.`,
   );
 }
 
