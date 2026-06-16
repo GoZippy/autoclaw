@@ -110,10 +110,14 @@ export async function maybePrompt(context: vscode.ExtensionContext): Promise<voi
       DISMISS,
     );
     if (choice === 'Donate') {
-      if (isPlaceholder(links.donationUrl)) {
+      // Prefer the Square link when set; otherwise fall back to Ko-fi, then the panel.
+      const donateUrl = !isPlaceholder(links.donationUrl)
+        ? links.donationUrl
+        : links.koFiUrl;
+      if (isPlaceholder(donateUrl)) {
         await vscode.commands.executeCommand('autoclaw.support.open');
       } else {
-        await openExternal(links.donationUrl);
+        await openExternal(donateUrl);
       }
       state = { ...state, donated: true };
     } else if (choice === 'Other ways') {

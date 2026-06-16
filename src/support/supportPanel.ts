@@ -159,7 +159,8 @@ function renderHtml(webview: vscode.Webview, links: SupportLinks): string {
   <h2>&#9749; Donate</h2>
   <p>One-time, goes straight to keeping the lights on and the work going.</p>
   <p>
-    ${linkButton('Donate $10', links.donationUrl, 'btn')}
+    ${linkButton('Support on Ko-fi ☕', links.koFiUrl, 'btn')}
+    ${linkButton('Donate $10', links.donationUrl, 'btn secondary')}
     ${linkButton('Custom amount', links.customAmountUrl, 'btn secondary')}
   </p>
   <h3 style="font-size:.95em;margin:14px 0 4px;">Crypto</h3>
