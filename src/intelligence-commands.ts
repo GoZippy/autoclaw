@@ -44,6 +44,7 @@ import {
   parseInsightItems,
 } from './intelligence/systemStore';
 import { buildSteeringMarkdown } from './intelligence/steering';
+import { buildSkillScaffold, slugify } from './intelligence/toolScaffold';
 import {
   LogFn,
   learnFromSessions,
@@ -347,6 +348,62 @@ async function runGenerateSteering(workspaceRoot: string): Promise<void> {
 /** Local forward-slash helper for log output (paths.ts' toForwardSlash is host-free too). */
 function toForwardSlashLocal(p: string): string {
   return p.replace(/\\/g, '/');
+}
+
+/**
+ * `autoclaw.intelligence.generateScaffold` — scaffold a new skill/tool stub
+ * (SKILL.md) seeded with this project's learned conventions, written under
+ * `<workspace>/.autoclaw/scaffolds/<slug>.md`.
+ */
+async function runGenerateScaffold(workspaceRoot: string): Promise<void> {
+  const name = await vscode.window.showInputBox({
+    title: 'Generate Skill/Tool Scaffold',
+    prompt: 'Name of the new skill/tool',
+    placeHolder: 'e.g. Release Checklist',
+    ignoreFocusOut: true,
+  });
+  if (!name || name.trim() === '') {
+    return;
+  }
+  const purpose =
+    (await vscode.window.showInputBox({
+      title: 'Generate Skill/Tool Scaffold',
+      prompt: 'One-line purpose (optional)',
+      ignoreFocusOut: true,
+    })) ?? '';
+
+  const md = latestInsightMarkdown(workspaceRoot);
+  const items = md ? parseInsightItems(md) : [];
+  const scaffold = buildSkillScaffold({
+    name: name.trim(),
+    purpose: purpose.trim(),
+    projectName: path.basename(workspaceRoot),
+    conventions: items.filter((i) => i.kind === 'pattern').map((i) => i.text),
+    avoid: items.filter((i) => i.kind === 'avoid').map((i) => i.text),
+    generatedAt: new Date().toISOString(),
+  });
+
+  const outPath = path.join(
+    intelligencePaths(workspaceRoot).root,
+    'scaffolds',
+    `${slugify(name)}.md`,
+  );
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, scaffold, 'utf8');
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed to write scaffold: ${String(err)}`);
+    return;
+  }
+  logLine(`generate-scaffold: wrote ${toForwardSlashLocal(outPath)}`);
+  const choice = await vscode.window.showInformationMessage(
+    `Intelligence: scaffold written to .autoclaw/scaffolds/${slugify(name)}.md.`,
+    'Open',
+  );
+  if (choice === 'Open') {
+    const doc = await vscode.workspace.openTextDocument(outPath);
+    void vscode.window.showTextDocument(doc);
+  }
 }
 
 async function runRetrieve(workspaceRoot: string): Promise<void> {
@@ -993,6 +1050,10 @@ export function registerIntelligenceCommands(
     vscode.commands.registerCommand(
       'autoclaw.intelligence.generateSteering',
       withWorkspace(getWorkspaceRoot, runGenerateSteering),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.generateScaffold',
+      withWorkspace(getWorkspaceRoot, runGenerateScaffold),
     ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.learn',
