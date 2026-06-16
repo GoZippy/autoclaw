@@ -19,13 +19,21 @@ import {
   freshHookState,
   renderTarget,
   executeHook,
+  processHookEvent,
   buildHookEventFromMessageFile,
+  buildHeartbeatStallEvents,
+  buildClaimStaleEvents,
+  buildConsensusEvent,
+  buildAutobuildFailEvent,
+  registerHookHandler,
+  emitHookEvent,
+  activeHookHandlerCount,
   isFleetHalted,
   setFleetHalted,
   HALT_FILE_REL,
   DEFAULT_MAX_FIRINGS_PER_HOUR,
 } from '../hooks/triggerHooks';
-import type { HookRule, HookEvent, HookDecision } from '../hooks/triggerHooks';
+import type { HookRule, HookEvent, HookDecision, HookRuntimeState, HookDeps } from '../hooks/triggerHooks';
 import { dispatchWork, LOOP_SIDE_CAR_DIR } from '../orchestratorLoop';
 import type { WorkPackage } from '../orchestratorLoop';
 
@@ -318,5 +326,151 @@ suite('TriggerHooks — fleet HALT kill switch', () => {
     const res2 = await dispatchWork(root, pkg);
     assert.ok(res2 !== null, 'resume ⇒ dispatch proceeds');
     assert.ok(fs.existsSync(res2!));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HKS-4: launch_skill / spawn_runner actions
+// ---------------------------------------------------------------------------
+
+suite('TriggerHooks — HKS-4 actions', () => {
+  function readAudit(root: string): Array<Record<string, unknown>> {
+    const p = path.join(root, '.autoclaw', 'orchestrator', 'comms', 'hooks', 'audit.jsonl');
+    if (!fs.existsSync(p)) { return []; }
+    return fs.readFileSync(p, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  }
+  function fired(r: HookRule, target?: string): HookDecision {
+    return { rule: r, event: { on: r.on, payload: {} }, target, outcome: 'fire' };
+  }
+
+  test('parser reads skill / prompt / runner fields', () => {
+    const rules = parseHooksYaml([
+      'hooks:',
+      '  - id: open-orch',
+      '    on: consensus',
+      '    action: launch_skill',
+      '    target: claude-code',
+      '    skill: orchestrate',
+      '    prompt: "go review"',
+      '  - id: wake-runner',
+      '    on: autobuild_fail',
+      '    action: spawn_runner',
+      '    target: local-coder',
+      '    runner: local-coder',
+    ].join('\n'));
+    assert.strictEqual(rules[0].skill, 'orchestrate');
+    assert.strictEqual(rules[0].prompt, 'go review');
+    assert.strictEqual(rules[1].runner, 'local-coder');
+  });
+
+  test('launch_skill fires the launchSkill dep and audits hook_fired', async () => {
+    const root = makeTmpRoot();
+    const seen: HookDecision[] = [];
+    await executeHook(fired(rule({ action: 'launch_skill', skill: 'orchestrate' }), 'claude-code'), {
+      workspaceRoot: root, launchSkill: (d) => { seen.push(d); },
+    });
+    assert.strictEqual(seen.length, 1);
+    assert.strictEqual(readAudit(root)[0].result, 'hook_fired');
+  });
+
+  test('launch_skill without a dep audits hook_error', async () => {
+    const root = makeTmpRoot();
+    await executeHook(fired(rule({ action: 'launch_skill' }), 'claude-code'), { workspaceRoot: root });
+    assert.strictEqual(readAudit(root)[0].result, 'hook_error');
+  });
+
+  test('spawn_runner requires a target', async () => {
+    const root = makeTmpRoot();
+    await executeHook(fired(rule({ action: 'spawn_runner' }), ''), { workspaceRoot: root, spawnRunner: () => { /* noop */ } });
+    assert.strictEqual(readAudit(root)[0].result, 'hook_error');
+  });
+
+  test('spawn_runner fires the spawnRunner dep when targeted', async () => {
+    const root = makeTmpRoot();
+    let called = 0;
+    await executeHook(fired(rule({ action: 'spawn_runner' }), 'local-coder'), {
+      workspaceRoot: root, spawnRunner: () => { called++; },
+    });
+    assert.strictEqual(called, 1);
+    assert.strictEqual(readAudit(root)[0].result, 'hook_fired');
+  });
+
+  test('relay fires the relay dep; a throwing dep audits hook_error', async () => {
+    const root = makeTmpRoot();
+    await executeHook(fired(rule({ action: 'relay' }), 'box-b'), { workspaceRoot: root, relay: () => { /* ok */ } });
+    await executeHook(fired(rule({ action: 'relay' }), 'box-b'), { workspaceRoot: root, relay: () => { throw new Error('relay down'); } });
+    assert.deepStrictEqual(readAudit(root).map(a => a.result), ['hook_fired', 'hook_error']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HKS-5: event-source builders + processHookEvent + in-process bus
+// ---------------------------------------------------------------------------
+
+suite('TriggerHooks — HKS-5 event sources', () => {
+  const now = Date.parse('2026-06-13T12:00:00Z');
+
+  test('buildHeartbeatStallEvents flags only heartbeats past the threshold', () => {
+    const events = buildHeartbeatStallEvents([
+      { agent_id: 'fresh', timestamp: new Date(now - 60_000).toISOString() },
+      { agent_id: 'stale', timestamp: new Date(now - 700_000).toISOString() },
+      { timestamp: new Date(now - 999_000).toISOString() }, // no agent_id → skipped
+    ], now, 600);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].payload.agent_id, 'stale');
+    assert.ok((events[0].payload.seconds_stale as number) >= 600);
+  });
+
+  test('buildClaimStaleEvents uses owner heartbeat staleness, falling back to claim age', () => {
+    const hb = new Map<string, string>([['owner', new Date(now - 800_000).toISOString()]]);
+    const events = buildClaimStaleEvents([
+      { task_id: 'T1', claimed_by: 'owner', claimed_at: new Date(now - 10_000).toISOString() }, // owner hb stale
+      { task_id: 'T2', claimed_by: 'ghost', claimed_at: new Date(now - 5_000).toISOString() },   // no hb, fresh claim → not stale
+    ], hb, now, 600);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].payload.task_id, 'T1');
+  });
+
+  test('buildConsensusEvent flags a failed gate', () => {
+    const ev = buildConsensusEvent({ task_id: 'B1', status: 'consensus_pending', final_verdict: 'needs_changes', gate_checks: [{ passed: false }], author_agent_id: 'kilocode' });
+    assert.strictEqual(ev.on, 'consensus');
+    assert.strictEqual(ev.payload.gate_failed, true);
+    assert.strictEqual(ev.payload.author_agent_id, 'kilocode');
+  });
+
+  test('buildAutobuildFailEvent carries workflow/step/exit', () => {
+    const ev = buildAutobuildFailEvent('nightly', 'tsc', 2);
+    assert.deepStrictEqual(ev.payload, { workflow: 'nightly', step: 'tsc', exit_code: 2 });
+  });
+
+  test('processHookEvent runs matcher+executor and honors the isHalted override', async () => {
+    const root = makeTmpRoot();
+    const r = rule({ id: 'redispatch', on: 'consensus', filter: { final_verdict: 'needs_changes' }, action: 'dispatch', target: '{{author_agent_id}}' });
+    const state: HookRuntimeState = freshHookState(0);
+    const ev = buildConsensusEvent({ task_id: 'B1', final_verdict: 'needs_changes', author_agent_id: 'kilocode' });
+    const calls: string[] = [];
+    const deps: HookDeps = { workspaceRoot: root, dispatch: async (t) => { calls.push(t); } };
+    // Halted ⇒ suppressed, no dispatch.
+    const halted = await processHookEvent(ev, [r], state, deps, { isHalted: () => true, now: 1 });
+    assert.strictEqual(halted[0].outcome, 'suppressed_halt');
+    assert.deepStrictEqual(calls, []);
+    // Not halted ⇒ fires, dispatches to the author.
+    const live = await processHookEvent(ev, [r], freshHookState(0), deps, { isHalted: () => false, now: 1 });
+    assert.strictEqual(live[0].outcome, 'fire');
+    assert.deepStrictEqual(calls, ['kilocode']);
+  });
+
+  test('hookBus: emitHookEvent reaches the registered handler, scoped by root; unregister stops it', async () => {
+    const before = activeHookHandlerCount();
+    const got: HookEvent[] = [];
+    const unregister = registerHookHandler('/ws-a', (e) => { got.push(e); });
+    assert.strictEqual(activeHookHandlerCount(), before + 1);
+    await emitHookEvent(buildAutobuildFailEvent('w', 's', 1), '/ws-a');
+    await emitHookEvent(buildAutobuildFailEvent('w', 's', 1), '/ws-OTHER'); // wrong root → ignored
+    assert.strictEqual(got.length, 1);
+    unregister();
+    await emitHookEvent(buildAutobuildFailEvent('w', 's', 1), '/ws-a');
+    assert.strictEqual(got.length, 1, 'no delivery after unregister');
+    assert.strictEqual(activeHookHandlerCount(), before);
   });
 });

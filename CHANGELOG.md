@@ -1,9 +1,63 @@
 # Changelog
 
-## [3.4.0] - 2026-06-13
+## [3.5.0] - 2026-06-15
 
-_The dev-team-in-a-box release: fleet visibility + evidence-grounded gates +
-reputation routing + memory provenance + trigger hooks._
+_The intelligence release: local-first learning + retrieval over your past AI
+coding sessions, plus a support/licensing surface, multi-project orchestration,
+and expanded trigger hooks._
+
+### Added
+
+- **Intelligence layer — Wave A + B** (`src/intelligence/`) — a local-first loop
+  that learns from past AI coding sessions and does RAG over your codebase.
+  Universal session ingestion + signal extraction (kept-vs-discarded code,
+  transcript outcomes), a backend-flexible vector store (sqlite-vec / Postgres /
+  none, with graceful no-RAG fallback), project-namespaced retrieval (no
+  cross-repo leakage), a metrics dashboard, a **workflow-sequence miner**, and a
+  **tool×project effectiveness matrix**. New commands: `/learn`, `/index-code`,
+  `/retrieve`, `/effectiveness`, and the `intelligence` chat skill. Host-free
+  modules (no `vscode` import).
+- **Tier-3 source adapters** (`src/intelligence/sources/`) — ingest sessions from
+  **Cline / Roo**, **Continue.dev**, and **Kilo Code**, alongside the existing
+  Claude Code / Claude Desktop / Kiro / Gemini / Cursor adapters. Third-party
+  sources are opt-in (default-off, D13).
+- **Support & commercial-licensing surface** (`src/support/`, `src/licensing/`) —
+  a non-invasive review/donation surface plus offline commercial license keys
+  and BYO-key support (no telemetry, no phone-home).
+- **Multi-project orchestration (MP-2/MP-3)** (`src/program/`) — a scope-lease
+  manager and a cross-project dependency registry so the orchestrator can
+  coordinate work that spans repositories.
+- **Trigger hooks HKS-4..5** (`src/hooks/`) — `launch_skill` / `spawn_runner` /
+  `relay` actions and non-message event sources (heartbeat_stall, claim_stale,
+  consensus, autobuild_fail) extending the HKS-1..3 hook engine.
+
+### Fixed
+
+- **Team view no longer resets on data updates** (`src/webview/kdream-dashboard.js`,
+  `src/extension.ts`) — expanded agent cards, collapsible sections, and per-task
+  message-threads now persist their open/closed state across refresh ticks and
+  full webview reloads (via `vscode.getState`/`setState`), and the panel sets
+  `retainContextWhenHidden` so switching VS Code tabs no longer reloads it from
+  scratch. Previously every data tick re-ran `innerHTML` and snapped all panels shut.
+- **Mis-attributed inbox counts made explicit** (`src/webview-render.ts`,
+  `src/webview/kdream-dashboard.css`) — the Team view now shows a "You are
+  &lt;agent&gt;" identity banner and highlights the self card (`is-self`), so the
+  self-scoped Awaiting-You counts read unambiguously in every IDE instead of
+  appearing to move between agents per window.
+- **Build gate unblocked** (`src/test/agentCardPublisher.test.ts`) — the
+  `AgentRegistry` fixture was missing the required `last_heartbeat` and `status`
+  fields of `RegisteredAgent`, breaking `tsc`/`test:unit`.
+- **Five pre-existing integration-test failures** resolved at root cause
+  (`fix/integration-ci-baseline`), and `package-lock` synced with `pg` so
+  `npm ci` passes on CI.
+- **Intelligence vector backend is ABI-proof** (`src/intelligence/vector/`) —
+  the RAG store now prefers Node-core `node:sqlite` (ABI-stable, survives
+  IDE/Electron updates) and keeps native `better-sqlite3` as a fallback. Fixes the
+  "vector backend unavailable → no-RAG mode" degradation that hit on Electron ABI
+  bumps; `doctor` now reports the active driver + remediation instead of degrading
+  silently.
+
+## [3.4.0] - 2026-06-13
 
 ### Added
 
@@ -76,8 +130,19 @@ reputation routing + memory provenance + trigger hooks._
   `hook_error`). Runtime rides the existing chokidar InboxWatcher; **zero-config
   no-op** — no hooks.yaml ⇒ no watcher, no behavior change. Starter rules at
   `skills/orchestrate/templates/hooks.starter.yaml`. Spec:
-  `docs/specs/agent-trigger-hooks.spec.md` (HKS-4/5 — launch_skill/spawn_runner/
-  relay actions — still open).
+  `docs/specs/agent-trigger-hooks.spec.md`.
+- **Trigger hooks (HKS-4..5)** — completes the hook layer. Three new actions:
+  `launch_skill` (renders a skill prompt via `renderSkillPrompt` → clipboard +
+  toast, the documented "open a session" mechanism), `spawn_runner` (registry-
+  checked → wakes the runner via the dispatch path), and `relay` (cross-machine
+  wake via `CloudRelay.sendInbox`, inert unless the relay is enabled+consented) —
+  with new `skill`/`prompt`/`runner` rule fields. Four non-message **event
+  sources** land via two leaf modules (`src/hooks/hookEvents.ts` builders +
+  `src/hooks/hookBus.ts` in-process emitter, no import cycles): `heartbeat_stall`
+  + `claim_stale` scanned on a runtime tick (only when a rule listens for them),
+  `consensus` emitted from the bridge evaluate path, `autobuild_fail` emitted
+  from `runWorkflow` on a failed step. All actions audit fired/error; HALT and
+  cooldown still gate every source. Zero-config no-op preserved. +~20 tests.
 - **Fleet HALT kill switch** (`src/hooks/fleetHalt.ts`) — while
   `.autoclaw/orchestrator/HALT` exists, nothing auto-dispatches: trigger hooks
   suppress (audited) and `orchestratorLoop.dispatchWork` refuses (journaled

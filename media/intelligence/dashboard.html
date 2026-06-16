@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="%%CSP%%" />
+  <link rel="stylesheet" href="%%CSS_URI%%" />
+  <title>AutoClaw Intelligence</title>
+</head>
+<body>
+  <div id="dashboard-root" role="main">
+    <!-- Action toolbar: one-click learn / index / search / rag-generate (R4.2) -->
+    <div class="toolbar" role="toolbar" aria-label="Intelligence actions">
+      <button type="button" class="action" data-action="learn" title="Learn from sessions">Learn</button>
+      <button type="button" class="action" data-action="index" title="Index the codebase">Index</button>
+      <button type="button" class="action" data-action="search" title="Search knowledge">Search</button>
+      <button type="button" class="action" data-action="rag-generate" title="RAG generate">RAG</button>
+      <button type="button" class="action ghost" data-action="refresh" title="Refresh metrics">&#x21bb;</button>
+    </div>
+
+    <!-- Manage toolbar: storage/backend control + cross-project tier -->
+    <div class="toolbar manage" role="toolbar" aria-label="Intelligence management">
+      <button type="button" class="action" data-action="status" title="Status / Manage — where data lives, sizes, stats">Status</button>
+      <button type="button" class="action" data-action="install-backend" title="Install the vector backend (sqlite-vec) — project-local">Backend</button>
+      <button type="button" class="action" data-action="relocate" title="Relocate the vector backend to another drive">Relocate</button>
+      <button type="button" class="action" data-action="system-tier" title="Cross-project system tier (set systemDir to enable)">System</button>
+      <button type="button" class="action" data-action="steering" title="Generate a steering file from learned conventions">Steering</button>
+      <button type="button" class="action" data-action="scaffold" title="Scaffold a new skill/tool seeded with learned conventions">Scaffold</button>
+      <button type="button" class="action ghost" data-action="settings" title="Open Intelligence settings (backendDir, systemDir)">&#x2699;</button>
+    </div>
+
+    <!-- Empty state (R4.5) -->
+    <section id="empty-state" class="empty-state" hidden>
+      <p class="empty-title">No learning metrics yet</p>
+      <p class="empty-hint">Run <strong>Learn</strong> to analyze your sessions. Metrics and trends will appear here.</p>
+    </section>
+
+    <!-- Error banner -->
+    <section id="error-banner" class="error-banner" role="alert" hidden></section>
+
+    <!-- Live dashboard -->
+    <section id="dashboard" class="dashboard" hidden>
+      <!-- Summary cards -->
+      <div class="cards" id="summary-cards"></div>
+
+      <!-- Kept-rate line chart (R4.3) -->
+      <div class="chart-block">
+        <h2 class="chart-title">Kept rate over time</h2>
+        <canvas id="kept-rate-chart" class="chart" width="600" height="220"
+          role="img" aria-label="Kept rate trend line chart"></canvas>
+      </div>
+
+      <!-- Token bar chart: Real vs Estimated (R4.3) -->
+      <div class="chart-block">
+        <h2 class="chart-title">Tokens per run (Real vs Estimated)</h2>
+        <div class="legend">
+          <span class="legend-item"><span class="swatch swatch-real"></span>Real</span>
+          <span class="legend-item"><span class="swatch swatch-est"></span>Estimated</span>
+        </div>
+        <canvas id="token-chart" class="chart" width="600" height="220"
+          role="img" aria-label="Tokens per run bar chart, real versus estimated"></canvas>
+      </div>
+
+      <!-- Recent learnings table -->
+      <div class="recent-block">
+        <h2 class="chart-title">Recent runs</h2>
+        <div id="recent-runs" class="recent-runs"></div>
+      </div>
+    </section>
+  </div>
+  <script nonce="%%NONCE%%" src="%%JS_URI%%"></script>
+</body>
+</html>

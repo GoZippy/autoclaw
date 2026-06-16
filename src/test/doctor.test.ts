@@ -209,6 +209,33 @@ suite('Doctor: buildAdapterInstallationSection()', function () {
     // Workspace-relative destinations should have been computed.
     assert.ok(cline.destination.includes('.clinerules'));
   });
+
+  test('detects the running host fork via appName, not an extension id', function () {
+    // Running inside Kiro: there is no `amazon.kiro` extension to resolve, yet
+    // the host must report as present and carry the appName-detection note.
+    const section = buildAdapterInstallationSection({
+      workspaceRoot: workspace,
+      isExtensionInstalled: () => false,
+      hostAppName: 'Kiro'
+    });
+    const kiro = section.hosts.find(h => h.host === 'kiro')!;
+    assert.strictEqual(kiro.extensionInstalled, true);
+    assert.match(kiro.notes ?? '', /host detected via/);
+    // A non-running fork stays undetected.
+    const windsurf = section.hosts.find(h => h.host === 'windsurf')!;
+    assert.strictEqual(windsurf.extensionInstalled, false);
+  });
+
+  test('legacy isAntigravityHost flag still marks antigravity present', function () {
+    const section = buildAdapterInstallationSection({
+      workspaceRoot: workspace,
+      isExtensionInstalled: () => false,
+      isAntigravityHost: true
+    });
+    const ag = section.hosts.find(h => h.host === 'antigravity')!;
+    assert.strictEqual(ag.extensionInstalled, true);
+    assert.match(ag.notes ?? '', /host detected via/);
+  });
 });
 
 suite('Doctor: buildAutobuildSection()', function () {

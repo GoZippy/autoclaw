@@ -62,7 +62,10 @@ export type WriteToolName =
   | 'inbox.archive'
   | 'claim.task'
   | 'dream.run'
-  | 'consensus.vote';
+  | 'consensus.vote'
+  | 'llm.chat'
+  | 'llm.models'
+  | 'llm.health';
 
 /** Every BP3 write tool name, for iteration / validation. */
 export const WRITE_TOOL_NAMES: readonly WriteToolName[] = [
@@ -72,6 +75,9 @@ export const WRITE_TOOL_NAMES: readonly WriteToolName[] = [
   'claim.task',
   'dream.run',
   'consensus.vote',
+  'llm.chat',
+  'llm.models',
+  'llm.health',
 ];
 
 /**

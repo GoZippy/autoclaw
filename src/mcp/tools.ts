@@ -25,6 +25,7 @@ import type {
   ToolResult,
   McpToolDefinition,
 } from './types';
+import { retrieveCode } from '../intelligence';
 
 const fsPromises = fs.promises;
 
@@ -608,10 +609,137 @@ const doctorRunTool: ToolHandler = {
 };
 
 // ---------------------------------------------------------------------------
+// Tool: fabric.route
+// ---------------------------------------------------------------------------
+// Surfaces the capability-aware router (src/fabric/router.ts) over MCP so any
+// host can ask "which agent should take this task?" without running the loop.
+// Read-only: it reads registry.json + live capability_offer messages and
+// returns a scored decision. The router itself is pure (no IO).
+
+interface RegistryAgentEntry {
+  id: string;
+  agent_type?: string;
+  capabilities?: string[];
+  languages_supported?: string[];
+  trust_level?: string;
+  max_parallel_tasks?: number;
+}
+
+const fabricRouteTool: ToolHandler = {
+  definition: {
+    name: 'fabric.route',
+    description:
+      'Capability-aware routing decision: given a task\'s required capabilities, ' +
+      'language, criticality, and phase, score every registered agent and return ' +
+      'the best match (or a round-robin fallback). Reads registry.json + live ' +
+      'capability_offer messages. Read-only — does not assign the task.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        required_capabilities: { type: 'array', items: { type: 'string' }, description: 'Capabilities the task needs.' },
+        language: { type: 'string', description: 'Primary language of the work.' },
+        criticality: { type: 'number', enum: [1, 2, 3], description: '1=CRITICAL (gates low-trust), 2=MAJOR, 3=ROUTINE.' },
+        phase: { type: 'string', enum: ['plan', 'execute', 'review', 'grade'], description: 'Phase hint.' },
+        task_id: { type: 'string', description: 'Optional task id for the report.' },
+      },
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    // Lazy import keeps the server cold-start cheap; router is pure + light.
+    const router = require('../fabric/router') as typeof import('../fabric/router');
+
+    const reg = await readJsonFile<{ agents?: RegistryAgentEntry[] }>(
+      path.join(commsDir(ctx), 'registry.json'),
+    );
+    if (!reg || !Array.isArray(reg.agents) || reg.agents.length === 0) {
+      return { ok: false, reason: 'not_found', detail: 'no registry.json or no registered agents' };
+    }
+
+    // Base fleet from the registry.
+    const baseAgents = reg.agents.map(a => ({
+      id: a.id,
+      agent_type: a.agent_type as never,
+      capabilities: a.capabilities,
+      languages_supported: a.languages_supported,
+      trust_level: a.trust_level as never,
+      max_parallel_tasks: a.max_parallel_tasks,
+    }));
+
+    // Overlay live capability_offer messages from the shared inbox (load/cost/availability).
+    const sharedDir = path.join(commsDir(ctx), 'inboxes', 'shared');
+    const offerFiles = (await listJsonFiles(sharedDir)).filter(f => f.includes('capability_offer'));
+    const offers: Array<Record<string, unknown>> = [];
+    for (const f of offerFiles) {
+      const msg = await readJsonFile<InboxMessageFile>(path.join(sharedDir, f));
+      const p = msg?.payload;
+      if (p && typeof p === 'object') { offers.push(p as Record<string, unknown>); }
+    }
+    const liveAgents = router.agentsFromOffers(offers as never);
+    const liveById = new Map(liveAgents.map(a => [a.id, a]));
+    const fleet = baseAgents.map(a => ({ ...a, ...(liveById.get(a.id) ?? {}) }));
+
+    const result = router.routeTask(fleet as never, {
+      id: typeof args.task_id === 'string' ? args.task_id : 'adhoc',
+      required_capabilities: Array.isArray(args.required_capabilities) ? args.required_capabilities as string[] : [],
+      language: typeof args.language === 'string' ? args.language : undefined,
+      criticality: (args.criticality as 1 | 2 | 3) ?? undefined,
+      phase: args.phase as never,
+    });
+    return { ok: true, data: result };
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
 /** All read-only tools shipped in BP1, keyed by tool name. */
+/**
+ * `intelligence.retrieve` — RAG over this project's indexed codebase. Lets ANY
+ * MCP host (Claude, Cursor, …) query the local Intelligence index. Read-only;
+ * degrades to an empty result (never throws) when the vector backend is
+ * unavailable in the server's runtime.
+ */
+const intelligenceRetrieveTool: ToolHandler = {
+  definition: {
+    name: 'intelligence.retrieve',
+    description:
+      "Semantic code retrieval over this project's AutoClaw Intelligence index. " +
+      'Returns the most relevant indexed code chunks for a natural-language query. ' +
+      'Empty when the codebase has not been indexed or the vector backend is unavailable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural-language description of the code you want.' },
+        limit: { type: 'number', description: 'Max chunks to return (default backend limit; capped at 50).' },
+      },
+      required: ['query'],
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const query = typeof args.query === 'string' ? args.query.trim() : '';
+    if (query === '') {
+      return { ok: false, reason: 'invalid_params', detail: 'query is required' };
+    }
+    const limit =
+      typeof args.limit === 'number' && args.limit > 0 ? Math.min(Math.floor(args.limit), 50) : undefined;
+    try {
+      const results = await retrieveCode(query, { workspaceRoot: ctx.workspaceRoot });
+      const capped = limit ? results.slice(0, limit) : results;
+      return {
+        ok: true,
+        data: capped.map((r) => ({
+          file: r.file,
+          score: Number(r.score.toFixed(4)),
+          content: r.content,
+        })),
+      };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: (err as Error).message };
+    }
+  },
+};
+
 export const READ_ONLY_TOOLS: ToolHandler[] = [
   recallQueryTool,
   fleetStatusTool,
@@ -619,6 +747,8 @@ export const READ_ONLY_TOOLS: ToolHandler[] = [
   inboxReadTool,
   todoListTool,
   doctorRunTool,
+  fabricRouteTool,
+  intelligenceRetrieveTool,
 ];
 
 /** Build a name → handler map for O(1) `tools/call` dispatch. */

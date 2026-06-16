@@ -170,8 +170,8 @@ suite('MCP — JSON-RPC dispatch', () => {
       const result = resp!.result as { tools: Array<{ name: string }> };
       const names = result.tools.map(t => t.name).sort();
       assert.deepStrictEqual(names, [
-        'doctor.run', 'fleet.cards', 'fleet.status',
-        'inbox.read', 'recall.query', 'todo.list',
+        'doctor.run', 'fabric.route', 'fleet.cards', 'fleet.status',
+        'inbox.read', 'intelligence.retrieve', 'recall.query', 'todo.list',
       ]);
     } finally {
       rmrf(root);
