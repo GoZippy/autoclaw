@@ -28,6 +28,12 @@ import {
   VEC_DIR_ENV,
 } from './intelligence/installBackend';
 import {
+  installEmbeddingsProvider,
+  isEmbeddingsInstalled,
+  TRANSFORMERS_DIR_ENV,
+  TRANSFORMERS_CACHE_ENV,
+} from './intelligence/installEmbeddings';
+import {
   resolveBackendDir,
   gatherStorageStatus,
   formatBytes,
@@ -55,6 +61,7 @@ import {
   intelligencePaths,
   initVectorBackend,
   getEmbedding,
+  detectOllama,
   resolveProjectKey,
   listSources,
   setSourceEnabled,
@@ -147,7 +154,10 @@ async function runLearn(workspaceRoot: string): Promise<void> {
   promoteLatestInsightToSystem(workspaceRoot);
 }
 
-async function runIndexCode(workspaceRoot: string): Promise<void> {
+async function runIndexCode(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string,
+): Promise<void> {
   const log: LogFn = logLine;
 
   // Offer a full re-index toggle (R4.3 --force).
@@ -161,6 +171,10 @@ async function runIndexCode(workspaceRoot: string): Promise<void> {
   if (!pick) {
     return; // user dismissed the picker
   }
+
+  // First-run embeddings guide: offer to install semantic embeddings (or pick
+  // Ollama / basic) before indexing, instead of silently degrading to `none`.
+  await guideEmbeddingsBeforeIndex(context, workspaceRoot);
 
   getChannel().show(true);
   logLine(`index-code: ${pick.force ? 'full re-index' : 'incremental'} for ${workspaceRoot}`);
@@ -817,6 +831,90 @@ function wireInstalledBackend(
   }
 }
 
+/** The optional `autoclaw.intelligence.modelCacheDir` setting (empty ⇒ unset). */
+function modelCacheDirSetting(): string | undefined {
+  const v = vscode.workspace.getConfiguration('autoclaw.intelligence').get<string>('modelCacheDir');
+  return v && v.trim() !== '' ? v : undefined;
+}
+
+/**
+ * Where the embeddings model weights cache. Defaults PROJECT-LOCAL
+ * (`<workspace>/.autoclaw/models`) so multi-hundred-MB downloads stay in the
+ * project root and are never forced onto C:; the `modelCacheDir` setting
+ * overrides; the extension globalStorage is a last resort when no workspace.
+ */
+function modelCacheDir(context: vscode.ExtensionContext, workspaceRoot: string | undefined): string {
+  const override = modelCacheDirSetting();
+  if (override) {
+    return override;
+  }
+  if (workspaceRoot) {
+    return intelligencePaths(workspaceRoot).root + '/models';
+  }
+  return context.globalStorageUri.fsPath + '/models';
+}
+
+/** Pinned `@xenova/transformers` version from the extension manifest's optionalDependencies. */
+function pinnedTransformersVersion(context: vscode.ExtensionContext): string {
+  const opt = (context.extension?.packageJSON?.optionalDependencies ?? {}) as Record<string, string>;
+  return typeof opt['@xenova/transformers'] === 'string' ? opt['@xenova/transformers'] : 'latest';
+}
+
+/**
+ * Point the host-free embeddings loader at an installed `@xenova/transformers`
+ * (and its project-local model cache) when present, so semantic embeddings work
+ * after a window reload without re-running the install command. The package
+ * shares the backend `native` dir.
+ */
+function wireInstalledEmbeddings(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): void {
+  const dir = backendDir(context, workspaceRoot);
+  if (isEmbeddingsInstalled(dir)) {
+    process.env[TRANSFORMERS_DIR_ENV] = dir;
+    process.env[TRANSFORMERS_CACHE_ENV] = modelCacheDir(context, workspaceRoot);
+  }
+}
+
+/**
+ * Persist the Intelligence embedding provider into `<workspace>/.autoclaw/vector/
+ * config.json` (read → merge → write), so the choice survives reloads. Mirrors
+ * the direct-write pattern in `sources/consent.ts`. Best-effort dir creation.
+ */
+function setEmbeddingProvider(
+  workspaceRoot: string,
+  provider: 'transformers' | 'ollama' | 'none',
+  model?: string,
+): void {
+  const { configPath, vectorDir } = intelligencePaths(workspaceRoot);
+  fs.mkdirSync(vectorDir, { recursive: true });
+  let onDisk: Record<string, unknown> = {};
+  try {
+    if (fs.existsSync(configPath)) {
+      const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        onDisk = parsed as Record<string, unknown>;
+      }
+    }
+  } catch {
+    onDisk = {}; // malformed config — overwrite with a clean minimal object
+  }
+  const embedding =
+    onDisk.embedding && typeof onDisk.embedding === 'object' && !Array.isArray(onDisk.embedding)
+      ? (onDisk.embedding as Record<string, unknown>)
+      : {};
+  embedding.provider = provider;
+  if (model) {
+    embedding.model = model;
+  }
+  onDisk.embedding = embedding;
+  fs.writeFileSync(configPath, `${JSON.stringify(onDisk, null, 2)}\n`, 'utf8');
+}
+
+/** Ollama's drop-in 768-dim embedding model (matches the default dimension). */
+const OLLAMA_EMBED_MODEL = 'nomic-embed-text';
+
 /**
  * `autoclaw.intelligence.installBackend` — install the `sqlite-vec` native peer
  * (the `vec0` loadable) so RAG/indexing works in the packaged extension, where
@@ -856,6 +954,184 @@ async function runInstallBackend(
 }
 
 /**
+ * Download + install `@xenova/transformers` into the project-local `native` dir,
+ * point the loader at it, and persist `embedding.provider = transformers`.
+ * Shared by the install command and the first-run guide. Returns whether the
+ * provider is now ready. Behind a progress notification — the install is large
+ * (~135 MB with native builds) and the model downloads on the first index.
+ */
+async function installTransformersProvider(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<boolean> {
+  const dir = backendDir(context, workspaceRoot);
+  const version = pinnedTransformersVersion(context);
+  const cache = modelCacheDir(context, workspaceRoot);
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `AutoClaw Intelligence: installing embeddings provider (@xenova/transformers@${version}, ~135 MB, one time) → ${dir}…`,
+      cancellable: false,
+    },
+    () => installEmbeddingsProvider({ targetDir: dir, version, log: logLine }),
+  );
+
+  if (result.ok) {
+    process.env[TRANSFORMERS_DIR_ENV] = result.installedDir ?? dir;
+    process.env[TRANSFORMERS_CACHE_ENV] = cache;
+    if (workspaceRoot) {
+      setEmbeddingProvider(workspaceRoot, 'transformers');
+    }
+    logLine(
+      `install-embeddings: ready at ${result.installedDir ?? dir} (entry ${result.entryPath}); ` +
+        `model cache → ${cache}`,
+    );
+    void vscode.window.showInformationMessage(
+      `Intelligence: semantic embeddings installed. The embedding model downloads to ${cache} ` +
+        `on the first index (one time). Run "Index Codebase" to (re)build the semantic index.`,
+    );
+    return true;
+  }
+  logLine(`install-embeddings: FAILED — ${result.error}`);
+  void vscode.window.showErrorMessage(
+    `Intelligence embeddings install failed: ${result.error}. Ensure npm is on PATH and you have ` +
+      `network access. You can use Ollama instead, or stay on basic 'none' embeddings.`,
+  );
+  return false;
+}
+
+/**
+ * `autoclaw.intelligence.installEmbeddings` — choose + provision the embedding
+ * provider so RAG uses real semantic vectors instead of the low-quality `none`
+ * fallback. Explains what each option installs + where, then provisions it:
+ *   - transformers → local ONNX via `@xenova/transformers` (project-local, ~135 MB)
+ *   - ollama       → your local Ollama server (no download here)
+ *   - none         → fast hashed embeddings, no download (lower quality)
+ * Project-local + user-relocatable; never forced onto C:.
+ */
+async function runInstallEmbeddings(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  const dir = backendDir(context, workspaceRoot);
+  const cache = modelCacheDir(context, workspaceRoot);
+  const ollamaUp = await detectOllama();
+
+  const TRANSFORMERS = `Semantic embeddings (recommended) — install @xenova/transformers`;
+  const OLLAMA = ollamaUp
+    ? 'Use Ollama (detected) — local server, no download here'
+    : 'Use Ollama — requires installing Ollama separately';
+  const NONE = 'Basic only — fast, no download, lower retrieval quality';
+
+  const pick = await vscode.window.showQuickPick(
+    [
+      {
+        label: TRANSFORMERS,
+        detail: `~135 MB one-time install → ${dir}; model downloads to ${cache} on first index. Best quality, fully local/offline after.`,
+      },
+      {
+        label: OLLAMA,
+        detail: ollamaUp
+          ? `Uses your running Ollama with the "${OLLAMA_EMBED_MODEL}" model (run: ollama pull ${OLLAMA_EMBED_MODEL}). No npm download.`
+          : `Install Ollama from ollama.com, then: ollama pull ${OLLAMA_EMBED_MODEL}. No npm download here.`,
+      },
+      {
+        label: NONE,
+        detail: 'Deterministic hashed vectors. Works instantly with zero dependencies, but retrieval is weaker.',
+      },
+    ],
+    {
+      placeHolder: 'Choose how AutoClaw Intelligence should compute embeddings',
+      ignoreFocusOut: true,
+    },
+  );
+  if (!pick) {
+    return; // dismissed
+  }
+  getChannel().show(true);
+
+  if (pick.label === TRANSFORMERS) {
+    await installTransformersProvider(context, workspaceRoot);
+    return;
+  }
+  if (pick.label === OLLAMA) {
+    if (workspaceRoot) {
+      setEmbeddingProvider(workspaceRoot, 'ollama', OLLAMA_EMBED_MODEL);
+    }
+    logLine(
+      `install-embeddings: provider set to ollama (model ${OLLAMA_EMBED_MODEL}); ` +
+        `ollama ${ollamaUp ? 'detected' : 'NOT detected — install it + pull the model'}.`,
+    );
+    void vscode.window.showInformationMessage(
+      ollamaUp
+        ? `Intelligence: using Ollama embeddings ("${OLLAMA_EMBED_MODEL}"). If you haven't yet, run: ollama pull ${OLLAMA_EMBED_MODEL}. Then "Index Codebase".`
+        : `Intelligence: set to Ollama. Install Ollama (ollama.com), run "ollama pull ${OLLAMA_EMBED_MODEL}", then "Index Codebase".`,
+    );
+    return;
+  }
+  // NONE
+  if (workspaceRoot) {
+    setEmbeddingProvider(workspaceRoot, 'none');
+  }
+  logLine('install-embeddings: provider set to none (basic hashed embeddings).');
+  void vscode.window.showInformationMessage(
+    'Intelligence: using basic embeddings (no download). Re-run "Install Embeddings Provider" anytime to enable semantic embeddings.',
+  );
+}
+
+/**
+ * First-run guide invoked before indexing: when the active provider is
+ * `transformers` but the package is not installed, offer to install it, switch
+ * to Ollama, or stay on basic — instead of silently degrading + warning per
+ * chunk. Returns after the user's choice; indexing then proceeds either way.
+ * No-op (proceeds silently) when the provider is already usable or the user has
+ * deliberately chosen ollama/none.
+ */
+async function guideEmbeddingsBeforeIndex(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string,
+): Promise<void> {
+  const cfg = loadConfig(workspaceRoot);
+  if (cfg.embedding.provider !== 'transformers') {
+    return; // user picked ollama/none — respect it, no nagging
+  }
+  const dir = backendDir(context, workspaceRoot);
+  if (isEmbeddingsInstalled(dir)) {
+    // Already installed — make sure the loader + model cache are wired this session.
+    wireInstalledEmbeddings(context, workspaceRoot);
+    return;
+  }
+
+  const INSTALL = 'Install semantic (recommended)';
+  const OLLAMA = 'Use Ollama';
+  const BASIC = 'Keep basic (none)';
+  const choice = await vscode.window.showInformationMessage(
+    'AutoClaw Intelligence: semantic embeddings (@xenova/transformers) are not installed, so indexing ' +
+      "will use basic 'none' embeddings (lower retrieval quality). Install the semantic provider for " +
+      'best results? You can change this anytime via "Install Embeddings Provider".',
+    INSTALL,
+    OLLAMA,
+    BASIC,
+  );
+
+  if (choice === INSTALL) {
+    await installTransformersProvider(context, workspaceRoot);
+  } else if (choice === OLLAMA) {
+    setEmbeddingProvider(workspaceRoot, 'ollama', OLLAMA_EMBED_MODEL);
+    const ollamaUp = await detectOllama();
+    void vscode.window.showInformationMessage(
+      ollamaUp
+        ? `Intelligence: using Ollama embeddings ("${OLLAMA_EMBED_MODEL}").`
+        : `Intelligence: set to Ollama. Install it (ollama.com) + run "ollama pull ${OLLAMA_EMBED_MODEL}".`,
+    );
+  } else if (choice === BASIC) {
+    setEmbeddingProvider(workspaceRoot, 'none'); // persist so it won't ask again
+    logLine('index-code: keeping basic embeddings (provider set to none).');
+  }
+  // dismissed → proceed this run on the de-spammed none fallback, ask again next time
+}
+
+/**
  * `autoclaw.intelligence.status` — a visibility report: WHERE every store lives
  * (project root, vector index, backend dir, optional system tier), HOW MUCH data
  * is there, the index watermark, and the learn summary. Read-only.
@@ -870,6 +1146,8 @@ async function runStatus(
   }
   const paths = intelligencePaths(workspaceRoot);
   const bdir = backendDir(context, workspaceRoot);
+  const cfg = loadConfig(workspaceRoot);
+  const embInstalled = isEmbeddingsInstalled(bdir);
   const status = gatherStorageStatus({
     workspaceRoot,
     contractRoot: paths.root,
@@ -894,6 +1172,13 @@ async function runStatus(
   );
   ch.appendLine(
     `  system tier  : ${status.system.enabled ? `${(status.system as { path: string }).path}` : 'disabled (set autoclaw.intelligence.systemDir to enable)'}`,
+  );
+  ch.appendLine('EMBEDDINGS:');
+  ch.appendLine(
+    `  provider     : ${cfg.embedding.provider}  (model ${cfg.embedding.model}, ${cfg.embedding.dimension}-dim)` +
+      (cfg.embedding.provider === 'transformers'
+        ? `  — ${embInstalled ? 'installed' : "NOT installed; using basic 'none' fallback. Run \"Install Embeddings Provider\""}`
+        : ''),
   );
   ch.appendLine('INDEX:');
   ch.appendLine(
@@ -1036,9 +1321,13 @@ export function registerIntelligenceCommands(
   getWorkspaceRoot: () => string | undefined,
 ): void {
   wireInstalledBackend(context, getWorkspaceRoot());
+  wireInstalledEmbeddings(context, getWorkspaceRoot());
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.intelligence.installBackend', () =>
       runInstallBackend(context, getWorkspaceRoot()),
+    ),
+    vscode.commands.registerCommand('autoclaw.intelligence.installEmbeddings', () =>
+      runInstallEmbeddings(context, getWorkspaceRoot()),
     ),
     vscode.commands.registerCommand('autoclaw.intelligence.status', () =>
       runStatus(context, getWorkspaceRoot()),
@@ -1061,7 +1350,7 @@ export function registerIntelligenceCommands(
     ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.indexCode',
-      withWorkspace(getWorkspaceRoot, runIndexCode),
+      withWorkspace(getWorkspaceRoot, (ws) => runIndexCode(context, ws)),
     ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.retrieve',
