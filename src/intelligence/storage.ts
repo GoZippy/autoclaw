@@ -185,3 +185,38 @@ export function gatherStorageStatus(args: {
     system: sys ? { ...storeInfo(sys.root), enabled: true } : { enabled: false },
   };
 }
+
+export interface RelocateResult {
+  ok: boolean;
+  from: string;
+  to: string;
+  movedBytes?: number;
+  error?: string;
+}
+
+/**
+ * Move a store directory from `oldDir` to `newDir` (copy-then-remove). Used by
+ * the "Relocate Backend" command so a user can put their store on any drive
+ * post-install. Same source/dest is a no-op success; a missing source or a copy
+ * failure returns `ok:false` rather than throwing. The caller updates the setting.
+ */
+export function relocateStore(oldDir: string, newDir: string): RelocateResult {
+  const from = toForwardSlash(path.resolve(oldDir));
+  const to = toForwardSlash(path.resolve(newDir));
+  if (from.toLowerCase() === to.toLowerCase()) {
+    return { ok: true, from, to, movedBytes: 0 };
+  }
+  if (!fs.existsSync(oldDir)) {
+    return { ok: false, from, to, error: 'source directory does not exist' };
+  }
+  try {
+    fs.mkdirSync(newDir, { recursive: true });
+    // Node 16.7+ recursive copy; preserves the node_modules/sqlite-vec layout.
+    fs.cpSync(oldDir, newDir, { recursive: true, force: true });
+    const movedBytes = pathSizeBytes(newDir);
+    fs.rmSync(oldDir, { recursive: true, force: true });
+    return { ok: true, from, to, movedBytes };
+  } catch (err) {
+    return { ok: false, from, to, error: (err as Error).message };
+  }
+}
