@@ -106,6 +106,8 @@ import {
   resolveFleet, parseFleetManifest, type FleetManifest, type AgentSignal,
 } from './fleet/architecture';
 import { readAllBeacons, type BeaconRow } from './fleet/beacons';
+import { createInvite, listInvites, revokeInvite, type AdmitPolicy } from './fleet/invites';
+import { computePendingAgents, admitAgent } from './fleet/pending';
 import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
@@ -658,6 +660,13 @@ export function activate(context: vscode.ExtensionContext) {
   // Fleet architecture — let the user designate who coordinates the team.
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.designateOrchestrator', () => designateOrchestratorCommand())
+  );
+
+  // Fleet federation (FF-3) — invite outside agents, admit/decline the pending tray.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.fleet.invite', () => fleetInviteCommand()),
+    vscode.commands.registerCommand('autoclaw.fleet.admit', () => fleetAdmitCommand()),
+    vscode.commands.registerCommand('autoclaw.fleet.decline', () => fleetDeclineCommand())
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -4043,6 +4052,142 @@ async function setAgentRoleCommand(): Promise<void> {
   } catch (e) {
     vscode.window.showWarningMessage(`AutoClaw: could not save role — ${(e as Error).message}`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Fleet federation commands (FF-3) — invite / admit / decline outside agents
+// ---------------------------------------------------------------------------
+
+/** Issue a scoped, single-use invite token an outside agent can use to join. */
+async function fleetInviteCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+
+  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
+  const rolePick = await vscode.window.showQuickPick(roleItems, { title: 'Invite agent — suggested role', placeHolder: 'What role should the invited agent play?' });
+  if (!rolePick) { return; }
+
+  const typePick = await vscode.window.showQuickPick(
+    ['coder', 'runner', 'auditor', 'supervisor', 'assistant', 'governance'].map(t => ({ label: t })),
+    { title: 'Invite agent — behavioral type', placeHolder: 'agent_type (drives routing/gating)' },
+  );
+  if (!typePick) { return; }
+
+  const policyPick = await vscode.window.showQuickPick(
+    [
+      { label: 'auto-preapproved', description: 'Auto-admit if the joining type is pre-approved; else wait in the tray (recommended)' },
+      { label: 'manual', description: 'Every join waits for you to Admit in the tray' },
+      { label: 'open', description: 'Admit any valid invite (trusted LAN / program)' },
+    ],
+    { title: 'Invite agent — admit policy', placeHolder: 'How should a consuming agent be admitted?' },
+  );
+  if (!policyPick) { return; }
+
+  const scopeRaw = await vscode.window.showInputBox({
+    title: 'Invite agent — path scope (optional)',
+    prompt: 'Comma-separated globs the agent may touch (seeds a scope-lease). Blank = whole repo.',
+    placeHolder: 'src/test/**, docs/**',
+    ignoreFocusOut: true,
+  });
+  const scope = (scopeRaw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+
+  try {
+    const project = path.basename(wr);
+    const invite = await createInvite({
+      issued_by: activeHostAgentId() ?? 'claude-code',
+      project,
+      workspace: wr,
+      suggested_role: rolePick.role,
+      suggested_agent_type: typePick.label,
+      admit_policy: policyPick.label as AdmitPolicy,
+      preapproved_types: policyPick.label === 'auto-preapproved' ? [typePick.label] : undefined,
+      ...(scope.length ? { scope } : {}),
+      transports: ['fs', 'mcp', 'http'],
+    });
+    await vscode.env.clipboard.writeText(invite.token);
+    const pick = await vscode.window.showInformationMessage(
+      `AutoClaw: invite created for a ${rolePick.role} on "${project}". Token copied to clipboard — hand it to the agent.\n\n${invite.token}`,
+      { modal: false }, 'Copy token again',
+    );
+    if (pick === 'Copy token again') { await vscode.env.clipboard.writeText(invite.token); }
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not create invite — ${(e as Error).message}`);
+  }
+}
+
+/** Read the pending tray: agents with a fresh beacon not yet in fleet.json. */
+async function readPendingTray(autoclawDir: string) {
+  const commsDir = path.join(autoclawDir, 'orchestrator', 'comms');
+  const [beacons, manifestRaw, invitesM, invitesW] = await Promise.all([
+    readAllBeacons({ commsDir }),
+    fsPromises.readFile(path.join(autoclawDir, 'orchestrator', 'fleet.json'), 'utf8').then(parseFleetManifest).catch(() => null),
+    listInvites({}).catch(() => []),
+    listInvites({ scope: 'workspace', commsDir }).catch(() => []),
+  ]);
+  return computePendingAgents(beacons, manifestRaw, [...invitesM, ...invitesW]);
+}
+
+/** Admit a pending agent into fleet.json with an authoritative role. */
+async function fleetAdmitCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const autoclawDir = path.join(wr, '.autoclaw');
+
+  const pending = await readPendingTray(autoclawDir);
+  if (pending.length === 0) { vscode.window.showInformationMessage('AutoClaw: no agents are waiting to be admitted.'); return; }
+
+  const pick = await vscode.window.showQuickPick(
+    pending.map(p => ({
+      label: p.agent_id,
+      description: `${p.suggested_role ?? 'generalist'}${p.host ? ' · ' + p.host : ''}${p.via_invite ? ' · invited' : ''}`,
+      agent: p,
+    })),
+    { title: 'Admit agent', placeHolder: 'Pick a pending agent to admit' },
+  );
+  if (!pick) { return; }
+
+  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
+  const rolePick = await vscode.window.showQuickPick(roleItems, {
+    title: `Role for ${pick.agent.agent_id}`,
+    placeHolder: pick.agent.suggested_role ? `Suggested: ${pick.agent.suggested_role}` : 'Pick a role',
+  });
+  if (!rolePick) { return; }
+
+  try {
+    await admitAgent(autoclawDir, pick.agent.agent_id, {
+      role: rolePick.role,
+      ...(pick.agent.suggested_agent_type ? { agent_type: pick.agent.suggested_agent_type } : {}),
+    });
+    vscode.window.showInformationMessage(`AutoClaw: admitted ${pick.agent.agent_id} as ${ROLE_META[rolePick.role as CanonicalRole].label}.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not admit — ${(e as Error).message}`);
+  }
+}
+
+/** Decline a pending agent: revoke its invite (its beacon then ages out). */
+async function fleetDeclineCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const autoclawDir = path.join(wr, '.autoclaw');
+  const commsDir = path.join(autoclawDir, 'orchestrator', 'comms');
+
+  const pending = await readPendingTray(autoclawDir);
+  if (pending.length === 0) { vscode.window.showInformationMessage('AutoClaw: no agents are waiting.'); return; }
+
+  const pick = await vscode.window.showQuickPick(
+    pending.map(p => ({ label: p.agent_id, description: p.via_invite ? 'invited' : 'uninvited beacon', agent: p })),
+    { title: 'Decline agent', placeHolder: 'Pick a pending agent to decline' },
+  );
+  if (!pick) { return; }
+
+  if (pick.agent.via_invite) {
+    await revokeInvite(pick.agent.via_invite, {}).catch(() => false);
+    await revokeInvite(pick.agent.via_invite, { scope: 'workspace', commsDir }).catch(() => false);
+  }
+  vscode.window.showInformationMessage(`AutoClaw: declined ${pick.agent.agent_id}. Its invite was revoked; the beacon will age out.`);
+  if (kdreamView) { await refreshOrchestratorData(kdreamView); }
 }
 
 /** Best-effort "who am I?" for the host running this extension instance.

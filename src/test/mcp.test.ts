@@ -159,7 +159,7 @@ suite('MCP — JSON-RPC dispatch', () => {
     }
   });
 
-  test('tools/list returns all six read-only tools', async () => {
+  test('tools/list returns all read-only tools', async () => {
     const root = makeWorkspace();
     try {
       const { ctx, ledger, toolMap } = harness(root);
@@ -171,7 +171,7 @@ suite('MCP — JSON-RPC dispatch', () => {
       const names = result.tools.map(t => t.name).sort();
       assert.deepStrictEqual(names, [
         'doctor.run', 'fabric.route', 'fleet.cards', 'fleet.status',
-        'inbox.read', 'recall.query', 'todo.list',
+        'inbox.read', 'presence.fleet', 'recall.query', 'todo.list',
       ]);
     } finally {
       rmrf(root);
@@ -518,8 +518,8 @@ suite('MCP — write-tool gate (BP3)', () => {
       assert.ok(names.includes('note.add'));
       assert.ok(names.includes('claim.task'));
       assert.ok(names.includes('llm.chat'), 'PA-5 llm.chat exposed');
-      // 6 original write tools + 3 PA-5 llm.* tools.
-      assert.strictEqual(tools.length, READ_ONLY_TOOLS.length + 9);
+      // 6 original write tools + presence.beacon (FF-1) + 3 PA-5 llm.* tools.
+      assert.strictEqual(tools.length, READ_ONLY_TOOLS.length + 10);
     } finally {
       rmrf(root);
     }
