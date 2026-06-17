@@ -27,6 +27,7 @@ import type {
 } from './types';
 import { getKnowledgeGraph } from '../intelligence/kg/service';
 import type { SearchStrategy } from '../intelligence/kg/types';
+import { retrieveCode } from '../intelligence';
 
 const fsPromises = fs.promises;
 
@@ -816,6 +817,52 @@ const kgTraverseTool: ToolHandler = {
 // ---------------------------------------------------------------------------
 
 /** All read-only tools shipped in BP1, keyed by tool name. */
+/**
+ * `intelligence.retrieve` — RAG over this project's indexed codebase. Lets ANY
+ * MCP host (Claude, Cursor, …) query the local Intelligence index. Read-only;
+ * degrades to an empty result (never throws) when the vector backend is
+ * unavailable in the server's runtime.
+ */
+const intelligenceRetrieveTool: ToolHandler = {
+  definition: {
+    name: 'intelligence.retrieve',
+    description:
+      "Semantic code retrieval over this project's AutoClaw Intelligence index. " +
+      'Returns the most relevant indexed code chunks for a natural-language query. ' +
+      'Empty when the codebase has not been indexed or the vector backend is unavailable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural-language description of the code you want.' },
+        limit: { type: 'number', description: 'Max chunks to return (default backend limit; capped at 50).' },
+      },
+      required: ['query'],
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const query = typeof args.query === 'string' ? args.query.trim() : '';
+    if (query === '') {
+      return { ok: false, reason: 'invalid_params', detail: 'query is required' };
+    }
+    const limit =
+      typeof args.limit === 'number' && args.limit > 0 ? Math.min(Math.floor(args.limit), 50) : undefined;
+    try {
+      const results = await retrieveCode(query, { workspaceRoot: ctx.workspaceRoot });
+      const capped = limit ? results.slice(0, limit) : results;
+      return {
+        ok: true,
+        data: capped.map((r) => ({
+          file: r.file,
+          score: Number(r.score.toFixed(4)),
+          content: r.content,
+        })),
+      };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: (err as Error).message };
+    }
+  },
+};
+
 export const READ_ONLY_TOOLS: ToolHandler[] = [
   recallQueryTool,
   fleetStatusTool,
@@ -826,6 +873,7 @@ export const READ_ONLY_TOOLS: ToolHandler[] = [
   fabricRouteTool,
   kgSearchTool,
   kgTraverseTool,
+  intelligenceRetrieveTool,
 ];
 
 /** Build a name → handler map for O(1) `tools/call` dispatch. */

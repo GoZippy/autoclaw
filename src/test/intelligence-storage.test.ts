@@ -14,6 +14,7 @@ import {
   pathSizeBytes,
   formatBytes,
   gatherStorageStatus,
+  relocateStore,
 } from '../intelligence/storage';
 
 let tmpRoot: string;
@@ -134,6 +135,36 @@ suite('intelligence — storage locations + status', () => {
       // no index yet → zero size, no watermark
       assert.strictEqual(status.index.dbSizeBytes, 0);
       assert.strictEqual(status.index.indexedAt, undefined);
+    });
+  });
+
+  suite('relocateStore', () => {
+    test('moves a store dir to a new location and removes the source', () => {
+      const base = freshDir('reloc');
+      const oldDir = path.join(base, 'native');
+      fs.mkdirSync(path.join(oldDir, 'node_modules', 'sqlite-vec'), { recursive: true });
+      fs.writeFileSync(path.join(oldDir, 'node_modules', 'sqlite-vec', 'vec0.bin'), Buffer.alloc(512));
+      const newDir = path.join(base, 'moved');
+
+      const res = relocateStore(oldDir, newDir);
+      assert.strictEqual(res.ok, true);
+      assert.strictEqual(res.movedBytes, 512);
+      assert.ok(fs.existsSync(path.join(newDir, 'node_modules', 'sqlite-vec', 'vec0.bin')), 'copied');
+      assert.strictEqual(fs.existsSync(oldDir), false, 'source removed');
+    });
+
+    test('same source/dest is a no-op success', () => {
+      const d = freshDir('same');
+      const res = relocateStore(d, d);
+      assert.strictEqual(res.ok, true);
+      assert.strictEqual(res.movedBytes, 0);
+      assert.strictEqual(fs.existsSync(d), true);
+    });
+
+    test('a missing source returns ok:false (never throws)', () => {
+      const res = relocateStore(path.join(tmpRoot, 'ghost'), path.join(tmpRoot, 'dest'));
+      assert.strictEqual(res.ok, false);
+      assert.ok(/does not exist/.test(res.error || ''));
     });
   });
 });

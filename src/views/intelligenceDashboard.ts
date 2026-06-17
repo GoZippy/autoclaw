@@ -37,7 +37,17 @@ const ACTION_COMMANDS: Record<string, string> = {
   index: 'autoclaw.intelligence.indexCode',
   search: 'autoclaw.intelligence.search',
   'rag-generate': 'autoclaw.intelligence.ragGenerate',
+  // Manage row (storage/backend control + cross-project tier).
+  status: 'autoclaw.intelligence.status',
+  'install-backend': 'autoclaw.intelligence.installBackend',
+  relocate: 'autoclaw.intelligence.relocateBackend',
+  'system-tier': 'autoclaw.intelligence.systemTier',
+  steering: 'autoclaw.intelligence.generateSteering',
+  scaffold: 'autoclaw.intelligence.generateScaffold',
 };
+
+/** Settings query the ⚙ button opens (the Intelligence settings). */
+const SETTINGS_QUERY = 'autoclaw.intelligence';
 
 /** Generate a 32-char alphanumeric nonce for the Content-Security-Policy. */
 function makeNonce(): string {
@@ -153,6 +163,11 @@ export class IntelligenceDashboardProvider implements vscode.WebviewViewProvider
    * actions / unregistered commands surface a warning rather than throwing.
    */
   private async runAction(action: string): Promise<void> {
+    // The ⚙ button opens the Intelligence settings (no dedicated command).
+    if (action === 'settings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', SETTINGS_QUERY);
+      return;
+    }
     const commandId = ACTION_COMMANDS[action];
     if (!commandId) {
       void vscode.window.showWarningMessage(`Unknown dashboard action: ${action}`);
