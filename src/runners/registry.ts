@@ -139,6 +139,7 @@ export function translateTrust(runnerId: string, preset: TrustPreset): TrustTran
 const DEFAULT_PREFERENCE_ORDER: readonly PreferenceCriterion[] = [
   'explicit',
   'workspace',
+  'reputation',
   'cost',
   'latency',
 ];
@@ -287,9 +288,40 @@ export class RunnerRegistry {
         return RunnerRegistry.lowestScored(candidates, opts.costByRunnerId);
       case 'latency':
         return RunnerRegistry.lowestScored(candidates, opts.p50LatencyMsByRunnerId);
+      case 'reputation':
+        // HR-3: prefer the strictly-highest reputation. No-op (null) when no
+        // reputation map is supplied, so the default order is unaffected for
+        // callers that don't opt in.
+        return RunnerRegistry.highestScored(candidates, opts.reputationByRunnerId);
       default:
         return null;
     }
+  }
+
+  /**
+   * Pick the candidate with the strictly-highest score. Returns `null` when
+   * there is no score map, fewer than two scored candidates, or a tie on the
+   * highest score (so the next criterion gets a chance to decide). The
+   * higher-is-better mirror of {@link lowestScored}.
+   */
+  private static highestScored(
+    candidates: Runner[],
+    scores: Record<string, number> | undefined,
+  ): Runner | null {
+    if (scores === undefined) {
+      return null;
+    }
+    const scored = candidates
+      .map((r) => ({ runner: r, score: scores[r.id] }))
+      .filter((s): s is { runner: Runner; score: number } => typeof s.score === 'number');
+    if (scored.length < 2) {
+      return null;
+    }
+    scored.sort((a, b) => b.score - a.score);
+    if (scored[0].score === scored[1].score) {
+      return null; // tie — defer to the next criterion
+    }
+    return scored[0].runner;
   }
 
   /**

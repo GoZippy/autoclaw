@@ -32,6 +32,8 @@ import { resolvePendingConsensus } from './orchestrator/consensusTally';
 import { writeBoard } from './orchestrator/boardWriter';
 import { runHealPhase } from './orchestrator/heal';
 import { acquireSupervisorRole } from './orchestrator/supervisorLease';
+import { ingestWorkforceSignals } from './fleet/workforceIngest';
+import { runRecallSweep } from './fleet/recallDispatch';
 // Fabric governance (AF-8 §3) — gate + audit the real dispatch path. Explicit
 // subpath keeps the message-bus/bridge out of the loop module.
 import { gateDispatch, appendAuditLog, type ControlLevel } from './fabric/governance';
@@ -754,6 +756,25 @@ export async function runTick(
       });
     }
 
+    // HRW-1: fold task_complete / scope_violation into earned résumés (the
+    // talent pool, HR-1). Idempotent via a per-workspace watermark; no-op when
+    // there are no new signals. Distinct from the consensus/HEAL blocks above.
+    try {
+      const ing = await ingestWorkforceSignals(workspaceRoot);
+      if (ing.ingested > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'work',
+          action: 'workforce_ingest', detail: { ingested: ing.ingested, byAgent: ing.byAgent },
+        });
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'workforce_ingest_failed', detail: { error: String(e) },
+      });
+    }
+
     // Refresh the agendaboard (board.md + board.json).
     try {
       await writeBoard({ workspaceRoot, generator: 'orchestrator-loop' });
@@ -781,6 +802,18 @@ export async function runTick(
               action: 'heal', detail: {
                 summary: heal.summary, stolen: heal.stolen,
                 findings: heal.findingsEmitted, took_over: sup.stole,
+              },
+            });
+          }
+          // HRW-3: supervisor-only roster-gated recall sweep (no-op without
+          // .autoclaw/orchestrator/roster.json). Keeps the establishment staffed.
+          const sweep = await runRecallSweep(workspaceRoot);
+          if (!sweep.skipped && sweep.dispatched) {
+            await writeLoopJournal(workspaceRoot, {
+              at: new Date().toISOString(), tick: state.tick, phase: 'work',
+              action: 'recall_sweep', detail: {
+                recalled: sweep.dispatched.recalled, hires: sweep.dispatched.hires,
+                gaps: sweep.dispatched.gaps,
               },
             });
           }

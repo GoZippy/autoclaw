@@ -331,9 +331,17 @@ export interface PreferenceOptions {
   costByRunnerId?: Record<string, number>;
   /** Per-runner recent p50 dispatch latency in milliseconds — lower is faster. */
   p50LatencyMsByRunnerId?: Record<string, number>;
+  /**
+   * Per-runner earned reputation in [0,1] (HR-3 `reputationScore`) — HIGHER is
+   * preferred. Optional and additive: when absent the `reputation` criterion is
+   * a no-op and the preference order is unchanged.
+   */
+  reputationByRunnerId?: Record<string, number>;
 }
 
 /**
  * One ranking criterion used by the registry's preference order (RFC §5.5).
+ * `reputation` (HR-3) prefers the highest-reputation runner; it only decides
+ * when {@link PreferenceOptions.reputationByRunnerId} is supplied.
  */
-export type PreferenceCriterion = 'explicit' | 'workspace' | 'cost' | 'latency';
+export type PreferenceCriterion = 'explicit' | 'workspace' | 'cost' | 'latency' | 'reputation';

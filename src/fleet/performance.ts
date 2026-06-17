@@ -109,6 +109,18 @@ export function rankByReputation(workers: Worker[], opts: { role?: string } = {}
     );
 }
 
+/**
+ * Build a `{ agent_id → reputation }` map from the talent pool, shaped for
+ * `RunnerRegistry.getPreferred({ reputationByRunnerId })` (HRW-2). Runner ids
+ * match agent ids (e.g. `claude-code`, `kilocode`, `hermes`), so this is a
+ * direct feed: higher reputation → preferred runner.
+ */
+export function reputationMapFromWorkers(workers: Worker[]): Record<string, number> {
+  const map: Record<string, number> = {};
+  for (const w of workers) { map[w.agent_id] = reputationScore(w); }
+  return map;
+}
+
 // ---------------------------------------------------------------------------
 // Performance roll-up
 // ---------------------------------------------------------------------------
