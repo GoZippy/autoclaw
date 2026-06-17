@@ -18,6 +18,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { openKnowledgeGraph } from '../intelligence/kg';
+import { openSqliteDriver } from '../intelligence/vector/sqliteDriver';
 import type { IntelligenceConfig } from '../intelligence/types';
 
 const DIM = 64;
@@ -166,17 +167,16 @@ suite('intelligence-kg', function () {
 
       // `has_embed` is a reliable proxy: recordThought writes it as 1, then on
       // a failing vec0 insert the catch downgrades it to 0. So has_embed===1
-      // proves the BigInt rowid insert into thoughts_vec did NOT throw. (We read
-      // the plain `thoughts` column rather than thoughts_vec so the verification
-      // connection needs no sqlite-vec extension loaded.)
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { DatabaseSync } = require('node:sqlite');
-      const db = new DatabaseSync(dbPath);
+      // proves the BigInt rowid insert into thoughts_vec did NOT throw. Read the
+      // plain `thoughts` column through the SAME driver abstraction the store
+      // uses (node:sqlite OR better-sqlite3 fallback) so this works on CI hosts
+      // where node:sqlite is not a builtin. requireVec:false ⇒ no extension needed.
+      const driver = openSqliteDriver(dbPath, () => undefined, undefined, { requireVec: false });
       try {
-        const t = db.prepare('SELECT has_embed FROM thoughts WHERE text = ?').get('vectorized thought') as { has_embed: number };
-        assert.strictEqual(t.has_embed, 1, 'has_embed must stay 1 (vec insert succeeded, not swallowed)');
+        const t = driver.prepare('SELECT has_embed FROM thoughts WHERE text = ?').get('vectorized thought') as { has_embed: number };
+        assert.strictEqual(Number(t.has_embed), 1, 'has_embed must stay 1 (vec insert succeeded, not swallowed)');
       } finally {
-        db.close();
+        driver.close();
       }
     } finally {
       h.close();
