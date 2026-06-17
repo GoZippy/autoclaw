@@ -32,6 +32,7 @@ import {
 import { detectIde } from './ide-ports';
 import { vectorBackendPreflight, VectorBackendPreflight } from './intelligence/vector';
 import { openKnowledgeGraph } from './intelligence/kg';
+import { intelligencePaths } from './intelligence/paths';
 
 // Vscode is optional at runtime — passed in via dependency injection so the
 // module can run under plain Mocha without `vscode` being on the import path.
@@ -911,13 +912,20 @@ export function buildKgDaemonSection(
   const port = typeof shimKg?.port === 'number' ? shimKg.port : 9877;
   const dbPath = typeof shimKg?.dbPath === 'string' ? shimKg.dbPath : '';
 
-  // Open a TRANSIENT KG handle to read the realized backend, then close it —
-  // the doctor is a read-only diagnostic and must not hold the workspace DB
-  // file open (it is not the cached process handle). openKnowledgeGraph never
-  // throws; on driver failure it returns the degraded handle.
+  // The configured (on-disk) db path — reported but NOT created here.
+  const configuredDbPath = dbPath && dbPath.trim()
+    ? dbPath
+    : (workspaceRoot ? intelligencePaths(workspaceRoot).kgDbPath : '');
+
+  // Probe capabilities against an IN-MEMORY db (`:memory:`) — the doctor is a
+  // read-only diagnostic and must never create the `.autoclaw/kg/` directory or
+  // the db file as a side effect (see snapshot read-only invariant). caps,
+  // driverKind and the embedding signature are runtime properties, identical
+  // for a :memory: probe and the real file, so this reports accurately without
+  // touching disk. openKnowledgeGraph never throws.
   const h = openKnowledgeGraph({
     workspaceRoot: workspaceRoot ?? undefined,
-    dbPath: dbPath && dbPath.trim() ? dbPath : undefined,
+    dbPath: ':memory:',
   });
   try {
     return {
@@ -930,7 +938,7 @@ export function buildKgDaemonSection(
         model: h.embedding.model,
         dimension: h.embedding.dimension,
       },
-      dbPath: h.dbPath,
+      dbPath: configuredDbPath,
       port,
     };
   } finally {
