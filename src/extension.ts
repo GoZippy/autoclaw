@@ -48,7 +48,8 @@ import {
   discoverWorkflows,
   runWorkflow,
   getRunsDir,
-  findLatestRunLog
+  findLatestRunLog,
+  writeSchedulerHeartbeat
 } from './autobuild';
 import {
   generatePlan,
@@ -2214,6 +2215,9 @@ function startAutobuildScheduler(context: vscode.ExtensionContext): void {
     }
     try {
       const cfg = vscode.workspace.getConfiguration('autoclaw.autobuild');
+      // Stamp the scheduler heartbeat so `list`/the panel can tell live
+      // automation from dormant — a registered cron is inert without us.
+      await writeSchedulerHeartbeat(workspaceRoot, intervalSeconds);
       const report = await autobuildTick(workspaceRoot, new Date(), {
         enabled: cfg.get<boolean>('enabled', true),
         runner: runWorkflow

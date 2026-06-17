@@ -814,7 +814,12 @@ export interface RegistryEntry {
   name: string;
   cron: string;
   lastRun: string | null;
-  status: 'scheduled' | 'running' | 'passed' | 'failed';
+  /**
+   * `draft` — registered but has no concrete steps yet; the scheduler skips it
+   * so a placeholder workflow can never silently run a no-op forever. The other
+   * states are the normal run lifecycle.
+   */
+  status: 'draft' | 'scheduled' | 'running' | 'passed' | 'failed';
   lastLog?: string;
   nextCheck?: string;
 }
@@ -834,6 +839,88 @@ export function getRunsDir(workspaceRoot: string): string {
 }
 export function getRegistryPath(workspaceRoot: string): string {
   return path.join(getAutobuildDir(workspaceRoot), 'registry.json');
+}
+
+/**
+ * A run line that is a leftover scaffold rather than a real command. A workflow
+ * whose every step matches this is a no-op the scheduler must not fire — it gets
+ * treated as `draft`. Catches the historical `echo "... customize me"` shape and
+ * its close cousins without flagging a legitimate `echo` step.
+ */
+const PLACEHOLDER_RUN_RE = /customize\s*me|—\s*customize|placeholder|TODO\b|FIXME\b/i;
+
+/** True when a step's `run` is a real command (not an unfilled placeholder). */
+export function isConcreteStep(step: WorkflowStep): boolean {
+  const run = (step?.run ?? '').trim();
+  if (run.length === 0) { return false; }
+  return !PLACEHOLDER_RUN_RE.test(run);
+}
+
+/**
+ * A workflow is runnable only if it has at least one concrete step. An empty
+ * `steps:` list or one made entirely of placeholders is a `draft` — registered
+ * but parked, never fired. This is the code-side guarantee behind the skill's
+ * "never ship a placeholder" rule (yocooLab learnings #3).
+ */
+export function isRunnableWorkflow(workflow: Workflow): boolean {
+  return Array.isArray(workflow?.steps) && workflow.steps.some(isConcreteStep);
+}
+
+// ----- Scheduler liveness (executor pre-flight, learnings #4) ----------------
+
+/** Heartbeat the in-VS-Code scheduler stamps on every tick so other surfaces
+ *  (the `list` command, the panel) can tell live automation from dormant. */
+export function getSchedulerHeartbeatPath(workspaceRoot: string): string {
+  return path.join(getAutobuildDir(workspaceRoot), 'scheduler-heartbeat.json');
+}
+
+export interface SchedulerHeartbeat {
+  at: string;
+  pid: number;
+  intervalSeconds: number;
+}
+
+/** Default staleness window: a heartbeat older than this means "dormant". */
+export const SCHEDULER_STALE_MS = 120_000;
+
+/** Write the scheduler heartbeat. Best-effort — never throws into the tick. */
+export async function writeSchedulerHeartbeat(
+  workspaceRoot: string,
+  intervalSeconds: number,
+  now: Date = new Date(),
+): Promise<void> {
+  const hb: SchedulerHeartbeat = { at: now.toISOString(), pid: process.pid, intervalSeconds };
+  try {
+    await fs.promises.mkdir(getAutobuildDir(workspaceRoot), { recursive: true });
+    await fs.promises.writeFile(getSchedulerHeartbeatPath(workspaceRoot), JSON.stringify(hb, null, 2), 'utf8');
+  } catch { /* dormant detection just degrades to "unknown"; never break the tick */ }
+}
+
+export interface SchedulerStatus {
+  /** True when a heartbeat exists and is within the staleness window. */
+  live: boolean;
+  /** The last heartbeat, or null if none was ever written. */
+  lastHeartbeat: SchedulerHeartbeat | null;
+  /** Age of the last heartbeat in ms, or null if none. */
+  ageMs: number | null;
+}
+
+/**
+ * Report whether the AutoBuild scheduler is actually running. A registered cron
+ * means nothing if no executor ticks — this is the pre-flight that stops the UI
+ * from implying live automation while the daemon is down (learnings #4).
+ */
+export function getSchedulerStatus(
+  workspaceRoot: string,
+  now: Date = new Date(),
+  staleMs: number = SCHEDULER_STALE_MS,
+): SchedulerStatus {
+  let hb: SchedulerHeartbeat | null = null;
+  try {
+    hb = JSON.parse(fs.readFileSync(getSchedulerHeartbeatPath(workspaceRoot), 'utf8')) as SchedulerHeartbeat;
+  } catch { return { live: false, lastHeartbeat: null, ageMs: null }; }
+  const ageMs = now.getTime() - new Date(hb.at).getTime();
+  return { live: Number.isFinite(ageMs) && ageMs <= staleMs, lastHeartbeat: hb, ageMs };
 }
 
 /**
@@ -990,6 +1077,8 @@ export interface TickReport {
   ranNow: string[];
   skippedInFlight: string[];
   skippedNotMatching: string[];
+  /** Workflows skipped because they have no concrete steps (draft/placeholder). */
+  skippedDraft: string[];
   errors: { name: string; message: string }[];
   disabled: boolean;
   lockHeldByOther?: boolean;
@@ -1011,6 +1100,7 @@ export async function tick(
     ranNow: [],
     skippedInFlight: [],
     skippedNotMatching: [],
+    skippedDraft: [],
     errors: [],
     disabled: false
   };
@@ -1050,6 +1140,19 @@ export async function tick(
     }
     if (!cronMatches(spec, now)) {
       report.skippedNotMatching.push(workflow.name);
+      continue;
+    }
+    // A placeholder/empty workflow is parked, never fired — otherwise a
+    // scheduled no-op runs forever (yocooLab learnings #3).
+    if (!isRunnableWorkflow(workflow)) {
+      report.skippedDraft.push(workflow.name);
+      upsertRegistry(registry, {
+        name: workflow.name,
+        cron: workflow.cron,
+        lastRun: registry.workflows.find(w => w.name === workflow.name)?.lastRun ?? null,
+        status: 'draft',
+      });
+      writeRegistry(workspaceRoot, registry);
       continue;
     }
     if (inFlight.has(workflow.name)) {

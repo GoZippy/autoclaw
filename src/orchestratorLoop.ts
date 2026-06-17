@@ -28,6 +28,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import type { Heartbeat, Message } from './comms';
 import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
+import { resolvePendingConsensus } from './orchestrator/consensusTally';
 import { writeBoard } from './orchestrator/boardWriter';
 import { runHealPhase } from './orchestrator/heal';
 import { acquireSupervisorRole } from './orchestrator/supervisorLease';
@@ -418,6 +419,74 @@ export async function readRecentNextDispatches(
   return out;
 }
 
+/**
+ * How long a `task_claim-next-<agent>` placeholder lives before it is garbage.
+ * Comfortably longer than the 5-min re-dispatch cooldown so a live agent always
+ * has time to claim, but short enough that an idle fleet doesn't leave a litter
+ * of stale placeholders (yocooLab observed 50 piled up in shared/).
+ */
+export const NEXT_DISPATCH_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Garbage-collect stale dispatch placeholders from the shared inbox (#1).
+ *
+ *  - **Expire:** delete any `task_claim-next-<agent>` whose `expires_at` is in the
+ *    past (falling back to file mtime + TTL for legacy files without the field).
+ *  - **Coalesce:** for each agent, keep only the newest live placeholder and
+ *    delete the older duplicates — one pending nudge per idle agent is enough.
+ *
+ * Best-effort and self-contained: a malformed file is skipped, never fatal.
+ * Returns the count removed so the loop can journal it.
+ */
+export async function gcStaleNextDispatches(
+  workspaceRoot: string,
+  now: number = Date.now(),
+  ttlMs: number = NEXT_DISPATCH_TTL_MS,
+): Promise<number> {
+  const sharedInbox = path.join(workspaceRoot, SHARED_INBOX_REL);
+  let names: string[];
+  try { names = await fsPromises.readdir(sharedInbox); } catch { return 0; }
+
+  // First pass: classify each next-dispatch file as expired or live, and for the
+  // live ones record (agent → newest file) so we can coalesce duplicates.
+  const live: Array<{ agent: string; name: string; mtimeMs: number }> = [];
+  const toDelete: string[] = [];
+  for (const name of names) {
+    if (!name.includes('task_claim-next-')) continue;
+    const m = name.match(/task_claim-next-(.+?)\.json$/);
+    if (!m) continue;
+    const full = path.join(sharedInbox, name);
+    try {
+      const raw = await fsPromises.readFile(full, 'utf8');
+      const msg = JSON.parse(raw) as Message;
+      const stat = await fsPromises.stat(full);
+      const expiry = msg.expires_at ? Date.parse(msg.expires_at) : stat.mtimeMs + ttlMs;
+      if (Number.isFinite(expiry) && expiry < now) { toDelete.push(name); }
+      else { live.push({ agent: m[1], name, mtimeMs: stat.mtimeMs }); }
+    } catch {
+      // Unreadable/corrupt placeholder — reap it.
+      toDelete.push(name);
+    }
+  }
+
+  // Coalesce live duplicates: keep the newest per agent, delete the rest.
+  const newestByAgent = new Map<string, { name: string; mtimeMs: number }>();
+  for (const l of live) {
+    const prev = newestByAgent.get(l.agent);
+    if (!prev || l.mtimeMs > prev.mtimeMs) { newestByAgent.set(l.agent, l); }
+  }
+  for (const l of live) {
+    const keep = newestByAgent.get(l.agent);
+    if (keep && keep.name !== l.name) { toDelete.push(l.name); }
+  }
+
+  let removed = 0;
+  for (const name of toDelete) {
+    try { await fsPromises.unlink(path.join(sharedInbox, name)); removed++; } catch { /* already gone */ }
+  }
+  return removed;
+}
+
 export async function discoverWork(
   workspaceRoot: string,
   health: HealthCheckResult
@@ -549,6 +618,9 @@ export async function dispatchWork(
     task_id:     pkg.taskId,
     payload:     { vendor: pkg.assignToVendor, priority: pkg.priority },
     requires_response: true,
+    // Ephemeral placeholder: if nobody claims it within the TTL it is garbage —
+    // gcStaleNextDispatches() reaps it so the shared inbox stays bounded (#1).
+    expires_at:  new Date(Date.now() + NEXT_DISPATCH_TTL_MS).toISOString(),
   };
   await fsPromises.mkdir(sharedInbox, { recursive: true });
   const msgFile = path.join(sharedInbox, `${claimMsg.timestamp.replace(/[:.]/g,'-')}-task_claim-${pkg.taskId}.json`);
@@ -616,6 +688,20 @@ export async function runTick(
     detail: { healthy: health.healthyCount, stalled: health.stalledIds.length, dead: health.deadIds.length },
   });
 
+  // Reap stale/duplicate dispatch placeholders before discovering new work, so
+  // the shared inbox can't accumulate them unbounded (yocooLab learnings #1).
+  if (workspaceRoot) {
+    try {
+      const reaped = await gcStaleNextDispatches(workspaceRoot);
+      if (reaped > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'inbox',
+          action: 'next_dispatch_gc', detail: { removed: reaped },
+        });
+      }
+    } catch { /* GC is best-effort; never break the tick */ }
+  }
+
   const work = await discoverWork(workspaceRoot, health);
 
   if (work.length > 0) {
@@ -646,6 +732,25 @@ export async function runTick(
       await writeLoopJournal(workspaceRoot, {
         at: new Date().toISOString(), tick: state.tick, phase: 'error',
         action: 'peer_review_promotion_failed', detail: { error: String(e) },
+      });
+    }
+
+    // Auto-tally any consensus/active/ vote sets that have reached a verdict:
+    // write consensus/resolved/<task>.json and clear the active stub. Closes the
+    // loop the watcher opens (yocooLab learnings #9) so no operator hand-writes it.
+    try {
+      const tally = await resolvePendingConsensus({ workspaceRoot, resolvedBy: 'orchestrator-loop' });
+      if (tally.resolved.length > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'work',
+          action: 'consensus_resolved', detail: { resolved: tally.resolved },
+        });
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'consensus_tally_failed', detail: { error: String(e) },
       });
     }
 

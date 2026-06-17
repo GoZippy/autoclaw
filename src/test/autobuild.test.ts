@@ -27,6 +27,12 @@ import {
   tryAcquireLock,
   releaseLock,
   getLockPath,
+  isConcreteStep,
+  isRunnableWorkflow,
+  writeSchedulerHeartbeat,
+  getSchedulerStatus,
+  getSchedulerHeartbeatPath,
+  SCHEDULER_STALE_MS,
   _resetInFlight,
   _isInFlight
 } from '../autobuild';
@@ -327,6 +333,83 @@ suite('AutoBuild: tick()', function () {
     const r = await tick(workspace, new Date(2026, 3, 29, 9, 30));
     assert.deepStrictEqual(r.ranNow, []);
     assert.deepStrictEqual(r.skippedNotMatching, ['noon']);
+  });
+
+  test('parks a placeholder workflow as draft instead of firing it (#3)', async function () {
+    writeWorkflowFile(workspace, 'ph',
+      'name: ph\ncron: "* * * * *"\nsteps:\n  - id: plan\n    run: echo "Planning step — customize me"\n'
+    );
+    const r = await tick(workspace, new Date());
+    assert.deepStrictEqual(r.ranNow, [], 'placeholder must not run');
+    assert.deepStrictEqual(r.skippedDraft, ['ph']);
+    const reg = readRegistry(workspace);
+    assert.strictEqual(reg.workflows.find(w => w.name === 'ph')?.status, 'draft');
+  });
+
+  test('still fires a workflow with a concrete step', async function () {
+    writeWorkflowFile(workspace, 'real',
+      'name: real\ncron: "* * * * *"\nsteps:\n  - id: a\n    run: echo hi\n'
+    );
+    let ran = false;
+    const runner = async (): Promise<RunResult> => {
+      ran = true;
+      return {
+        workflow: 'real', startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+        status: 'passed', logPath: path.join(getRunsDir(workspace), 'x.log'), steps: [],
+        guardBlockRejected: 0, guardRolledBack: 0,
+      };
+    };
+    const r = await tick(workspace, new Date(), { runner });
+    assert.deepStrictEqual(r.ranNow, ['real']);
+    assert.deepStrictEqual(r.skippedDraft, []);
+    assert.strictEqual(ran, true);
+  });
+});
+
+suite('AutoBuild: draft detection (#3)', function () {
+  test('isConcreteStep rejects placeholders and blanks', function () {
+    assert.strictEqual(isConcreteStep({ id: 'a', run: 'echo "customize me"' }), false);
+    assert.strictEqual(isConcreteStep({ id: 'a', run: '   ' }), false);
+    assert.strictEqual(isConcreteStep({ id: 'a', run: '# TODO add command' }), false);
+    assert.strictEqual(isConcreteStep({ id: 'a', run: 'npm test' }), true);
+    assert.strictEqual(isConcreteStep({ id: 'a', run: 'echo hello' }), true);
+  });
+  test('isRunnableWorkflow needs at least one concrete step', function () {
+    assert.strictEqual(isRunnableWorkflow({ name: 'x', cron: '* * * * *', steps: [] }), false);
+    assert.strictEqual(isRunnableWorkflow({
+      name: 'x', cron: '* * * * *', steps: [{ id: 'p', run: 'echo "TODO customize me"' }],
+    }), false);
+    assert.strictEqual(isRunnableWorkflow({
+      name: 'x', cron: '* * * * *', steps: [{ id: 'p', run: 'echo "TODO" ' }, { id: 'b', run: 'npm run build' }],
+    }), true);
+  });
+});
+
+suite('AutoBuild: scheduler liveness (#4)', function () {
+  let workspace: string;
+  setup(function () { workspace = makeTempDir('autoclaw-ab-sched-'); });
+  teardown(function () { fs.rmSync(workspace, { recursive: true, force: true }); });
+
+  test('status is dormant when no heartbeat exists', function () {
+    const s = getSchedulerStatus(workspace);
+    assert.strictEqual(s.live, false);
+    assert.strictEqual(s.lastHeartbeat, null);
+  });
+
+  test('status is live right after a heartbeat', async function () {
+    await writeSchedulerHeartbeat(workspace, 30);
+    assert.ok(fs.existsSync(getSchedulerHeartbeatPath(workspace)));
+    const s = getSchedulerStatus(workspace);
+    assert.strictEqual(s.live, true);
+    assert.strictEqual(s.lastHeartbeat?.intervalSeconds, 30);
+  });
+
+  test('status is dormant when the heartbeat is stale', async function () {
+    const old = new Date(Date.now() - SCHEDULER_STALE_MS - 10_000);
+    await writeSchedulerHeartbeat(workspace, 30, old);
+    const s = getSchedulerStatus(workspace);
+    assert.strictEqual(s.live, false);
+    assert.ok((s.ageMs ?? 0) > SCHEDULER_STALE_MS);
   });
 });
 
