@@ -29,6 +29,8 @@ import * as crypto from 'crypto';
 import type { Heartbeat, Message } from './comms';
 import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
 import { writeBoard } from './orchestrator/boardWriter';
+import { runHealPhase } from './orchestrator/heal';
+import { acquireSupervisorRole } from './orchestrator/supervisorLease';
 // Fabric governance (AF-8 §3) — gate + audit the real dispatch path. Explicit
 // subpath keeps the message-bus/bridge out of the loop module.
 import { gateDispatch, appendAuditLog, type ControlLevel } from './fabric/governance';
@@ -52,6 +54,13 @@ export const LOOP_SIDE_CAR_DIR    = path.join(COMMS_DIR_REL, 'agents', '_dispatc
 export const DEFAULT_TICK_MS      = 30_000;
 export const HEALTHY_MS           = 60_000;
 export const STALLED_MS           = 5 * 60 * 1000;
+
+/**
+ * Per-process supervisor-candidate id (SH-2). Distinct across hosts so the
+ * supervisor lease arbitrates which loop runs the HEAL phase; if the holder
+ * goes stale, the next ticking host steals the lease and takes over.
+ */
+export const LOOP_INSTANCE_ID = `orchestrator-loop-${crypto.randomBytes(3).toString('hex')}`;
 
 // ---------------------------------------------------------------------------
 // KiloCode plugin cache (dynamic require — avoids hard dep)
@@ -648,6 +657,40 @@ export async function runTick(
       await writeLoopJournal(workspaceRoot, {
         at: new Date().toISOString(), tick: state.tick, phase: 'error',
         action: 'board_write_failed', detail: { error: String(e) },
+      });
+    }
+
+    // HEAL phase (SH-1/SH-2) — runs AFTER the board write so signals are fresh.
+    // Only the active supervisor heals (the lease arbitrates between hosts; a
+    // stale holder is taken over by the next ticking loop). Act-then-report:
+    // bounded, reversible recovery + a finding_report per action; never master.
+    // Skipped while the fleet is HALTed. Fully guarded — never breaks the tick.
+    try {
+      if (!isFleetHalted(workspaceRoot)) {
+        const sup = await acquireSupervisorRole(workspaceRoot, LOOP_INSTANCE_ID);
+        if (sup.isSupervisor) {
+          const heal = await runHealPhase(workspaceRoot, { mode: 'act' });
+          if (heal.actions.length > 0 || sup.stole) {
+            await writeLoopJournal(workspaceRoot, {
+              at: new Date().toISOString(), tick: state.tick, phase: 'work',
+              action: 'heal', detail: {
+                summary: heal.summary, stolen: heal.stolen,
+                findings: heal.findingsEmitted, took_over: sup.stole,
+              },
+            });
+          }
+        } else {
+          await writeLoopJournal(workspaceRoot, {
+            at: new Date().toISOString(), tick: state.tick, phase: 'work',
+            action: 'heal_standby', detail: { supervisor: sup.holder },
+          });
+        }
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'heal_failed', detail: { error: String(e) },
       });
     }
   }
