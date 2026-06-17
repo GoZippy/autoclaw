@@ -108,6 +108,7 @@ import {
 import { readAllBeacons, type BeaconRow } from './fleet/beacons';
 import { createInvite, listInvites, revokeInvite, type AdmitPolicy } from './fleet/invites';
 import { computePendingAgents, admitAgent } from './fleet/pending';
+import { buildPending } from './views/fleetViewModelBuilders';
 import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
@@ -1487,6 +1488,13 @@ export async function refreshDashboardData(view: vscode.WebviewView): Promise<vo
   const productivity = await getProductivityInsights(workspaceRoot, logs, todos);
   const health = await getProjectHealthIndicators(workspaceRoot, todos, adapterHealth);
 
+  // FF-3: pending tray — agents that joined via a fresh beacon but are not yet
+  // admitted to fleet.json. Best-effort; an empty list simply hides the tray.
+  let pending: Awaited<ReturnType<typeof readPendingTray>> = [];
+  try {
+    pending = await readPendingTray(path.join(workspaceRoot, '.autoclaw'));
+  } catch { /* best-effort — leave empty */ }
+
   // Send data to webview
   try {
     view.webview.postMessage({ command: 'updateStatus', data: stateData });
@@ -1497,6 +1505,7 @@ export async function refreshDashboardData(view: vscode.WebviewView): Promise<vo
     view.webview.postMessage({ command: 'updateCodeChurn', data: codeChurn });
     view.webview.postMessage({ command: 'updateProductivity', data: productivity });
     view.webview.postMessage({ command: 'updateHealth', data: health });
+    view.webview.postMessage({ command: 'updatePending', data: buildPending(pending) });
   } catch (e) {
     console.error('Error sending message to webview:', e);
   }
@@ -1831,6 +1840,15 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           await vscode.env.openExternal(vscode.Uri.parse('https://github.com/GoZippy/autoclaw/blob/master/docs/rfc/runner-bridge-contract.md'));
           break;
         }
+        case 'inviteAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.invite');
+          break;
+        case 'admitAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.admit');
+          break;
+        case 'declineAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.decline');
+          break;
         case 'startKgDaemon':
         case 'restartKgDaemon':
         case 'openKgDashboard': {
@@ -1945,6 +1963,19 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             </div>
             <div class="section-body" id="awaiting-you-body">
                 <div id="awaiting-you-content" aria-live="polite"><p class="empty">Loading...</p></div>
+            </div>
+        </div>
+
+        <!-- Pending agents tray (FF-3) — joined via beacon, not yet admitted -->
+        <div class="panel-section" id="pending-section" style="display:none">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="pending-body" data-section="pending">
+                <span class="section-chevron"></span>
+                Pending agents
+                <span class="section-badge" id="pending-badge">0</span>
+                <button id="btn-invite-agent" class="pending-invite-btn" type="button" aria-label="Invite agent">&#10133; Invite agent&#8230;</button>
+            </div>
+            <div class="section-body" id="pending-body">
+                <div id="pending-content" aria-live="polite"></div>
             </div>
         </div>
 
@@ -3891,6 +3922,24 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     view.webview.postMessage({
       command: 'updateFabricHealth',
       data: { html: renderFabricHealth(health) },
+    });
+  } catch {}
+
+  // FF-3: pending tray — agents with a fresh beacon not yet admitted to
+  // fleet.json. Mapped to the webview's render shape (PendingAgentView).
+  try {
+    const pending = await readPendingTray(path.join(wr, '.autoclaw'));
+    view.webview.postMessage({
+      command: 'updatePending',
+      data: pending.map(p => ({
+        agentId: p.agent_id,
+        sessionId: p.session_id,
+        host: p.host,
+        suggestedRole: p.suggested_role,
+        suggestedType: p.suggested_agent_type,
+        viaInvite: !!p.via_invite,
+        trust: p.trust,
+      })),
     });
   } catch {}
 }
