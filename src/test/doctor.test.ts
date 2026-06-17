@@ -530,59 +530,59 @@ suite('Doctor: buildKgDaemonSection()', function () {
     fs.rmSync(ext, { recursive: true, force: true });
   });
 
-  test('reports disabled / deps-missing / entry-missing on a fresh extension root', function () {
-    const section = buildKgDaemonSection(ext, undefined);
-    assert.strictEqual(section.enabled, false);
-    assert.strictEqual(section.port, 9877, 'falls back to default port');
-    assert.strictEqual(section.pid, null);
-    assert.strictEqual(section.depsInstalled, false);
-    assert.strictEqual(section.entryExists, false);
-    assert.ok(section.entryPath.endsWith('server.js'));
-    assert.strictEqual(section.lastHealth, null);
+  test('reports the in-process store backend on a fresh workspace (default-on, never degraded with node:sqlite)', function () {
+    const ws = makeTempDir('autoclaw-doc-kg-fresh-ws-');
+    try {
+      // Omitting the shim ⇒ enabled defaults on (in-process store).
+      const section = buildKgDaemonSection(ext, undefined, ws);
+      assert.strictEqual(section.enabled, true);
+      assert.strictEqual(section.port, 9877, 'falls back to default daemon port');
+      // node:sqlite is built into modern Node ⇒ a driver loads and FTS is available.
+      assert.strictEqual(section.degraded, false);
+      assert.ok(section.driverKind, 'a sqlite driver kind is reported');
+      assert.strictEqual(section.caps.sqlite, true);
+      assert.strictEqual(section.caps.fts, true);
+      assert.ok(section.embedding.provider, 'an embedding provider is reported');
+      assert.ok(section.dbPath.length > 0, 'a db path is reported');
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
   });
 
-  test('reflects shim values: enabled, port, pid, lastHealth body keys', function () {
-    // Pretend deps + entry are present.
-    fs.mkdirSync(path.join(ext, 'packages', 'kg-daemon', 'node_modules'), { recursive: true });
-    const dist = path.join(ext, 'packages', 'kg-daemon', 'dist');
-    fs.mkdirSync(dist, { recursive: true });
-    fs.writeFileSync(path.join(dist, 'server.js'), '// stub');
-
-    const section = buildKgDaemonSection(ext, {
-      enabled: true,
-      port: 19999,
-      pid: 42424,
-      lastHealth: {
-        status: 200,
-        body: { ok: true, sqlite: true, vec: false, fts: true, zippymesh: false },
-      },
-    });
-    assert.strictEqual(section.enabled, true);
-    assert.strictEqual(section.port, 19999);
-    assert.strictEqual(section.pid, 42424);
-    assert.strictEqual(section.depsInstalled, true);
-    assert.strictEqual(section.entryExists, true);
-    assert.ok(section.lastHealth);
-    assert.strictEqual(section.lastHealth!.status, 200);
-    assert.match(section.lastHealth!.summary, /ok=true/);
-    assert.match(section.lastHealth!.summary, /sqlite=true/);
-    assert.match(section.lastHealth!.summary, /vec=false/);
+  test('reflects shim values: enabled flag and configured daemon port', function () {
+    const ws = makeTempDir('autoclaw-doc-kg-shim-ws-');
+    try {
+      const section = buildKgDaemonSection(ext, {
+        enabled: false,
+        port: 19999,
+      }, ws);
+      assert.strictEqual(section.enabled, false);
+      assert.strictEqual(section.port, 19999);
+      // Backend fields still report the realized store (doctor always probes it).
+      assert.ok('degraded' in section);
+      assert.ok('caps' in section);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
   });
 
-  test('renderReport includes the ## KG Daemon section', async function () {
+  test('renderReport includes the ## KG Daemon section (in-process store fields)', async function () {
     const ws = makeTempDir('autoclaw-doc-kg-render-ws-');
     try {
       const report = await runDoctor(ext, {
         workspaceRoot: ws,
         isExtensionInstalled: () => false,
         zippymeshUrl: 'http://127.0.0.1:1',
-        kg: { enabled: true, port: 9877, pid: null, lastHealth: null },
+        kg: { enabled: true, port: 9877 },
       });
       const text = renderReport(report);
       assert.match(text, /## KG Daemon/);
+      assert.match(text, /in-process store/i);
       assert.match(text, /enabled:\s+yes/);
-      assert.match(text, /port:\s+9877/);
-      assert.match(text, /child pid:\s+\(not running\)/);
+      assert.match(text, /capabilities:\s+sqlite=/);
+      assert.match(text, /embedding:/);
+      // Never tell users to install/build a daemon.
+      assert.doesNotMatch(text, /npm install|cd packages\/kg-daemon/i);
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }

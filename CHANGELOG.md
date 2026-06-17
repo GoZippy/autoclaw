@@ -1,5 +1,42 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **In-process Knowledge Graph** (`src/intelligence/kg/`) — the shared agent
+  Knowledge Graph now runs inside the extension on the Intelligence Layer's
+  `node:sqlite` store, so it is ABI-proof (survives IDE/Electron updates), needs
+  no native build, and works on a plain marketplace install with no setup. It
+  stores thoughts and the edges between them, keeps bi-temporal validity, and
+  recalls by vector, keyword (FTS5), graph traversal, or a mix — degrading
+  cleanly to keyword search when `sqlite-vec` or an embedding provider is
+  absent, and to a no-op handle (never a crash) if storage cannot open. The
+  always-available `none` embedding provider means recall works out of the box
+  and upgrades silently when transformers/ollama are present.
+- **Bridge HTTP routes for the Knowledge Graph** (`src/bridge.ts`) — the
+  Knowledge Graph is served over the existing local bridge under
+  `/api/v1/kg/*` (record thoughts, record relations, search, traverse, list,
+  export, health), so non-Node external agents can reach it without a separate
+  daemon.
+- **MCP tools for the Knowledge Graph** (`src/mcp/`) — `kg.record`, `kg.relate`,
+  `kg.search`, and `kg.traverse` let Claude Code, Kilo Code, and federated
+  agents record and recall shared thoughts directly over MCP.
+
+### Changed
+
+- **Knowledge Graph panel chip tells the truth** (`src/webview-render.ts`,
+  `src/doctor.ts`) — the chip now shows `disabled`, `ready`, or `degraded`
+  for the in-process store instead of the old `off`/`running`/`unreachable`
+  states, and no longer ever prints "run `cd packages/kg-daemon && npm install`"
+  (a path that does not exist in a published install). `doctor` reports the
+  in-process store's active driver, capabilities, embedding provider, and db
+  path.
+- **The standalone `kg-daemon` is now optional** (`packages/kg-daemon/`) — it is
+  no longer spawned by the extension and is no longer on the critical path. It
+  remains available as an optional HTTP server for non-Node external agents.
+  See `docs/ideas/KG-INTELLIGENCE-CONVERGENCE.md`.
+
 ## [3.5.0] - 2026-06-15
 
 _The intelligence release: local-first learning + retrieval over your past AI

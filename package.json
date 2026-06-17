@@ -255,11 +255,11 @@
       },
       {
         "command": "autoclaw.kg.start",
-        "title": "AutoClaw: KG — Start Daemon"
+        "title": "AutoClaw: KG — Start Standalone Daemon (optional)"
       },
       {
         "command": "autoclaw.kg.restart",
-        "title": "AutoClaw: KG — Restart Daemon"
+        "title": "AutoClaw: KG — Restart Standalone Daemon (optional)"
       },
       {
         "command": "autoclaw.kg.openDashboard",
@@ -662,18 +662,23 @@
         },
         "autoclaw.kg.enabled": {
           "type": "boolean",
+          "default": true,
+          "description": "Enable the AutoClaw Knowledge Graph. This is an in-process store on the Intelligence Layer's ABI-proof SQLite driver — no child process and no native dependencies to install. Opened lazily on first use. Disable to turn off memory recall + bi-temporal facts."
+        },
+        "autoclaw.kg.spawnDaemonOnActivate": {
+          "type": "boolean",
           "default": false,
-          "description": "Spawn the AutoClaw Knowledge Graph daemon (packages/kg-daemon) as a child process when the extension activates. Opt-in: requires `cd packages/kg-daemon && npm install` first."
+          "description": "Legacy/advanced: spawn the optional standalone Knowledge Graph daemon (packages/kg-daemon) as a child process on activation. Not needed for normal use — the default KG is in-process. Requires the daemon's dependencies to be installed."
         },
         "autoclaw.kg.port": {
           "type": "number",
           "default": 0,
-          "description": "Port for the AutoClaw Knowledge Graph daemon HTTP server. 0 (default) auto-assigns a conflict-free port based on IDE and workspace."
+          "description": "Port for the OPTIONAL standalone Knowledge Graph daemon's HTTP server (autoclaw.kg.start / spawnDaemonOnActivate). Has no effect on the default in-process store. 0 auto-assigns a conflict-free port based on IDE and workspace."
         },
         "autoclaw.kg.dbPath": {
           "type": "string",
           "default": "",
-          "description": "Override path to the SQLite file used by the KG daemon. Empty (default) lets the daemon pick ~/.autoclaw/kg/<workspace>.db."
+          "description": "Override path to the SQLite file used by the Knowledge Graph. Empty (default) uses `.autoclaw/kg/kg.db` under the workspace."
         },
         "autoclaw.fabric.busDriver": {
           "type": "string",
