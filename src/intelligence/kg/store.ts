@@ -105,9 +105,13 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
         if (row) {
           try {
             const buf = Buffer.from(new Float32Array(embedding).buffer);
+            // vec0's rowid primary key must bind as an INTEGER. node:sqlite
+            // rejects a JS `number` for an integer PK ("Only integers are
+            // allowed") — it requires a BigInt. better-sqlite3 accepts BigInt
+            // too, so bind BigInt on both drivers.
             this.driver
               .prepare(`INSERT INTO thoughts_vec (rowid, embedding) VALUES (?, ?)`)
-              .run(row.rowid, buf);
+              .run(BigInt(row.rowid), buf);
           } catch {
             // Downgrade quietly: keep the row, drop the embedding flag so
             // search falls back to FTS for this thought.

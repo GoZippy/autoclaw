@@ -150,6 +150,39 @@ suite('intelligence-kg', function () {
     }
   });
 
+  test('vector indexing actually writes to vec0 (regression: BigInt rowid bind)', async function () {
+    // The `none` provider produces a real DIM-length vector, so when sqlite-vec
+    // loaded (caps.vec) recordThought MUST insert into thoughts_vec. The vec0
+    // rowid PK requires a BigInt on node:sqlite — a JS number throws and used
+    // to be swallowed, silently degrading to FTS-only with caps.vec still true.
+    // Verify the embedding row is persisted (has_embed=1 + a thoughts_vec row).
+    const dbPath = freshDbPath();
+    const h = openKnowledgeGraph({ dbPath, config: noneConfig() });
+    try {
+      if (!h.caps.vec) {
+        this.skip(); // sqlite-vec not available on this host — nothing to assert
+      }
+      await h.kg.recordThought({ project: 'p', agent: 'x', kind: 'note', text: 'vectorized thought' });
+
+      // `has_embed` is a reliable proxy: recordThought writes it as 1, then on
+      // a failing vec0 insert the catch downgrades it to 0. So has_embed===1
+      // proves the BigInt rowid insert into thoughts_vec did NOT throw. (We read
+      // the plain `thoughts` column rather than thoughts_vec so the verification
+      // connection needs no sqlite-vec extension loaded.)
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(dbPath);
+      try {
+        const t = db.prepare('SELECT has_embed FROM thoughts WHERE text = ?').get('vectorized thought') as { has_embed: number };
+        assert.strictEqual(t.has_embed, 1, 'has_embed must stay 1 (vec insert succeeded, not swallowed)');
+      } finally {
+        db.close();
+      }
+    } finally {
+      h.close();
+    }
+  });
+
   test('degraded handle no-ops without throwing', async function () {
     // A bogus driver order makes every candidate fail -> degraded path. We
     // simulate by pointing at an unwritable path is unreliable cross-platform,
