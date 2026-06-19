@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Background agents, parallel sprint orchestration, and multi-agent teams. Type @autoclaw in any chat. Works with Claude, Copilot, Kiro, KiloCode, Cline, Cursor, Windsurf, and Continue. Zero setup.",
-  "version": "3.5.1",
+  "version": "3.5.2",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.95.0"
