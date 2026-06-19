@@ -13,6 +13,8 @@ import {
   discoverWork,
   readClaimedAgentIds,
   readRecentNextDispatches,
+  gcStaleNextDispatches,
+  NEXT_DISPATCH_TTL_MS,
   buildWorkLoopPrompt,
   runTick,
   getAgentRegistry,
@@ -563,6 +565,74 @@ suite('HB-FIX: discoverWork dedup', () => {
     );
     const work = await discoverWork(root, makeHealth(['claude-code']));
     assert.strictEqual(work.length, 0, 'agent in cooldown must not be re-spammed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1 dispatch GC/TTL: gcStaleNextDispatches
+// ---------------------------------------------------------------------------
+
+suite('gcStaleNextDispatches', () => {
+  function sharedDir(root: string): string {
+    return path.join(root, '.autoclaw', 'orchestrator', 'comms', 'inboxes', 'shared');
+  }
+  function writeNext(root: string, agent: string, fileTs: string, expiresAt?: string): string {
+    const name = `${fileTs}-task_claim-next-${agent}.json`;
+    const body: Record<string, unknown> = { type: 'task_claim', task_id: `next-${agent}` };
+    if (expiresAt) { body.expires_at = expiresAt; }
+    fs.writeFileSync(path.join(sharedDir(root), name), JSON.stringify(body), 'utf8');
+    return name;
+  }
+
+  test('removes placeholders past their expires_at', async () => {
+    const root = makeTmp('gc-expired');
+    const name = writeNext(root, 'claude-code', '2026-05-29T00-00-00-000Z', new Date(Date.now() - 60_000).toISOString());
+    const removed = await gcStaleNextDispatches(root);
+    assert.strictEqual(removed, 1);
+    assert.ok(!fs.existsSync(path.join(sharedDir(root), name)), 'expired placeholder reaped');
+  });
+
+  test('keeps a live placeholder', async () => {
+    const root = makeTmp('gc-live');
+    const name = writeNext(root, 'kilocode', '2026-05-29T00-00-01-000Z', new Date(Date.now() + 60_000).toISOString());
+    const removed = await gcStaleNextDispatches(root);
+    assert.strictEqual(removed, 0);
+    assert.ok(fs.existsSync(path.join(sharedDir(root), name)), 'live placeholder kept');
+  });
+
+  test('coalesces duplicate live placeholders to the newest per agent', async () => {
+    const root = makeTmp('gc-coalesce');
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const older = writeNext(root, 'kiro', '2026-05-29T00-00-00-000Z', future);
+    const newer = writeNext(root, 'kiro', '2026-05-29T00-05-00-000Z', future);
+    // Make the "newer"-named file actually newer on disk so mtime ordering is deterministic.
+    const newerPath = path.join(sharedDir(root), newer);
+    const t = Date.now() / 1000;
+    fs.utimesSync(path.join(sharedDir(root), older), t - 10, t - 10);
+    fs.utimesSync(newerPath, t, t);
+
+    const removed = await gcStaleNextDispatches(root);
+    assert.strictEqual(removed, 1, 'one duplicate coalesced');
+    assert.ok(fs.existsSync(newerPath), 'newest kept');
+    assert.ok(!fs.existsSync(path.join(sharedDir(root), older)), 'older duplicate removed');
+  });
+
+  test('reaps corrupt placeholder files', async () => {
+    const root = makeTmp('gc-corrupt');
+    const name = '2026-05-29T00-00-00-000Z-task_claim-next-codex.json';
+    fs.writeFileSync(path.join(sharedDir(root), name), '{ not json', 'utf8');
+    const removed = await gcStaleNextDispatches(root);
+    assert.strictEqual(removed, 1);
+  });
+
+  test('legacy file without expires_at falls back to mtime + TTL', async () => {
+    const root = makeTmp('gc-legacy');
+    const name = writeNext(root, 'claude-code', '2026-05-29T00-00-00-000Z'); // no expires_at
+    const p = path.join(sharedDir(root), name);
+    const old = (Date.now() - NEXT_DISPATCH_TTL_MS - 60_000) / 1000;
+    fs.utimesSync(p, old, old);
+    const removed = await gcStaleNextDispatches(root);
+    assert.strictEqual(removed, 1, 'legacy placeholder older than TTL reaped');
   });
 });
 

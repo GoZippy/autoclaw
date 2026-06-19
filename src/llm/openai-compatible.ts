@@ -15,6 +15,8 @@ import type {
   ChatOptions,
   ChatResult,
   DetectionResult,
+  EmbedOptions,
+  EmbeddingsResult,
   HealthReport,
   LlmProvider,
   ModelId,
@@ -41,6 +43,8 @@ export interface OpenAiCompatibleOptions {
   modelsPath?: string;
   /** Optional override for the chat-completions path; default `/chat/completions`. */
   chatPath?: string;
+  /** Optional override for the embeddings path; default `/embeddings`. */
+  embeddingsPath?: string;
   /** Static extra headers attached to every request. */
   extraHeaders?: Record<string, string>;
   /**
@@ -67,6 +71,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
   protected readonly auth: OpenAiAuth;
   protected readonly modelsPath: string;
   protected readonly chatPath: string;
+  protected readonly embeddingsPath: string;
   protected readonly extraHeaders: Record<string, string>;
   protected readonly augmentHeaders?: (opts: ChatOptions) => Record<string, string>;
   protected readonly fetchImpl: typeof fetch;
@@ -84,6 +89,7 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     this.auth = opts.auth ?? { kind: 'none' };
     this.modelsPath = opts.modelsPath ?? '/models';
     this.chatPath = opts.chatPath ?? '/chat/completions';
+    this.embeddingsPath = opts.embeddingsPath ?? '/embeddings';
     this.extraHeaders = opts.extraHeaders ?? {};
     this.augmentHeaders = opts.augmentHeaders;
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -260,6 +266,85 @@ export class OpenAiCompatibleProvider implements LlmProvider {
     }
   }
 
+  /**
+   * Embed text(s) via the OpenAI-compatible `POST /v1/embeddings` surface
+   * (`{model, input}` → `{data:[{embedding,index}]}`). Tags the request with
+   * `x-intent: embed` so a router (ZippyMesh) can pick an embedding-capable
+   * backend. Returns one vector per input, order-preserving. Never throws —
+   * transport/HTTP failures come back as `{ ok:false, ... }`.
+   */
+  async embed(opts: EmbedOptions): Promise<EmbeddingsResult> {
+    const start = Date.now();
+    const model = opts.model ?? this.defaultModel ?? 'auto';
+    const inputs = Array.isArray(opts.input) ? opts.input : [opts.input];
+    // Thread routing hints (session-parallel/session-id/intent) the same way
+    // chat() does, but force `x-intent: embed` LAST so the embeddings route wins
+    // regardless of any hint intent. EmbedOptions carries the same `hints` field
+    // augmentHeaders reads, so the ChatOptions cast is safe.
+    const augmented = this.augmentHeaders
+      ? this.augmentHeaders(opts as unknown as ChatOptions)
+      : {};
+    const headers: Record<string, string> = {
+      ...this.buildHeaders(),
+      ...augmented,
+      'Content-Type': 'application/json',
+      'x-intent': 'embed',
+    };
+    try {
+      const res = await this.fetchImpl(`${this.baseUrl}${this.embeddingsPath}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model, input: inputs }),
+        signal: AbortSignal.timeout(opts.timeoutMs ?? 60_000),
+      });
+      const durationMs = Date.now() - start;
+      if (res.status === 429) {
+        this.bumpError('rate_limit');
+        return { ok: false, model, servedBy: this.id, durationMs, errorClass: 'internal', errorMessage: 'rate limited (429)', httpStatus: 429 };
+      }
+      if (res.status === 401 || res.status === 403) {
+        this.bumpError('auth');
+        return { ok: false, model, servedBy: this.id, durationMs, errorClass: 'auth', errorMessage: `auth failed (${res.status})`, httpStatus: res.status };
+      }
+      if (!res.ok) {
+        this.bumpError('internal');
+        const text = await safeText(res);
+        return { ok: false, model, servedBy: this.id, durationMs, errorClass: 'internal', errorMessage: `HTTP ${res.status}: ${text.slice(0, 200)}`, httpStatus: res.status };
+      }
+      const json = (await res.json()) as OpenAiEmbeddingsResponse;
+      const rows = (json.data ?? []).slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+      const vectors = rows
+        .map((r) => r.embedding)
+        .filter((v): v is number[] => Array.isArray(v) && v.length > 0 && v.every((n) => typeof n === 'number' && Number.isFinite(n)));
+      if (vectors.length === 0) {
+        this.bumpError('internal');
+        return { ok: false, model, servedBy: this.id, durationMs, errorClass: 'internal', errorMessage: 'no usable embeddings in response' };
+      }
+      return {
+        ok: true,
+        vectors,
+        dimension: vectors[0].length,
+        model: json.model ?? model,
+        servedBy: this.id,
+        durationMs,
+        tokens: json.usage ? { input: json.usage.prompt_tokens ?? 0, output: 0 } : undefined,
+      };
+    } catch (err) {
+      const durationMs = Date.now() - start;
+      const message = (err as Error).message ?? String(err);
+      const isAbort = (err as Error).name === 'AbortError' || message.includes('aborted');
+      this.bumpError(isAbort ? 'timeout' : 'transport');
+      return {
+        ok: false,
+        model,
+        servedBy: this.id,
+        durationMs,
+        errorClass: isAbort ? 'timeout' : 'internal',
+        errorMessage: isAbort ? 'request timed out' : `transport error: ${message}`,
+      };
+    }
+  }
+
   async health(): Promise<HealthReport> {
     const det = this.lastDetection ?? (await this.detect());
     const reachable = det.found;
@@ -335,6 +420,12 @@ interface OpenAiChatResponse {
 
 interface OpenAiModelsResponse {
   data?: { id: string; owned_by?: string; context_window?: number }[];
+}
+
+interface OpenAiEmbeddingsResponse {
+  model?: string;
+  data?: { embedding?: number[]; index?: number }[];
+  usage?: { prompt_tokens?: number; total_tokens?: number };
 }
 
 function stripTrailingSlash(s: string): string {

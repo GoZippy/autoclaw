@@ -107,16 +107,33 @@ export interface AwaitingYouRow {
   tally?: ConsensusTally;
 }
 
+/** Detail for the in-process Knowledge Graph chip tooltip. */
+export interface KgHealthDetail {
+  /** Which SQLite driver is live, or null when degraded. */
+  driverKind?: string | null;
+  /** Realized backend capabilities. */
+  caps?: { sqlite: boolean; vec: boolean; fts: boolean };
+  /** Active embedding provider id (e.g. `none`, `transformers`). */
+  embeddingProvider?: string;
+}
+
 /** Health snapshot for the panel header badges. */
 export interface FabricHealth {
   /** Bridge transport in use. `poll` is the default until SSE/WS appear. */
   bridge: 'poll' | 'sse' | 'ws' | 'off';
-  /** kg-daemon process state. */
-  kg: 'off' | 'running' | 'unreachable';
+  /**
+   * In-process Knowledge Graph state. The KG is now an in-process store on the
+   * Intelligence Layer's ABI-proof node:sqlite driver — there is no child
+   * process. `disabled` = `autoclaw.kg.enabled` is false; `ready` = a driver
+   * loaded; `degraded` = no SQLite driver loaded (writes no-op, reads []).
+   */
+  kg: 'disabled' | 'ready' | 'degraded';
   /** Optional raw `/api/v1/health` payload for tooltip / a11y context. */
   bridge_port?: number;
   sse_clients?: number;
   ws_clients?: number;
+  /** Detail for the kg `ready`/`degraded` tooltip. */
+  kg_detail?: KgHealthDetail;
 }
 
 // ---------------------------------------------------------------------------
@@ -738,36 +755,47 @@ export function bridgeTooltip(state: FabricHealth['bridge'], h?: FabricHealth | 
   return `${base}${clients}${port} Click to open the bridge docs.`;
 }
 
-/** Plain-English explanation of each kg-daemon state, used in tooltips. */
-export function kgTooltip(state: FabricHealth['kg']): string {
+/**
+ * Plain-English explanation of each in-process Knowledge Graph state, used in
+ * tooltips. The KG is an in-process store (no child process, no native deps),
+ * so we NEVER instruct users to install or build a daemon.
+ */
+export function kgTooltip(state: FabricHealth['kg'], detail?: KgHealthDetail): string {
   switch (state) {
-    case 'off':         return 'Knowledge Graph daemon: not running. Memory recall + bi-temporal facts disabled. Click to start.';
-    case 'running':     return 'Knowledge Graph daemon: running. Memory recall + bi-temporal facts active. Click to open dashboard.';
-    case 'unreachable': return 'Knowledge Graph daemon: process running but not responding. Click to restart.';
+    case 'disabled':
+      return 'Knowledge Graph: disabled. Memory recall + bi-temporal facts off. Click to enable.';
+    case 'ready': {
+      const driver = detail?.driverKind || 'sqlite';
+      const search = detail?.caps?.vec ? 'vector+fts' : 'fts';
+      const embeddings = detail?.embeddingProvider || 'none';
+      return `Knowledge Graph: ready (${driver}, ${search}, embeddings: ${embeddings}). In-process store — no daemon. Click to open.`;
+    }
+    case 'degraded':
+      return 'Knowledge Graph: degraded — no SQLite driver loaded. Memory recall returns nothing. Click for details.';
   }
 }
 
 /** Webview command emitted when a fabric chip is clicked. */
-type FabricChipCommand = 'openBridgeDoc' | 'startKgDaemon' | 'openKgDashboard' | 'restartKgDaemon';
+type FabricChipCommand = 'openBridgeDoc' | 'enableKg' | 'openKgDashboard' | 'openKgDoctor';
 
 /** Which command a click on a kg chip should dispatch, given the state. */
 export function kgClickCommand(state: FabricHealth['kg']): FabricChipCommand {
   switch (state) {
-    case 'off':         return 'startKgDaemon';
-    case 'running':     return 'openKgDashboard';
-    case 'unreachable': return 'restartKgDaemon';
+    case 'disabled': return 'enableKg';
+    case 'ready':    return 'openKgDashboard';
+    case 'degraded': return 'openKgDoctor';
   }
 }
 
 export function renderFabricHealth(h: FabricHealth | null): string {
   const bridgeState: FabricHealth['bridge'] = h?.bridge ?? 'poll';
-  const kgState: FabricHealth['kg'] = h?.kg ?? 'off';
+  const kgState: FabricHealth['kg'] = h?.kg ?? 'disabled';
   const bridgeCls = `bridge-${bridgeState}`;
   const kgCls = `kg-${kgState}`;
   const bridgeLabel = `bridge: ${bridgeState}`;
   const kgLabel = `kg: ${kgState}`;
   const bridgeTip = bridgeTooltip(bridgeState, h);
-  const kgTip = kgTooltip(kgState);
+  const kgTip = kgTooltip(kgState, h?.kg_detail);
   const kgCmd = kgClickCommand(kgState);
   return (
     `<button type="button" class="health-badge ${esc(bridgeCls)}" ` +

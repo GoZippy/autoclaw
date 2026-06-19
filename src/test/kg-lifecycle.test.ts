@@ -197,12 +197,12 @@ suite('KG: package.json contributions', function () {
     assert.ok(ids.has('autoclaw.kg.healthCheck'), 'autoclaw.kg.healthCheck command registered');
   });
 
-  test('declares autoclaw.kg.* configuration with enabled defaulting to false', function () {
+  test('declares autoclaw.kg.* configuration with enabled defaulting to true', function () {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     const props = pkg.contributes?.configuration?.properties ?? {};
     assert.ok('autoclaw.kg.enabled' in props, 'autoclaw.kg.enabled defined');
-    assert.strictEqual(props['autoclaw.kg.enabled'].default, false,
-      'kg.enabled defaults to false (opt-in)');
+    assert.strictEqual(props['autoclaw.kg.enabled'].default, true,
+      'kg.enabled defaults to true (in-process store, safe + free)');
     assert.ok('autoclaw.kg.port' in props);
     assert.strictEqual(props['autoclaw.kg.port'].default, 0);
     assert.ok('autoclaw.kg.dbPath' in props);

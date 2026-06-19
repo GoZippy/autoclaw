@@ -40,6 +40,11 @@ function mkWorkspace(): string {
     JSON.stringify({ id: 'kdream', name: 'KDream long-running', rules: [] }),
     'utf8',
   );
+  fs.writeFileSync(
+    path.join(dir, 'embeddings-playbook.json'),
+    JSON.stringify({ id: 'embeddings', name: 'Embeddings semantic index', rules: [] }),
+    'utf8',
+  );
   return ws;
 }
 
@@ -65,18 +70,19 @@ suite('installLlm — fresh workspace (ZMLR + playbooks)', () => {
     fs.rmSync(workspace, { recursive: true, force: true });
   });
 
-  test('writes config + workspace MCP entry + imports 2 playbooks', async () => {
+  test('writes config + workspace MCP entry + imports 3 playbooks', async () => {
     const fetchImpl = makeFetch({
       '/mcp': { status: 200, body: { tools: [] } },
       '/api/playbooks/mateam': { status: 404 },
       '/api/playbooks/kdream': { status: 404 },
+      '/api/playbooks/embeddings': { status: 404 },
       '/api/playbooks': { status: 200, body: { ok: true } },
     });
     const report = await installLlm({ workspaceRoot: workspace, fetchImpl });
     assert.strictEqual(report.ok, true);
     const outcomes = report.steps.map((s) => s.outcome);
-    // 1 config + 1 workspace-mcp + 2 playbooks = 4 rows
-    assert.strictEqual(report.steps.length, 4);
+    // 1 config + 1 workspace-mcp + 3 playbooks = 5 rows
+    assert.strictEqual(report.steps.length, 5);
     assert.ok(outcomes.includes('added'), `outcomes were: ${outcomes.join(', ')}`);
 
     // Files exist with expected content
@@ -108,6 +114,7 @@ suite('installLlm — idempotent re-run', () => {
       '/mcp': { status: 200 },
       '/api/playbooks/mateam': { status: 200, body: { id: 'mateam' } },
       '/api/playbooks/kdream': { status: 200, body: { id: 'kdream' } },
+      '/api/playbooks/embeddings': { status: 200, body: { id: 'embeddings' } },
     });
     // First run
     await installLlm({ workspaceRoot: workspace, fetchImpl });
@@ -186,7 +193,7 @@ suite('installLlm — playbook API unavailable (older ZMLR)', () => {
     const playbookSteps = report.steps.filter((s) => s.step === 'playbook');
     assert.strictEqual(configStep?.outcome, 'added');
     assert.strictEqual(mcpStep?.outcome, 'added');
-    assert.strictEqual(playbookSteps.length, 2);
+    assert.strictEqual(playbookSteps.length, 3);
     for (const p of playbookSteps) {
       assert.strictEqual(p.outcome, 'skipped');
     }

@@ -446,3 +446,77 @@ cycles or any §5.2 condition; watch mode when idle. Begin with REGISTER.
 - Workstream A of [V3_PLAN.md](V3_PLAN.md) hardens the orchestrator side of
   this same bus (state machine, atomic claims, inbox state machine,
   reconciliation). This document and that workstream must stay consistent.
+
+---
+
+## 10. Peers without a native bridge (Hermes / OpenClaw / Codex-CLI / another IDE)
+
+Any tool that can speak one of four transports can join a project as a teammate —
+it does not need the VS Code extension. The full design is
+[ideas/FLEET-FEDERATION-SELF-HEALING.md](ideas/FLEET-FEDERATION-SELF-HEALING.md)
+(invite tokens, self-healing, self-aware role election) and
+[ideas/STANDARDIZED-ADAPTER-A2A-PLATFORM.md](ideas/STANDARDIZED-ADAPTER-A2A-PLATFORM.md)
+(the `acp/1` connector standard). This section is the agent-side on-ramp.
+
+### 10.1 The join handshake (all peers)
+
+```
+1. (token)    A human runs "AutoClaw: Invite Agent to Project…" → hands you a
+              single-use, scoped, TTL'd invite token (src/fleet/invites.ts).
+2. REGISTER   Consume the token (single-use), then write a BEACON — the
+              presence equivalent of a heartbeat (src/fleet/beacons.ts):
+              { agent_id, session_id, timestamp, status, role, agent_type,
+                host, workspace, transports[], card_url }.
+3. (admit)    You appear in the panel's pending tray at trust:off. The user
+              Admits you (writes you into fleet.json with a role) — or, under an
+              auto-preapproved admit policy, a matching agent_type is admitted
+              automatically. The user's fleet.json role is authoritative.
+4. LOOP       Each cycle: heartbeat (beacon) → SYNC inbox (any lane) → read
+              needs.json and offer the role the project needs (capability_offer)
+              → CLAIM a lane (scope-lease, not a file) → WORK → REPORT
+              (task_complete + review_request) → back off when idle.
+```
+
+This is the §1 six-phase loop with two substitutions for non-native peers:
+**heartbeat → beacon** (so a non-VS-Code tool checks in) and, where the project
+coordinates code via PRs, **claim-file → PR + scope-lease**.
+
+### 10.2 Three on-ramps by tool shape
+
+**A. MCP-capable CLI (Codex / CodeGPT / Copilot) → MCP lane (no file/HTTP plumbing).**
+Mount AutoClaw's MCP server and call tools directly:
+- `presence.beacon` — check in (you become a fleet row). *This is the tool that
+  closes the gap where MCP agents could message + claim but not be visible.*
+- `presence.fleet` — see who else is live.
+- `inbox.send` / `inbox.read` / `claim.task` / `consensus.vote` — coordinate.
+No file paths, no HTTP server — just tool calls.
+
+**B. REST runner (Hermes / AutoGPT) → HTTP bridge lane.**
+`POST /api/v1/heartbeat` each cycle (or drop a machine beacon — both land in the
+same view), subscribe to the SSE `…/messages/stream` for push (or poll
+`/messages`), and serve your Agent Card at your `endpoint` + `/.well-known/agent.json`
+so the router can score your capabilities.
+
+**C. Shell / file-only tool (OpenClaw, any one-liner) → filesystem lane.**
+Write a beacon to `~/.autoclaw/beacons/<id>.json` (or the documented `node -e`
+one-liner), write message files into `comms/inboxes/<to>/` using the §3 filename
+convention, and honor idempotency (read once → `_state/<id>.json` → move to
+`processed/`). Cross-machine is the relay (`src/cloud/relay.ts`) pointed at a
+self-hosted relay server.
+
+### 10.3 Beacon vs. heartbeat (so you don't write both wrong)
+
+A beacon is a **superset of** the §2 heartbeat — same identity fields plus
+`host` / `workspace` / `origin` / `transports[]` / `card_url`. A native VS Code
+agent writes a heartbeat; an external peer writes a beacon; the panel merges
+both into one fleet view. Keep the identity fields (`agent_id`, `session_id`,
+`workspace_id`) consistent with any session you later let the intelligence layer
+ingest — do not fork a second identity model.
+
+### 10.4 What the project needs (self-aware arrival)
+
+Before claiming blindly, read `.autoclaw/orchestrator/needs.json` (the role
+coverage gap, open lanes, staleness pressure). Score your own skills against the
+gap and `capability_offer` the role you best fill — a crowd of arrivals then
+self-distributes across needs instead of dogpiling one lane
+(`src/fleet/roleElection.ts`).

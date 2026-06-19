@@ -28,7 +28,12 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import type { Heartbeat, Message } from './comms';
 import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
+import { resolvePendingConsensus } from './orchestrator/consensusTally';
 import { writeBoard } from './orchestrator/boardWriter';
+import { runHealPhase } from './orchestrator/heal';
+import { acquireSupervisorRole } from './orchestrator/supervisorLease';
+import { ingestWorkforceSignals } from './fleet/workforceIngest';
+import { runRecallSweep } from './fleet/recallDispatch';
 // Fabric governance (AF-8 §3) — gate + audit the real dispatch path. Explicit
 // subpath keeps the message-bus/bridge out of the loop module.
 import { gateDispatch, appendAuditLog, type ControlLevel } from './fabric/governance';
@@ -52,6 +57,13 @@ export const LOOP_SIDE_CAR_DIR    = path.join(COMMS_DIR_REL, 'agents', '_dispatc
 export const DEFAULT_TICK_MS      = 30_000;
 export const HEALTHY_MS           = 60_000;
 export const STALLED_MS           = 5 * 60 * 1000;
+
+/**
+ * Per-process supervisor-candidate id (SH-2). Distinct across hosts so the
+ * supervisor lease arbitrates which loop runs the HEAL phase; if the holder
+ * goes stale, the next ticking host steals the lease and takes over.
+ */
+export const LOOP_INSTANCE_ID = `orchestrator-loop-${crypto.randomBytes(3).toString('hex')}`;
 
 // ---------------------------------------------------------------------------
 // KiloCode plugin cache (dynamic require — avoids hard dep)
@@ -409,6 +421,74 @@ export async function readRecentNextDispatches(
   return out;
 }
 
+/**
+ * How long a `task_claim-next-<agent>` placeholder lives before it is garbage.
+ * Comfortably longer than the 5-min re-dispatch cooldown so a live agent always
+ * has time to claim, but short enough that an idle fleet doesn't leave a litter
+ * of stale placeholders (an idle fleet could otherwise pile up dozens in shared/).
+ */
+export const NEXT_DISPATCH_TTL_MS = 30 * 60 * 1000;
+
+/**
+ * Garbage-collect stale dispatch placeholders from the shared inbox (#1).
+ *
+ *  - **Expire:** delete any `task_claim-next-<agent>` whose `expires_at` is in the
+ *    past (falling back to file mtime + TTL for legacy files without the field).
+ *  - **Coalesce:** for each agent, keep only the newest live placeholder and
+ *    delete the older duplicates — one pending nudge per idle agent is enough.
+ *
+ * Best-effort and self-contained: a malformed file is skipped, never fatal.
+ * Returns the count removed so the loop can journal it.
+ */
+export async function gcStaleNextDispatches(
+  workspaceRoot: string,
+  now: number = Date.now(),
+  ttlMs: number = NEXT_DISPATCH_TTL_MS,
+): Promise<number> {
+  const sharedInbox = path.join(workspaceRoot, SHARED_INBOX_REL);
+  let names: string[];
+  try { names = await fsPromises.readdir(sharedInbox); } catch { return 0; }
+
+  // First pass: classify each next-dispatch file as expired or live, and for the
+  // live ones record (agent → newest file) so we can coalesce duplicates.
+  const live: Array<{ agent: string; name: string; mtimeMs: number }> = [];
+  const toDelete: string[] = [];
+  for (const name of names) {
+    if (!name.includes('task_claim-next-')) continue;
+    const m = name.match(/task_claim-next-(.+?)\.json$/);
+    if (!m) continue;
+    const full = path.join(sharedInbox, name);
+    try {
+      const raw = await fsPromises.readFile(full, 'utf8');
+      const msg = JSON.parse(raw) as Message;
+      const stat = await fsPromises.stat(full);
+      const expiry = msg.expires_at ? Date.parse(msg.expires_at) : stat.mtimeMs + ttlMs;
+      if (Number.isFinite(expiry) && expiry < now) { toDelete.push(name); }
+      else { live.push({ agent: m[1], name, mtimeMs: stat.mtimeMs }); }
+    } catch {
+      // Unreadable/corrupt placeholder — reap it.
+      toDelete.push(name);
+    }
+  }
+
+  // Coalesce live duplicates: keep the newest per agent, delete the rest.
+  const newestByAgent = new Map<string, { name: string; mtimeMs: number }>();
+  for (const l of live) {
+    const prev = newestByAgent.get(l.agent);
+    if (!prev || l.mtimeMs > prev.mtimeMs) { newestByAgent.set(l.agent, l); }
+  }
+  for (const l of live) {
+    const keep = newestByAgent.get(l.agent);
+    if (keep && keep.name !== l.name) { toDelete.push(l.name); }
+  }
+
+  let removed = 0;
+  for (const name of toDelete) {
+    try { await fsPromises.unlink(path.join(sharedInbox, name)); removed++; } catch { /* already gone */ }
+  }
+  return removed;
+}
+
 export async function discoverWork(
   workspaceRoot: string,
   health: HealthCheckResult
@@ -540,6 +620,9 @@ export async function dispatchWork(
     task_id:     pkg.taskId,
     payload:     { vendor: pkg.assignToVendor, priority: pkg.priority },
     requires_response: true,
+    // Ephemeral placeholder: if nobody claims it within the TTL it is garbage —
+    // gcStaleNextDispatches() reaps it so the shared inbox stays bounded (#1).
+    expires_at:  new Date(Date.now() + NEXT_DISPATCH_TTL_MS).toISOString(),
   };
   await fsPromises.mkdir(sharedInbox, { recursive: true });
   const msgFile = path.join(sharedInbox, `${claimMsg.timestamp.replace(/[:.]/g,'-')}-task_claim-${pkg.taskId}.json`);
@@ -607,6 +690,20 @@ export async function runTick(
     detail: { healthy: health.healthyCount, stalled: health.stalledIds.length, dead: health.deadIds.length },
   });
 
+  // Reap stale/duplicate dispatch placeholders before discovering new work, so
+  // the shared inbox can't accumulate them unbounded.
+  if (workspaceRoot) {
+    try {
+      const reaped = await gcStaleNextDispatches(workspaceRoot);
+      if (reaped > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'inbox',
+          action: 'next_dispatch_gc', detail: { removed: reaped },
+        });
+      }
+    } catch { /* GC is best-effort; never break the tick */ }
+  }
+
   const work = await discoverWork(workspaceRoot, health);
 
   if (work.length > 0) {
@@ -640,6 +737,44 @@ export async function runTick(
       });
     }
 
+    // Auto-tally any consensus/active/ vote sets that have reached a verdict:
+    // write consensus/resolved/<task>.json and clear the active stub. Closes the
+    // loop the watcher opens so no operator hand-writes it.
+    try {
+      const tally = await resolvePendingConsensus({ workspaceRoot, resolvedBy: 'orchestrator-loop' });
+      if (tally.resolved.length > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'work',
+          action: 'consensus_resolved', detail: { resolved: tally.resolved },
+        });
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'consensus_tally_failed', detail: { error: String(e) },
+      });
+    }
+
+    // HRW-1: fold task_complete / scope_violation into earned résumés (the
+    // talent pool, HR-1). Idempotent via a per-workspace watermark; no-op when
+    // there are no new signals. Distinct from the consensus/HEAL blocks above.
+    try {
+      const ing = await ingestWorkforceSignals(workspaceRoot);
+      if (ing.ingested > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'work',
+          action: 'workforce_ingest', detail: { ingested: ing.ingested, byAgent: ing.byAgent },
+        });
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'workforce_ingest_failed', detail: { error: String(e) },
+      });
+    }
+
     // Refresh the agendaboard (board.md + board.json).
     try {
       await writeBoard({ workspaceRoot, generator: 'orchestrator-loop' });
@@ -648,6 +783,52 @@ export async function runTick(
       await writeLoopJournal(workspaceRoot, {
         at: new Date().toISOString(), tick: state.tick, phase: 'error',
         action: 'board_write_failed', detail: { error: String(e) },
+      });
+    }
+
+    // HEAL phase (SH-1/SH-2) — runs AFTER the board write so signals are fresh.
+    // Only the active supervisor heals (the lease arbitrates between hosts; a
+    // stale holder is taken over by the next ticking loop). Act-then-report:
+    // bounded, reversible recovery + a finding_report per action; never master.
+    // Skipped while the fleet is HALTed. Fully guarded — never breaks the tick.
+    try {
+      if (!isFleetHalted(workspaceRoot)) {
+        const sup = await acquireSupervisorRole(workspaceRoot, LOOP_INSTANCE_ID);
+        if (sup.isSupervisor) {
+          const heal = await runHealPhase(workspaceRoot, { mode: 'act' });
+          if (heal.actions.length > 0 || sup.stole) {
+            await writeLoopJournal(workspaceRoot, {
+              at: new Date().toISOString(), tick: state.tick, phase: 'work',
+              action: 'heal', detail: {
+                summary: heal.summary, stolen: heal.stolen,
+                findings: heal.findingsEmitted, took_over: sup.stole,
+              },
+            });
+          }
+          // HRW-3: supervisor-only roster-gated recall sweep (no-op without
+          // .autoclaw/orchestrator/roster.json). Keeps the establishment staffed.
+          const sweep = await runRecallSweep(workspaceRoot);
+          if (!sweep.skipped && sweep.dispatched) {
+            await writeLoopJournal(workspaceRoot, {
+              at: new Date().toISOString(), tick: state.tick, phase: 'work',
+              action: 'recall_sweep', detail: {
+                recalled: sweep.dispatched.recalled, hires: sweep.dispatched.hires,
+                gaps: sweep.dispatched.gaps,
+              },
+            });
+          }
+        } else {
+          await writeLoopJournal(workspaceRoot, {
+            at: new Date().toISOString(), tick: state.tick, phase: 'work',
+            action: 'heal_standby', detail: { supervisor: sup.holder },
+          });
+        }
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'heal_failed', detail: { error: String(e) },
       });
     }
   }

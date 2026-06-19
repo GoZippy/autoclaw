@@ -54,18 +54,18 @@ suite('intelligence — install vector backend', () => {
     }
   });
 
-  test('buildInstallArgs pins the version and installs into the target prefix without saving', () => {
-    const args = buildInstallArgs('/tmp/peer', '0.1.6');
+  test('buildInstallArgs pins the version and carries NO path arg (target goes via cwd)', () => {
+    const args = buildInstallArgs('0.1.6');
     assert.deepStrictEqual(args, [
       'install',
       'sqlite-vec@0.1.6',
-      '--prefix',
-      '/tmp/peer',
-      '--no-save',
       '--no-audit',
       '--no-fund',
       '--loglevel=error',
     ]);
+    // No argv entry may carry the install path — a spaced path would be split by
+    // shell:true. The target is conveyed only through the spawn cwd.
+    assert.ok(!args.includes('--prefix'), 'must not pass --prefix (space-splitting hazard)');
   });
 
   test('resolveInstalledLoadable / isBackendInstalled find a planted sqlite-vec, and miss an empty dir', () => {
@@ -121,5 +121,52 @@ suite('intelligence — install vector backend', () => {
 
   test('VEC_DIR_ENV is the documented env var the loader reads', () => {
     assert.strictEqual(VEC_DIR_ENV, 'AUTOCLAW_SQLITE_VEC_DIR');
+  });
+
+  test('seeds a package.json at the target BEFORE spawning npm (npm 7+ --prefix needs it)', () => {
+    const dir = freshDir('seed');
+    let pkgExistedAtSpawn = false;
+    const spawnSpy: any = (_npm: string, _args: string[]) => {
+      pkgExistedAtSpawn = fs.existsSync(path.join(dir, 'package.json'));
+      return { status: 0 };
+    };
+    installVectorBackend({ targetDir: dir, version: '0.1.6', spawn: spawnSpy });
+    assert.strictEqual(pkgExistedAtSpawn, true, 'package.json must be seeded before npm runs');
+    assert.ok(fs.existsSync(path.join(dir, 'package.json')));
+  });
+
+  test('resolves a relative target to ABSOLUTE and runs npm FROM it (target via cwd)', () => {
+    const abs = freshDir('rel');
+    const rel = path.relative(process.cwd(), abs); // a relative spelling of the same dir
+    let seenArgs: string[] = [];
+    let seenCwd: string | undefined;
+    const spawnSpy: any = (_npm: string, args: string[], opts: { cwd?: string }) => {
+      seenArgs = args;
+      seenCwd = opts?.cwd;
+      return { status: 0 };
+    };
+    installVectorBackend({ targetDir: rel, version: '0.1.6', spawn: spawnSpy });
+    assert.ok(!seenArgs.includes('--prefix'), 'no --prefix arg — target is the cwd');
+    assert.ok(path.isAbsolute(seenCwd ?? ''), `cwd must be absolute, got ${seenCwd}`);
+    assert.strictEqual(seenCwd, abs, 'npm cwd must equal the absolute target so the seed is found');
+  });
+
+  test('a target WITH SPACES is conveyed via cwd only (no arg carries the spaced path)', () => {
+    const spaced = path.join(freshDir('with space'), 'Zippy Claims', '.autoclaw', 'native');
+    let seenArgs: string[] = [];
+    let seenCwd: string | undefined;
+    const spawnSpy: any = (_npm: string, args: string[], opts: { cwd?: string }) => {
+      seenArgs = args;
+      seenCwd = opts?.cwd;
+      return { status: 0 };
+    };
+    installVectorBackend({ targetDir: spaced, version: '0.1.6', spawn: spawnSpy });
+    // Regression guard: the bug was `--prefix <spaced path>` being split by
+    // shell:true. No argv entry may contain the target path at all.
+    assert.ok(
+      seenArgs.every((a) => !a.includes('Zippy Claims')),
+      'no npm arg may carry the spaced target path',
+    );
+    assert.strictEqual(seenCwd, path.resolve(spaced), 'spaced target must ride on cwd');
   });
 });
