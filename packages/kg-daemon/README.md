@@ -1,5 +1,16 @@
 # @autoclaw/kg-daemon
 
+> **Optional standalone server — no longer the extension's path.** The AutoClaw
+> extension now runs the Knowledge Graph **in-process** on the Intelligence
+> Layer's `node:sqlite` store (`src/intelligence/kg/`). That path has no
+> `npm install` step, no native dependency, and works out of the box on a plain
+> marketplace install. This daemon is kept only as an optional standalone HTTP
+> server for **non-Node external agents** that prefer talking to the KG over
+> HTTP instead of MCP. You do **not** need to run it for the extension to use
+> the Knowledge Graph. See
+> [`docs/ideas/KG-INTELLIGENCE-CONVERGENCE.md`](../../docs/ideas/KG-INTELLIGENCE-CONVERGENCE.md)
+> for the reasoning and the in-process design.
+
 > **Prototype, not production.** Tier-1 implementation of the AutoClaw
 > shared Knowledge Graph daemon. Single Node process, single SQLite
 > file, localhost HTTP. See

@@ -428,29 +428,29 @@ suite('webview-render — Awaiting You filter', () => {
 // ---------------------------------------------------------------------------
 
 suite('webview-render — fabric health', () => {
-  test('null health falls back to poll/off labels', () => {
+  test('null health falls back to poll/disabled labels', () => {
     const html = renderFabricHealth(null);
     assert.match(html, /bridge: poll/);
-    assert.match(html, /kg: off/);
+    assert.match(html, /kg: disabled/);
   });
 
   test('SSE active → bridge-sse class', () => {
-    const h: FabricHealth = { bridge: 'sse', kg: 'off', sse_clients: 1, ws_clients: 0 };
+    const h: FabricHealth = { bridge: 'sse', kg: 'disabled', sse_clients: 1, ws_clients: 0 };
     const html = renderFabricHealth(h);
     assert.match(html, /bridge-sse/);
     assert.match(html, /bridge: sse/);
   });
 
   test('WS active outranks SSE', () => {
-    const h: FabricHealth = { bridge: 'ws', kg: 'running', sse_clients: 0, ws_clients: 2 };
+    const h: FabricHealth = { bridge: 'ws', kg: 'ready', sse_clients: 0, ws_clients: 2 };
     const html = renderFabricHealth(h);
     assert.match(html, /bridge-ws/);
-    assert.match(html, /kg-running/);
+    assert.match(html, /kg-ready/);
   });
 
-  test('kg unreachable shows red', () => {
-    const html = renderFabricHealth({ bridge: 'poll', kg: 'unreachable' });
-    assert.match(html, /kg-unreachable/);
+  test('kg degraded shows red', () => {
+    const html = renderFabricHealth({ bridge: 'poll', kg: 'degraded' });
+    assert.match(html, /kg-degraded/);
   });
 
   // ── UI-1: tooltips + click actions ──────────────────────────────────────
@@ -462,39 +462,53 @@ suite('webview-render — fabric health', () => {
   });
 
   test('UI-1: bridge tooltip includes client counts when present', () => {
-    const tip = bridgeTooltip('sse', { bridge: 'sse', kg: 'off', sse_clients: 3, ws_clients: 0, bridge_port: 7141 });
+    const tip = bridgeTooltip('sse', { bridge: 'sse', kg: 'disabled', sse_clients: 3, ws_clients: 0, bridge_port: 7141 });
     assert.match(tip, /SSE=3/);
     assert.match(tip, /WS=0/);
     assert.match(tip, /Port 7141/);
   });
 
-  test('UI-1: kg tooltip explains each state', () => {
-    assert.match(kgTooltip('off'),         /not running/i);
-    assert.match(kgTooltip('running'),     /active/i);
-    assert.match(kgTooltip('unreachable'), /not responding/i);
+  test('UI-1: kg tooltip explains each state (in-process store, never a daemon install)', () => {
+    assert.match(kgTooltip('disabled'), /disabled/i);
+    assert.match(kgTooltip('disabled'), /click to enable/i);
+    assert.match(kgTooltip('ready'),    /ready/i);
+    assert.match(kgTooltip('degraded'), /degraded/i);
+    // Never instruct users to install/build a daemon.
+    for (const s of ['disabled', 'ready', 'degraded'] as const) {
+      assert.doesNotMatch(kgTooltip(s), /npm install|kg-daemon|cd packages/i);
+    }
+  });
+
+  test('UI-1: kg ready tooltip reports driver, search, and embedding from detail', () => {
+    const tip = kgTooltip('ready', { driverKind: 'node-sqlite', caps: { sqlite: true, vec: true, fts: true }, embeddingProvider: 'transformers' });
+    assert.match(tip, /node-sqlite/);
+    assert.match(tip, /vector\+fts/);
+    assert.match(tip, /embeddings: transformers/);
+    const ftsOnly = kgTooltip('ready', { driverKind: 'node-sqlite', caps: { sqlite: true, vec: false, fts: true }, embeddingProvider: 'none' });
+    assert.match(ftsOnly, /(?<!vector\+)fts/);
   });
 
   test('UI-1: kg click command depends on state', () => {
-    assert.strictEqual(kgClickCommand('off'),         'startKgDaemon');
-    assert.strictEqual(kgClickCommand('running'),     'openKgDashboard');
-    assert.strictEqual(kgClickCommand('unreachable'), 'restartKgDaemon');
+    assert.strictEqual(kgClickCommand('disabled'), 'enableKg');
+    assert.strictEqual(kgClickCommand('ready'),    'openKgDashboard');
+    assert.strictEqual(kgClickCommand('degraded'), 'openKgDoctor');
   });
 
   test('UI-1: rendered chips are buttons with data-fabric-action + title + aria-label', () => {
-    const html = renderFabricHealth({ bridge: 'poll', kg: 'off' });
+    const html = renderFabricHealth({ bridge: 'poll', kg: 'disabled' });
     // Both chips must be <button> with explicit action + a11y attrs.
     assert.match(html, /<button[^>]+data-fabric-action="openBridgeDoc"[^>]+title="[^"]+"[^>]+aria-label="[^"]+"/);
-    assert.match(html, /<button[^>]+data-fabric-action="startKgDaemon"[^>]+title="[^"]+"[^>]+aria-label="[^"]+"/);
+    assert.match(html, /<button[^>]+data-fabric-action="enableKg"[^>]+title="[^"]+"[^>]+aria-label="[^"]+"/);
   });
 
   test('UI-1: tooltips render for every (bridge,kg) state combination', () => {
     const bridges: FabricHealth['bridge'][] = ['poll', 'sse', 'ws', 'off'];
-    const kgs:     FabricHealth['kg'][]     = ['off', 'running', 'unreachable'];
+    const kgs:     FabricHealth['kg'][]     = ['disabled', 'ready', 'degraded'];
     for (const bridge of bridges) {
       for (const kg of kgs) {
         const html = renderFabricHealth({ bridge, kg });
         assert.match(html, /title="[^"]+bridge[^"]*"/i, `bridge=${bridge} kg=${kg}: bridge title missing`);
-        assert.match(html, /title="[^"]+(daemon|graph)[^"]*"/i, `bridge=${bridge} kg=${kg}: kg title missing`);
+        assert.match(html, /title="[^"]+graph[^"]*"/i, `bridge=${bridge} kg=${kg}: kg title missing`);
         assert.match(html, new RegExp(`bridge-${bridge}`), `bridge=${bridge}: class missing`);
         assert.match(html, new RegExp(`kg-${kg}`), `kg=${kg}: class missing`);
       }

@@ -1,32 +1,23 @@
 /**
- * installEmbeddings.ts — one-command install of the offline embedding provider's
- * heavy peer (`@xenova/transformers`), the in-process / fully-offline rung of the
- * embedding-provider ladder (see {@link ./embeddingResolve}).
+ * installEmbeddings.ts — one-command install of the Intelligence embedding
+ * provider's heavy peer (`@xenova/transformers`).
  *
- * Why this exists: this is the embeddings-side twin of `installBackend.ts`.
- * `@xenova/transformers` is a large `optionalDependency` (it pulls in
- * `onnxruntime-node`, `sharp`, `protobufjs` — ~135 MB) that is EXCLUDED from the
- * packaged `.vsix` (see `.vscodeignore`) to keep the extension lean. So in a
- * packaged install the runtime `import('@xenova/transformers')` always throws
- * `Cannot find module`. The auto-detect ladder prefers the router / Ollama rungs
- * precisely because they need no native install; this installer exists only for
- * users who want fully-offline, in-process embeddings with no local service.
+ * Why this exists: this is the embeddings-side twin of `installBackend.ts`. The
+ * default embedding provider is `transformers`, but `@xenova/transformers` is a
+ * large `optionalDependency` (it pulls in `onnxruntime-node`, `sharp`,
+ * `protobufjs` — ~135 MB) that is EXCLUDED from the packaged `.vsix` (see
+ * `.vscodeignore`) to keep the extension lean. So in a packaged install the
+ * runtime `import('@xenova/transformers')` always throws `Cannot find module`
+ * and the layer silently degrades to the low-quality `none` provider — while
+ * spamming one warning per indexed chunk.
  *
- * It installs `@xenova/transformers` (the exact pinned version) into a PERSISTENT
- * directory that survives extension updates — the SAME project-local `native`
- * dir the sqlite-vec backend uses by default — never forced onto C:. It exposes a
- * resolver the embeddings loader uses to find the installed package, plus the env
- * vars the loader reads.
+ * This module installs `@xenova/transformers` (the exact pinned version) into a
+ * PERSISTENT directory that survives extension updates — the SAME project-local
+ * `native` dir the sqlite-vec backend uses by default (`<workspace>/.autoclaw/
+ * native`), never forced onto C:. It exposes a resolver the embeddings loader
+ * uses to find the installed package, plus the env vars the loader reads.
  *
  * Host-free: no `vscode` import. The caller passes the target dir + cache dir.
- *
- * WINDOWS PATH SAFETY (the lesson `installBackend.ts` learned the hard way): the
- * install target is conveyed via spawn `cwd`, NEVER `npm install --prefix <dir>`.
- * Under `shell:true` (needed to resolve the `npm.cmd` shim) argv is concatenated
- * and re-split on spaces, so a `--prefix C:\…\Zippy Claims\…` would break at the
- * space and npm would read a bogus `package.json`. `cwd` is immune to that, and
- * the install args carry no path. The target is always `path.resolve`-d first so
- * a relative/mis-set dir never resolves against npm's own cwd.
  *
  * NOTE on loading: `@xenova/transformers@2.x` is a pure-ESM package with no
  * `exports` map (`main: ./src/transformers.js`, `type: module`). It cannot be
@@ -97,7 +88,7 @@ const PACKAGE_NAME = '@xenova/transformers';
  */
 export function resolveInstalledTransformersEntry(targetDir: string): string | undefined {
   try {
-    const pkgDir = path.join(path.resolve(targetDir), 'node_modules', '@xenova', 'transformers');
+    const pkgDir = path.join(targetDir, 'node_modules', '@xenova', 'transformers');
     const manifestPath = path.join(pkgDir, 'package.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
       main?: string;
@@ -166,14 +157,18 @@ export function isEmbeddingsInstalled(targetDir: string): boolean {
  * The npm argv used to install the package. Split out so a test can assert the
  * exact, side-effect-free command without spawning npm.
  *
- * Deliberately carries NO path argument — the install target is conveyed via the
- * spawn `cwd` (see the file header on Windows path safety), never `--prefix`.
+ * Deliberately carries NO path argument. The install target is conveyed via the
+ * spawn `cwd` instead of `--prefix`: under `shell:true` (needed on Windows to
+ * resolve the `npm.cmd` shim) argv is concatenated and re-split on spaces, so a
+ * `--prefix C:\…\Zippy Claims\…` would break at the space and npm would read a
+ * bogus `<cwd>\Claims\…\package.json`. `cwd` is passed in the options object and
+ * is immune to that splitting; none of these args contain spaces. (Same fix the
+ * vector backend installer carries — see buildInstallArgs in installBackend.ts.)
  */
 export function buildEmbeddingsInstallArgs(version: string): string[] {
   return [
     'install',
     `${PACKAGE_NAME}@${version}`,
-    '--no-save',
     '--no-audit',
     '--no-fund',
     '--loglevel=error',
@@ -193,8 +188,9 @@ export async function installEmbeddingsProvider(
 ): Promise<InstallEmbeddingsResult> {
   const { version, npmPath = 'npm', spawn = cpSpawn as unknown as SpawnFn, log } = opts;
 
-  // Always resolve to an ABSOLUTE path so a relative/mis-set dir never resolves
-  // against npm's own cwd (the VS Code install dir). Mirrors installBackend.ts.
+  // Always resolve to an ABSOLUTE path. A relative target (or one from a mis-set
+  // setting) would otherwise be resolved by npm against its own cwd — the VS Code
+  // install dir — yielding a bogus path and an ENOENT on package.json.
   const targetDir = path.resolve(opts.targetDir);
 
   const existing = resolveInstalledTransformersEntry(targetDir);
@@ -209,15 +205,14 @@ export async function installEmbeddingsProvider(
     return { ok: false, error: `cannot create ${targetDir}: ${(err as Error).message}` };
   }
 
-  // npm 7+ requires package.json to exist at the install root before it will run;
-  // seed a minimal one so the directory looks like a package root.
+  // npm 7+ requires package.json to exist at the install root before it will run
+  // install; seed a minimal one so the directory looks like a package root. This
+  // is the same `<workspace>/.autoclaw/native` dir the vector backend uses, so a
+  // seed it already wrote is reused (guarded by existsSync).
   const pkgJsonPath = path.join(targetDir, 'package.json');
   if (!fs.existsSync(pkgJsonPath)) {
     try {
-      fs.writeFileSync(
-        pkgJsonPath,
-        JSON.stringify({ name: 'autoclaw-native', version: '1.0.0', private: true }),
-      );
+      fs.writeFileSync(pkgJsonPath, JSON.stringify({ name: 'autoclaw-native', version: '1.0.0', private: true }));
     } catch (err) {
       return { ok: false, error: `cannot seed package.json: ${(err as Error).message}` };
     }
@@ -245,9 +240,6 @@ export async function installEmbeddingsProvider(
  * Run `npm` via the (injectable) async spawn, accumulating stderr/stdout and
  * resolving once the process closes. Never rejects — transport/exit failures
  * resolve as `{ ok:false, error }`.
- *
- * The install target is conveyed via `cwd` (NOT `--prefix`): cwd survives the
- * `shell:true` argv concatenation that a spaced `--prefix` path would not.
  */
 function runNpm(
   spawn: SpawnFn,
@@ -259,6 +251,9 @@ function runNpm(
     let child: SpawnedChild;
     try {
       child = spawn(npmPath, args, {
+        // Install target is conveyed via cwd (NOT --prefix): cwd survives the
+        // shell:true argv concatenation that a spaced --prefix path would not.
+        // npm installs into <cwd>/node_modules and uses the seeded package.json.
         cwd,
         // npm is a .cmd shim on Windows — run through the shell so it resolves.
         shell: process.platform === 'win32',

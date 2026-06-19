@@ -1,10 +1,12 @@
 /**
- * intelligence-installembeddings.test.ts — unit tests for the offline embeddings
- * installer (`installEmbeddings.ts`).
+ * intelligence-installembeddings.test.ts — unit tests for the embeddings-provider
+ * installer (`installEmbeddingsProvider`) that powers
+ * `autoclaw.intelligence.installEmbeddings`.
  *
- * The critical regression guard: the install target is conveyed via spawn `cwd`,
- * NEVER `npm install --prefix <dir>` (which breaks on spaced Windows paths under
- * shell:true). These tests inject a fake spawn so nothing real is installed.
+ * Hermetic: plants a FAKE `@xenova/transformers` package on disk (so the ESM
+ * entry resolves) and injects an async `spawn` so npm is never actually run.
+ * No network, no native modules. The installer is ASYNC (non-blocking spawn),
+ * so the fake child emits `close`/`error` on the next tick.
  */
 
 import * as assert from 'assert';
@@ -17,152 +19,264 @@ import {
   installEmbeddingsProvider,
   isEmbeddingsInstalled,
   resolveInstalledTransformersEntry,
-  type SpawnedChild,
-  type SpawnFn,
+  SpawnFn,
+  SpawnedChild,
+  TRANSFORMERS_DIR_ENV,
+  TRANSFORMERS_CACHE_ENV,
 } from '../intelligence/installEmbeddings';
 
-function tmpDir(prefix = 'ac-instemb-'): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-}
+let tmpRoot: string;
 
-/** Plant a minimal fake @xenova/transformers package under <dir>/node_modules. */
-function plantFakeTransformers(dir: string): void {
-  const pkgDir = path.join(dir, 'node_modules', '@xenova', 'transformers');
-  fs.mkdirSync(pkgDir, { recursive: true });
-  fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: '@xenova/transformers', version: '2.17.2', main: 'index.js' }));
-  fs.writeFileSync(path.join(pkgDir, 'index.js'), 'module.exports = {};');
-}
-
-interface SpawnCall {
-  cmd: string;
-  args: string[];
-  opts: Record<string, unknown>;
+function freshDir(prefix: string): string {
+  return fs.mkdtempSync(path.join(tmpRoot, `${prefix}-`));
 }
 
 /**
- * A fake async spawn satisfying {@link SpawnFn}. Records the call, optionally
- * plants the fake package into the spawn's `cwd` (simulating a successful npm
- * install), then emits `close(exitCode)`.
+ * Plant a fake `@xenova/transformers` with a given manifest + a real entry file.
+ * Returns the absolute entry path the resolver should produce.
  */
-function fakeSpawn(calls: SpawnCall[], opts: { exitCode?: number; plant?: boolean } = {}): SpawnFn {
-  const exitCode = opts.exitCode ?? 0;
-  return (cmd, args, spawnOpts) => {
-    calls.push({ cmd, args, opts: spawnOpts });
-    let closeCb: ((code: number | null) => void) | undefined;
+function plantFakeTransformers(
+  targetDir: string,
+  manifest: Record<string, unknown>,
+  entryRel: string,
+): string {
+  const pkgDir = path.join(targetDir, 'node_modules', '@xenova', 'transformers');
+  const entryAbs = path.join(pkgDir, entryRel);
+  fs.mkdirSync(path.dirname(entryAbs), { recursive: true });
+  fs.writeFileSync(entryAbs, 'export const pipeline = () => {};\n', 'utf8');
+  fs.writeFileSync(
+    path.join(pkgDir, 'package.json'),
+    JSON.stringify({ name: '@xenova/transformers', version: '2.17.2', ...manifest }),
+    'utf8',
+  );
+  return entryAbs;
+}
+
+/**
+ * Build an async spawn stub. By default emits `close(0)`. Options drive the
+ * failure paths: a non-zero exit (+ stderr), an emitted `error`, or a synchronous
+ * throw from spawn itself.
+ */
+function fakeSpawn(opts: {
+  code?: number;
+  stderr?: string;
+  emitError?: string;
+  throwOnSpawn?: boolean;
+  onCalled?: () => void;
+}): SpawnFn {
+  return () => {
+    opts.onCalled?.();
+    if (opts.throwOnSpawn) {
+      throw new Error('spawn npm ENOENT');
+    }
     const child: SpawnedChild = {
       stdout: { on: () => undefined },
-      stderr: { on: () => undefined },
-      on: (event: string, cb: (arg: never) => void) => {
-        if (event === 'close') {
-          closeCb = cb as unknown as (code: number | null) => void;
+      stderr: {
+        on: (_event, cb) => {
+          if (opts.stderr) {
+            cb(Buffer.from(opts.stderr)); // accumulate synchronously, before close
+          }
+        },
+      },
+      on: (event: 'error' | 'close', cb: (arg: never) => void) => {
+        if (event === 'error' && opts.emitError) {
+          setImmediate(() => cb(new Error(opts.emitError) as never));
+        }
+        if (event === 'close' && !opts.emitError) {
+          setImmediate(() => cb((opts.code ?? 0) as never));
         }
       },
-    } as unknown as SpawnedChild;
-    setImmediate(() => {
-      if (opts.plant && exitCode === 0) {
-        plantFakeTransformers(String(spawnOpts.cwd));
-      }
-      closeCb?.(exitCode);
-    });
+    };
     return child;
   };
 }
 
-suite('installEmbeddings: buildEmbeddingsInstallArgs (no --prefix)', function () {
-  test('carries no --prefix and no path argument', function () {
+/**
+ * An async spawn stub that CAPTURES the npm argv + options (cwd) into `sink`
+ * and emits `close(0)`. Used by the cwd / spaced-path regression tests.
+ */
+function capturingSpawn(sink: { args?: string[]; cwd?: string }): SpawnFn {
+  return (_cmd: string, args: string[], opts: Record<string, unknown>) => {
+    sink.args = args;
+    sink.cwd = typeof opts?.cwd === 'string' ? (opts.cwd as string) : undefined;
+    const child: SpawnedChild = {
+      stdout: { on: () => undefined },
+      stderr: { on: () => undefined },
+      on: (event: 'error' | 'close', cb: (arg: never) => void) => {
+        if (event === 'close') {
+          setImmediate(() => cb(0 as never));
+        }
+      },
+    };
+    return child;
+  };
+}
+
+suite('intelligence — install embeddings provider', () => {
+  suiteSetup(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-installembed-'));
+  });
+  suiteTeardown(() => {
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  });
+
+  test('buildEmbeddingsInstallArgs pins the version and carries NO path arg (target goes via cwd)', () => {
     const args = buildEmbeddingsInstallArgs('2.17.2');
-    assert.ok(args.includes('install'));
-    assert.ok(args.includes('@xenova/transformers@2.17.2'));
-    assert.strictEqual(args.includes('--prefix'), false, 'must NOT use --prefix (breaks on spaced paths)');
-    // No arg may be a filesystem PATH (target goes via cwd). The scope slash in
-    // "@xenova/transformers@2.17.2" is fine; a backslash or `C:`-drive prefix is not.
-    assert.strictEqual(
-      args.some((a) => a.includes('\\') || /^[a-zA-Z]:/.test(a) || a.startsWith('/')),
-      false,
-      'args must contain no filesystem path (target goes via cwd)',
+    assert.deepStrictEqual(args, [
+      'install',
+      '@xenova/transformers@2.17.2',
+      '--no-audit',
+      '--no-fund',
+      '--loglevel=error',
+    ]);
+    // No argv entry may carry the install path — a spaced path would be split by
+    // shell:true. The target is conveyed only through the spawn cwd.
+    assert.ok(!args.includes('--prefix'), 'must not pass --prefix (space-splitting hazard)');
+  });
+
+  test('resolver finds a planted package via `main`, and misses an empty dir', () => {
+    const empty = freshDir('empty');
+    assert.strictEqual(resolveInstalledTransformersEntry(empty), undefined);
+    assert.strictEqual(isEmbeddingsInstalled(empty), false);
+
+    const withPeer = freshDir('main');
+    const entry = plantFakeTransformers(withPeer, { main: './src/transformers.js', type: 'module' }, 'src/transformers.js');
+    assert.strictEqual(resolveInstalledTransformersEntry(withPeer), entry);
+    assert.strictEqual(isEmbeddingsInstalled(withPeer), true);
+  });
+
+  test('resolver honors a nested conditional `exports["."].node.import` shape', () => {
+    const dir = freshDir('exports');
+    const entry = plantFakeTransformers(
+      dir,
+      { main: './wrong.js', exports: { '.': { node: { import: './dist/right.js' } } } },
+      'dist/right.js',
     );
+    assert.strictEqual(resolveInstalledTransformersEntry(dir), entry);
   });
-});
 
-suite('installEmbeddings: installEmbeddingsProvider', function () {
-  test('passes the target via spawn cwd (absolute), not --prefix', async function () {
-    const target = tmpDir();
-    const calls: SpawnCall[] = [];
-    const result = await installEmbeddingsProvider({
-      targetDir: target,
+  test('resolver returns undefined when the manifest entry file is missing', () => {
+    const dir = freshDir('noentry');
+    const pkgDir = path.join(dir, 'node_modules', '@xenova', 'transformers');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: '@xenova/transformers', main: './ghost.js' }),
+      'utf8',
+    );
+    assert.strictEqual(resolveInstalledTransformersEntry(dir), undefined);
+  });
+
+  test('install is idempotent: a present package returns ok WITHOUT spawning npm', async () => {
+    const dir = freshDir('idem');
+    const entry = plantFakeTransformers(dir, { main: './m.js', type: 'module' }, 'm.js');
+    let spawned = false;
+    const res = await installEmbeddingsProvider({
+      targetDir: dir,
       version: '2.17.2',
-      spawn: fakeSpawn(calls, { plant: true }),
+      spawn: fakeSpawn({ onCalled: () => (spawned = true) }),
     });
-    assert.strictEqual(result.ok, true, result.error);
-    assert.strictEqual(calls.length, 1, 'npm should be spawned once');
-    assert.strictEqual(calls[0].opts.cwd, path.resolve(target), 'cwd must be the resolved target dir');
-    assert.strictEqual(calls[0].args.includes('--prefix'), false);
-    // package.json must be seeded so npm 7+ treats the dir as a package root.
-    assert.ok(fs.existsSync(path.join(target, 'package.json')), 'package.json must be seeded');
-    assert.ok(result.entryPath && fs.existsSync(result.entryPath), 'resolved entry must exist');
+    assert.strictEqual(res.ok, true);
+    assert.strictEqual(res.entryPath, entry);
+    assert.strictEqual(spawned, false, 'must short-circuit when already installed');
   });
 
-  test('survives a target path WITH SPACES (cwd carries it intact)', async function () {
-    const base = tmpDir();
-    const target = path.join(base, 'Zippy Claims', 'native');
-    const calls: SpawnCall[] = [];
-    const result = await installEmbeddingsProvider({
-      targetDir: target,
+  test('a non-zero npm exit surfaces as ok:false with the stderr', async () => {
+    const dir = freshDir('fail');
+    const res = await installEmbeddingsProvider({
+      targetDir: dir,
       version: '2.17.2',
-      spawn: fakeSpawn(calls, { plant: true }),
+      spawn: fakeSpawn({ code: 1, stderr: 'ENOTFOUND registry.npmjs.org' }),
     });
-    assert.strictEqual(result.ok, true, result.error);
-    assert.strictEqual(calls[0].opts.cwd, path.resolve(target), 'spaced cwd must be passed intact');
-    // No argument may contain the spaced path (it would split under shell:true).
-    assert.strictEqual(calls[0].args.some((a) => a.includes('Zippy')), false);
+    assert.strictEqual(res.ok, false);
+    assert.ok(/npm exited 1/.test(res.error || ''), res.error);
+    assert.ok(/ENOTFOUND/.test(res.error || ''), res.error);
   });
 
-  test('is idempotent — already-installed returns ok WITHOUT spawning', async function () {
-    const target = tmpDir();
-    plantFakeTransformers(target);
-    const calls: SpawnCall[] = [];
-    const result = await installEmbeddingsProvider({
-      targetDir: target,
+  test('an unrunnable npm (spawn throws) surfaces as ok:false', async () => {
+    const dir = freshDir('noexec');
+    const res = await installEmbeddingsProvider({
+      targetDir: dir,
       version: '2.17.2',
-      spawn: fakeSpawn(calls, { plant: false }),
+      spawn: fakeSpawn({ throwOnSpawn: true }),
     });
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(calls.length, 0, 'must not spawn when already installed');
+    assert.strictEqual(res.ok, false);
+    assert.ok(/not runnable/.test(res.error || ''), res.error);
   });
 
-  test('reports ok=false (no throw) when npm exits non-zero', async function () {
-    const target = tmpDir();
-    const calls: SpawnCall[] = [];
-    const result = await installEmbeddingsProvider({
-      targetDir: target,
+  test('an emitted child `error` surfaces as ok:false', async () => {
+    const dir = freshDir('childerr');
+    const res = await installEmbeddingsProvider({
+      targetDir: dir,
       version: '2.17.2',
-      spawn: fakeSpawn(calls, { exitCode: 1 }),
+      spawn: fakeSpawn({ emitError: 'EACCES' }),
     });
-    assert.strictEqual(result.ok, false);
-    assert.ok(/npm exited 1/i.test(result.error ?? ''));
+    assert.strictEqual(res.ok, false);
+    assert.ok(/not runnable/.test(res.error || ''), res.error);
   });
 
-  test('reports ok=false when npm succeeds but plants no resolvable entry', async function () {
-    const target = tmpDir();
-    const calls: SpawnCall[] = [];
-    const result = await installEmbeddingsProvider({
-      targetDir: target,
+  test('a successful npm run that plants no resolvable entry is reported as a failure', async () => {
+    const dir = freshDir('noresolve');
+    // npm "succeeds" (close 0) but plants nothing, so the entry never resolves.
+    const res = await installEmbeddingsProvider({
+      targetDir: dir,
       version: '2.17.2',
-      spawn: fakeSpawn(calls, { plant: false }),
+      spawn: fakeSpawn({ code: 0 }),
     });
-    assert.strictEqual(result.ok, false);
-    assert.ok(/could not be resolved/i.test(result.error ?? ''));
+    assert.strictEqual(res.ok, false);
+    assert.ok(/could not be resolved/.test(res.error || ''), res.error);
   });
-});
 
-suite('installEmbeddings: resolveInstalledTransformersEntry', function () {
-  test('resolves the ESM entry of a planted package, undefined otherwise', function () {
-    const target = tmpDir();
-    assert.strictEqual(isEmbeddingsInstalled(target), false);
-    assert.strictEqual(resolveInstalledTransformersEntry(target), undefined);
-    plantFakeTransformers(target);
-    assert.ok(isEmbeddingsInstalled(target));
-    const entry = resolveInstalledTransformersEntry(target);
-    assert.ok(entry && entry.endsWith('index.js'));
+  test('env var names are the documented values the loader reads', () => {
+    assert.strictEqual(TRANSFORMERS_DIR_ENV, 'AUTOCLAW_TRANSFORMERS_DIR');
+    assert.strictEqual(TRANSFORMERS_CACHE_ENV, 'AUTOCLAW_TRANSFORMERS_CACHE');
+  });
+
+  test('seeds a package.json at the target BEFORE spawning npm (npm 7+ needs it)', async () => {
+    const dir = freshDir('seed');
+    let pkgExistedAtSpawn = false;
+    const spawn: SpawnFn = () => {
+      pkgExistedAtSpawn = fs.existsSync(path.join(dir, 'package.json'));
+      const child: SpawnedChild = {
+        stdout: { on: () => undefined },
+        stderr: { on: () => undefined },
+        on: (event: 'error' | 'close', cb: (arg: never) => void) => {
+          if (event === 'close') {
+            setImmediate(() => cb(0 as never));
+          }
+        },
+      };
+      return child;
+    };
+    await installEmbeddingsProvider({ targetDir: dir, version: '2.17.2', spawn });
+    assert.strictEqual(pkgExistedAtSpawn, true, 'package.json must be seeded before npm runs');
+    assert.ok(fs.existsSync(path.join(dir, 'package.json')));
+  });
+
+  test('resolves a relative target to ABSOLUTE and runs npm FROM it (target via cwd)', async () => {
+    const abs = freshDir('rel');
+    const rel = path.relative(process.cwd(), abs); // a relative spelling of the same dir
+    const sink: { args?: string[]; cwd?: string } = {};
+    await installEmbeddingsProvider({ targetDir: rel, version: '2.17.2', spawn: capturingSpawn(sink) });
+    assert.ok(!(sink.args ?? []).includes('--prefix'), 'no --prefix arg — target is the cwd');
+    assert.ok(path.isAbsolute(sink.cwd ?? ''), `cwd must be absolute, got ${sink.cwd}`);
+    assert.strictEqual(sink.cwd, abs, 'npm cwd must equal the absolute target so the seed is found');
+  });
+
+  test('a target WITH SPACES is conveyed via cwd only (no arg carries the spaced path)', async () => {
+    const spaced = path.join(freshDir('with space'), 'Zippy Claims', '.autoclaw', 'native');
+    const sink: { args?: string[]; cwd?: string } = {};
+    await installEmbeddingsProvider({ targetDir: spaced, version: '2.17.2', spawn: capturingSpawn(sink) });
+    // Regression guard: the bug was `--prefix <spaced path>` being split by
+    // shell:true. No argv entry may contain the target path at all.
+    assert.ok(
+      (sink.args ?? []).every((a) => !a.includes('Zippy Claims')),
+      'no npm arg may carry the spaced target path',
+    );
+    assert.strictEqual(sink.cwd, path.resolve(spaced), 'spaced target must ride on cwd');
   });
 });

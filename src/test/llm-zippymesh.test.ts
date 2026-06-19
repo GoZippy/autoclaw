@@ -346,7 +346,7 @@ suite('ZippyMeshProvider — embed() (first-class /v1/embeddings)', () => {
       capture,
     );
     const p = new ZippyMeshProvider({ fetchImpl });
-    await p.embed!({ input: 'x', hints: { intent: 'index', sessionParallel: true, sessionId: 'e-1' } });
+    await p.embed!({ input: 'x', hints: { intent: 'code', sessionParallel: true, sessionId: 'e-1' } });
     const call = capture.find((c) => c.url.includes('/v1/embeddings'));
     assert.ok(call);
     assert.strictEqual(call!.headers['x-intent'], 'embed', 'embed intent must win regardless of hints');

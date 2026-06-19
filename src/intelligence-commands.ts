@@ -889,6 +889,29 @@ function pinnedTransformersVersion(context: vscode.ExtensionContext): string {
   return typeof opt['@xenova/transformers'] === 'string' ? opt['@xenova/transformers'] : 'latest';
 }
 
+/** The optional `autoclaw.intelligence.modelCacheDir` setting (empty ⇒ unset). */
+function modelCacheDirSetting(): string | undefined {
+  const v = vscode.workspace.getConfiguration('autoclaw.intelligence').get<string>('modelCacheDir');
+  return v && v.trim() !== '' ? v : undefined;
+}
+
+/**
+ * Where offline embedding model weights cache. Defaults PROJECT-LOCAL
+ * (`<workspace>/.autoclaw/models`) so multi-hundred-MB downloads stay in the
+ * project root and are never forced onto C:; the `modelCacheDir` setting
+ * overrides; the extension globalStorage is a last resort when no workspace.
+ */
+function modelCacheDir(context: vscode.ExtensionContext, workspaceRoot: string | undefined): string {
+  const override = modelCacheDirSetting();
+  if (override) {
+    return override;
+  }
+  if (workspaceRoot) {
+    return intelligencePaths(workspaceRoot).root + '/models';
+  }
+  return context.globalStorageUri.fsPath + '/models';
+}
+
 /**
  * Point the host-free embeddings loader at an installed offline provider and aim
  * its model cache at a project-local dir (never C:), when present. Mirrors
@@ -902,7 +925,7 @@ function wireInstalledEmbeddings(
   if (isEmbeddingsInstalled(dir)) {
     process.env[TRANSFORMERS_DIR_ENV] = dir;
     if (!process.env[TRANSFORMERS_CACHE_ENV]) {
-      process.env[TRANSFORMERS_CACHE_ENV] = path.join(dir, 'models');
+      process.env[TRANSFORMERS_CACHE_ENV] = modelCacheDir(context, workspaceRoot);
     }
   }
 }
@@ -1303,7 +1326,7 @@ async function runInstallEmbeddings(
     const installed = result.installedDir ?? dir;
     process.env[TRANSFORMERS_DIR_ENV] = installed;
     if (!process.env[TRANSFORMERS_CACHE_ENV]) {
-      process.env[TRANSFORMERS_CACHE_ENV] = path.join(installed, 'models');
+      process.env[TRANSFORMERS_CACHE_ENV] = modelCacheDir(context, workspaceRoot);
     }
     if (workspaceRoot) {
       setEmbeddingProvider(
