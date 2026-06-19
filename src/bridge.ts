@@ -22,6 +22,7 @@ import { buildConsensusEvent } from './hooks/hookEvents';
 import { emitHookEvent } from './hooks/hookBus';
 import { verifyBiscuitToken } from './biscuit';
 import { verifySvid } from './svid';
+import { getKnowledgeGraph } from './intelligence/kg/service';
 
 const fsPromises = fs.promises;
 
@@ -236,6 +237,138 @@ export function createBridgeServer(
         status: 'ok', version: '2.0.0', port: config.port,
         sse_clients: sseClients.size, ws_clients: wsClients.size,
       });
+    }
+
+    // Knowledge Graph routes (KGC-3). The in-process KG is exposed over the
+    // bridge under `/api/v1/kg/*`, replacing the old standalone kg-daemon on
+    // :9877 — no child process. These routes are UNAUTHENTICATED localhost
+    // (the daemon was), so they sit BEFORE the `/api/` bearer-token gate. The
+    // KG is resolved per-process (cached) and never throws — a missing SQLite
+    // driver yields a degraded handle whose writes no-op and reads return [].
+    if (p.startsWith('/api/v1/kg/')) {
+      const { kg, caps, embedding, degraded } = getKnowledgeGraph({
+        workspaceRoot: config.workspaceRoot ?? process.cwd(),
+      });
+      const qp = (name: string): string | undefined => {
+        const v = url.searchParams.get(name);
+        return v !== null && v.length > 0 ? v : undefined;
+      };
+      const qn = (name: string, fallback: number): number => {
+        const v = url.searchParams.get(name);
+        if (v === null) { return fallback; }
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+      };
+      try {
+        if (p === '/api/v1/kg/health' && method === 'GET') {
+          return json(res, 200, {
+            ok: !degraded,
+            sqlite: caps.sqlite, vec: caps.vec, fts: caps.fts,
+            embedding, degraded,
+          });
+        }
+        if (p === '/api/v1/kg/thoughts' && method === 'POST') {
+          const raw = await readBody(req);
+          let body: Record<string, unknown>;
+          try { body = JSON.parse(raw); } catch { return err(res, 400, 'Invalid JSON'); }
+          if (!body || typeof body !== 'object') { return err(res, 400, 'JSON body required'); }
+          for (const f of ['project', 'agent', 'kind', 'text'] as const) {
+            if (typeof body[f] !== 'string' || (body[f] as string).length === 0) {
+              return err(res, 400, `field '${f}' must be a non-empty string`);
+            }
+          }
+          if (body.embedding !== undefined && !Array.isArray(body.embedding)) {
+            return err(res, 400, "field 'embedding' must be a number[]");
+          }
+          if (body.meta !== undefined && (typeof body.meta !== 'object' || body.meta === null)) {
+            return err(res, 400, "field 'meta' must be an object");
+          }
+          const id = await kg.recordThought({
+            project: body.project as string,
+            agent: body.agent as string,
+            kind: body.kind as string,
+            text: body.text as string,
+            sprint: typeof body.sprint === 'string' ? body.sprint : undefined,
+            task_id: typeof body.task_id === 'string' ? body.task_id : undefined,
+            embedding: body.embedding as number[] | undefined,
+            valid_from: typeof body.valid_from === 'string' ? body.valid_from : undefined,
+            valid_to: typeof body.valid_to === 'string' ? body.valid_to : undefined,
+            meta: body.meta as Record<string, unknown> | undefined,
+          });
+          return json(res, 201, { id });
+        }
+        if (p === '/api/v1/kg/relations' && method === 'POST') {
+          const raw = await readBody(req);
+          let body: Record<string, unknown>;
+          try { body = JSON.parse(raw); } catch { return err(res, 400, 'Invalid JSON'); }
+          const { from, kind, to, meta } = (body ?? {}) as { from?: unknown; kind?: unknown; to?: unknown; meta?: unknown };
+          if (typeof from !== 'string' || typeof kind !== 'string' || typeof to !== 'string') {
+            return err(res, 400, "fields 'from', 'kind', 'to' must all be strings");
+          }
+          if (meta !== undefined && (typeof meta !== 'object' || meta === null)) {
+            return err(res, 400, "field 'meta' must be an object");
+          }
+          await kg.recordRelation(from, kind, to, meta as Record<string, unknown> | undefined);
+          return json(res, 201, { ok: true });
+        }
+        if (p === '/api/v1/kg/thoughts/search' && method === 'GET') {
+          const q = qp('q');
+          if (!q) { return err(res, 400, "query param 'q' required"); }
+          const strategy = qp('strategy');
+          const edgeKindsRaw = qp('graph_edge_kinds');
+          const thoughts = await kg.searchSimilar(q, {
+            k: qn('k', 10),
+            project: qp('project'),
+            agent: qp('agent'),
+            since: qp('since'),
+            at: qp('at'),
+            strategy: (strategy === 'vec' || strategy === 'fts' || strategy === 'multi') ? strategy : undefined,
+            graph_seed: qp('graph_seed'),
+            graph_edge_kinds: edgeKindsRaw
+              ? edgeKindsRaw.split(',').map(s => s.trim()).filter(Boolean)
+              : undefined,
+            graph_depth: qn('graph_depth', 2),
+          });
+          return json(res, 200, { thoughts });
+        }
+        if (p === '/api/v1/kg/thoughts/traverse' && method === 'GET') {
+          const seed = qp('seed');
+          if (!seed) { return err(res, 400, "query param 'seed' required"); }
+          const kindsRaw = qp('kinds');
+          const kinds = kindsRaw ? kindsRaw.split(',').map(s => s.trim()).filter(Boolean) : [];
+          const thoughts = await kg.traverseFrom(seed, kinds, qn('depth', 2));
+          return json(res, 200, { thoughts });
+        }
+        if (p === '/api/v1/kg/thoughts/export' && method === 'GET') {
+          const fmt = (qp('format') ?? 'jsonl');
+          if (fmt !== 'jsonl' && fmt !== 'md') { return err(res, 400, "format must be 'jsonl' or 'md'"); }
+          res.writeHead(200, {
+            'Content-Type': fmt === 'jsonl' ? 'application/x-ndjson' : 'text/markdown; charset=utf-8',
+          });
+          try {
+            for await (const chunk of kg.export({ project: qp('project'), format: fmt })) {
+              res.write(chunk);
+            }
+            res.end();
+          } catch (e) {
+            if (!res.headersSent) { return err(res, 500, (e as Error).message); }
+            res.end();
+          }
+          return;
+        }
+        if (p === '/api/v1/kg/thoughts' && method === 'GET') {
+          const agent = qp('agent');
+          const project = qp('project');
+          const since = qp('since');
+          let thoughts;
+          if (agent) { thoughts = await kg.forAgent(agent, { since }); }
+          else if (project) { thoughts = await kg.forProject(project, { since }); }
+          else if (since) { thoughts = await kg.since(since); }
+          else { return err(res, 400, "one of 'agent', 'project', 'since' required"); }
+          return json(res, 200, { thoughts });
+        }
+      } catch (e) { console.error('Bridge KG error:', e); return err(res, 500, 'Internal server error'); }
+      return err(res, 404, 'Not found');
     }
 
     if (p.startsWith('/api/')) {
