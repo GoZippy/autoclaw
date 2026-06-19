@@ -71,13 +71,18 @@ export function isBackendInstalled(targetDir: string): boolean {
 /**
  * The npm argv used to install sqlite-vec. Split out so a test can assert the
  * exact, side-effect-free command without spawning npm.
+ *
+ * Deliberately carries NO path argument. The install target is conveyed via the
+ * spawn `cwd` instead of `--prefix`: under `shell:true` (needed on Windows to
+ * resolve the `npm.cmd` shim) argv is concatenated and re-split on spaces, so a
+ * `--prefix C:\…\Zippy Claims\…` would break at the space and npm would read a
+ * bogus `<cwd>\Claims\…\package.json`. `cwd` is passed in the options object and
+ * is immune to that splitting; none of these args contain spaces.
  */
-export function buildInstallArgs(targetDir: string, version: string): string[] {
+export function buildInstallArgs(version: string): string[] {
   return [
     'install',
     `sqlite-vec@${version}`,
-    '--prefix',
-    targetDir,
     '--no-audit',
     '--no-fund',
     '--loglevel=error',
@@ -122,12 +127,13 @@ export function installVectorBackend(opts: InstallBackendOptions): InstallBacken
     }
   }
 
-  const args = buildInstallArgs(targetDir, version);
-  log?.(`installing sqlite-vec@${version} into ${targetDir} (npm ${args.join(' ')})`);
+  const args = buildInstallArgs(version);
+  log?.(`installing sqlite-vec@${version} into ${targetDir} (cwd) (npm ${args.join(' ')})`);
   const res = spawn(npmPath, args, {
     encoding: 'utf8',
-    // Run npm FROM the target dir so its cwd, --prefix, and the seeded
-    // package.json all agree on one absolute location.
+    // Install target is conveyed via cwd (NOT --prefix): cwd survives the
+    // shell:true argv concatenation that a spaced --prefix path would not.
+    // npm installs into <cwd>/node_modules and uses the seeded package.json.
     cwd: targetDir,
     // npm is a .cmd shim on Windows — run through the shell so it resolves.
     shell: process.platform === 'win32',

@@ -48,7 +48,10 @@ function main() {
   // Deliberately nest under .autoclaw/native like the real project-local default,
   // and seed it under a fresh temp root so we never touch a real workspace.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-smoke-'));
-  const target = path.join(root, '.autoclaw', 'native');
+  // Deliberately include a SPACE in a path segment — a spaced workspace path
+  // (e.g. "Zippy Claims") regressed the installer once, so the smoke test must
+  // exercise it.
+  const target = path.join(root, 'Zippy Claims', '.autoclaw', 'native');
 
   console.log('AutoClaw — vector backend install smoke test');
   console.log('────────────────────────────────────────────');
