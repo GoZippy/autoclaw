@@ -52,6 +52,14 @@
 
 ### Fixed
 
+- **Embeddings install no longer fails on a workspace path with a space** (e.g.
+  `…/Zippy Claims/…`). The embeddings installer (`installEmbeddings.ts`) passed
+  the target as `npm install --prefix <dir>` while spawning with `shell:true`,
+  so the shell split the path at the space and npm read a bogus directory — the
+  exact bug already fixed for the vector backend. The target is now conveyed via
+  the spawn `cwd` (path-resolved to absolute) with a seeded `package.json`, and
+  carries no path in argv. Regression tests cover the spaced-path, relative→
+  absolute, and seed-before-spawn cases.
 - **Indexing no longer floods the output channel.** When the embeddings provider
   failed to load, `/index-code` logged the same `transformers failed (Cannot find
   module …)` warning once **per chunk** (thousands of identical lines on a real

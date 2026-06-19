@@ -156,14 +156,19 @@ export function isEmbeddingsInstalled(targetDir: string): boolean {
 /**
  * The npm argv used to install the package. Split out so a test can assert the
  * exact, side-effect-free command without spawning npm.
+ *
+ * Deliberately carries NO path argument. The install target is conveyed via the
+ * spawn `cwd` instead of `--prefix`: under `shell:true` (needed on Windows to
+ * resolve the `npm.cmd` shim) argv is concatenated and re-split on spaces, so a
+ * `--prefix C:\…\Zippy Claims\…` would break at the space and npm would read a
+ * bogus `<cwd>\Claims\…\package.json`. `cwd` is passed in the options object and
+ * is immune to that splitting; none of these args contain spaces. (Same fix the
+ * vector backend installer carries — see buildInstallArgs in installBackend.ts.)
  */
-export function buildEmbeddingsInstallArgs(targetDir: string, version: string): string[] {
+export function buildEmbeddingsInstallArgs(version: string): string[] {
   return [
     'install',
     `${PACKAGE_NAME}@${version}`,
-    '--prefix',
-    targetDir,
-    '--no-save',
     '--no-audit',
     '--no-fund',
     '--loglevel=error',
@@ -181,7 +186,12 @@ export function buildEmbeddingsInstallArgs(targetDir: string, version: string): 
 export async function installEmbeddingsProvider(
   opts: InstallEmbeddingsOptions,
 ): Promise<InstallEmbeddingsResult> {
-  const { targetDir, version, npmPath = 'npm', spawn = cpSpawn as unknown as SpawnFn, log } = opts;
+  const { version, npmPath = 'npm', spawn = cpSpawn as unknown as SpawnFn, log } = opts;
+
+  // Always resolve to an ABSOLUTE path. A relative target (or one from a mis-set
+  // setting) would otherwise be resolved by npm against its own cwd — the VS Code
+  // install dir — yielding a bogus path and an ENOENT on package.json.
+  const targetDir = path.resolve(opts.targetDir);
 
   const existing = resolveInstalledTransformersEntry(targetDir);
   if (existing) {
@@ -195,9 +205,22 @@ export async function installEmbeddingsProvider(
     return { ok: false, error: `cannot create ${targetDir}: ${(err as Error).message}` };
   }
 
-  const args = buildEmbeddingsInstallArgs(targetDir, version);
-  log?.(`installing ${PACKAGE_NAME}@${version} into ${targetDir} (npm ${args.join(' ')})`);
-  const run = await runNpm(spawn, npmPath, args);
+  // npm 7+ requires package.json to exist at the install root before it will run
+  // install; seed a minimal one so the directory looks like a package root. This
+  // is the same `<workspace>/.autoclaw/native` dir the vector backend uses, so a
+  // seed it already wrote is reused (guarded by existsSync).
+  const pkgJsonPath = path.join(targetDir, 'package.json');
+  if (!fs.existsSync(pkgJsonPath)) {
+    try {
+      fs.writeFileSync(pkgJsonPath, JSON.stringify({ name: 'autoclaw-native', version: '1.0.0', private: true }));
+    } catch (err) {
+      return { ok: false, error: `cannot seed package.json: ${(err as Error).message}` };
+    }
+  }
+
+  const args = buildEmbeddingsInstallArgs(version);
+  log?.(`installing ${PACKAGE_NAME}@${version} into ${targetDir} (cwd) (npm ${args.join(' ')})`);
+  const run = await runNpm(spawn, npmPath, args, targetDir);
   if (!run.ok) {
     return { ok: false, error: run.error };
   }
@@ -222,11 +245,16 @@ function runNpm(
   spawn: SpawnFn,
   npmPath: string,
   args: string[],
+  cwd: string,
 ): Promise<{ ok: boolean; error?: string }> {
   return new Promise((resolve) => {
     let child: SpawnedChild;
     try {
       child = spawn(npmPath, args, {
+        // Install target is conveyed via cwd (NOT --prefix): cwd survives the
+        // shell:true argv concatenation that a spaced --prefix path would not.
+        // npm installs into <cwd>/node_modules and uses the seeded package.json.
+        cwd,
         // npm is a .cmd shim on Windows — run through the shell so it resolves.
         shell: process.platform === 'win32',
         windowsHide: true,

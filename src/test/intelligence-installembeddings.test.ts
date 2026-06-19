@@ -91,6 +91,27 @@ function fakeSpawn(opts: {
   };
 }
 
+/**
+ * An async spawn stub that CAPTURES the npm argv + options (cwd) into `sink`
+ * and emits `close(0)`. Used by the cwd / spaced-path regression tests.
+ */
+function capturingSpawn(sink: { args?: string[]; cwd?: string }): SpawnFn {
+  return (_cmd: string, args: string[], opts: Record<string, unknown>) => {
+    sink.args = args;
+    sink.cwd = typeof opts?.cwd === 'string' ? (opts.cwd as string) : undefined;
+    const child: SpawnedChild = {
+      stdout: { on: () => undefined },
+      stderr: { on: () => undefined },
+      on: (event: 'error' | 'close', cb: (arg: never) => void) => {
+        if (event === 'close') {
+          setImmediate(() => cb(0 as never));
+        }
+      },
+    };
+    return child;
+  };
+}
+
 suite('intelligence — install embeddings provider', () => {
   suiteSetup(() => {
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-installembed-'));
@@ -103,18 +124,18 @@ suite('intelligence — install embeddings provider', () => {
     }
   });
 
-  test('buildEmbeddingsInstallArgs pins the version and installs into the prefix without saving', () => {
-    const args = buildEmbeddingsInstallArgs('/tmp/peer', '2.17.2');
+  test('buildEmbeddingsInstallArgs pins the version and carries NO path arg (target goes via cwd)', () => {
+    const args = buildEmbeddingsInstallArgs('2.17.2');
     assert.deepStrictEqual(args, [
       'install',
       '@xenova/transformers@2.17.2',
-      '--prefix',
-      '/tmp/peer',
-      '--no-save',
       '--no-audit',
       '--no-fund',
       '--loglevel=error',
     ]);
+    // No argv entry may carry the install path — a spaced path would be split by
+    // shell:true. The target is conveyed only through the spawn cwd.
+    assert.ok(!args.includes('--prefix'), 'must not pass --prefix (space-splitting hazard)');
   });
 
   test('resolver finds a planted package via `main`, and misses an empty dir', () => {
@@ -213,5 +234,49 @@ suite('intelligence — install embeddings provider', () => {
   test('env var names are the documented values the loader reads', () => {
     assert.strictEqual(TRANSFORMERS_DIR_ENV, 'AUTOCLAW_TRANSFORMERS_DIR');
     assert.strictEqual(TRANSFORMERS_CACHE_ENV, 'AUTOCLAW_TRANSFORMERS_CACHE');
+  });
+
+  test('seeds a package.json at the target BEFORE spawning npm (npm 7+ needs it)', async () => {
+    const dir = freshDir('seed');
+    let pkgExistedAtSpawn = false;
+    const spawn: SpawnFn = () => {
+      pkgExistedAtSpawn = fs.existsSync(path.join(dir, 'package.json'));
+      const child: SpawnedChild = {
+        stdout: { on: () => undefined },
+        stderr: { on: () => undefined },
+        on: (event: 'error' | 'close', cb: (arg: never) => void) => {
+          if (event === 'close') {
+            setImmediate(() => cb(0 as never));
+          }
+        },
+      };
+      return child;
+    };
+    await installEmbeddingsProvider({ targetDir: dir, version: '2.17.2', spawn });
+    assert.strictEqual(pkgExistedAtSpawn, true, 'package.json must be seeded before npm runs');
+    assert.ok(fs.existsSync(path.join(dir, 'package.json')));
+  });
+
+  test('resolves a relative target to ABSOLUTE and runs npm FROM it (target via cwd)', async () => {
+    const abs = freshDir('rel');
+    const rel = path.relative(process.cwd(), abs); // a relative spelling of the same dir
+    const sink: { args?: string[]; cwd?: string } = {};
+    await installEmbeddingsProvider({ targetDir: rel, version: '2.17.2', spawn: capturingSpawn(sink) });
+    assert.ok(!(sink.args ?? []).includes('--prefix'), 'no --prefix arg — target is the cwd');
+    assert.ok(path.isAbsolute(sink.cwd ?? ''), `cwd must be absolute, got ${sink.cwd}`);
+    assert.strictEqual(sink.cwd, abs, 'npm cwd must equal the absolute target so the seed is found');
+  });
+
+  test('a target WITH SPACES is conveyed via cwd only (no arg carries the spaced path)', async () => {
+    const spaced = path.join(freshDir('with space'), 'Zippy Claims', '.autoclaw', 'native');
+    const sink: { args?: string[]; cwd?: string } = {};
+    await installEmbeddingsProvider({ targetDir: spaced, version: '2.17.2', spawn: capturingSpawn(sink) });
+    // Regression guard: the bug was `--prefix <spaced path>` being split by
+    // shell:true. No argv entry may contain the target path at all.
+    assert.ok(
+      (sink.args ?? []).every((a) => !a.includes('Zippy Claims')),
+      'no npm arg may carry the spaced target path',
+    );
+    assert.strictEqual(sink.cwd, path.resolve(spaced), 'spaced target must ride on cwd');
   });
 });
