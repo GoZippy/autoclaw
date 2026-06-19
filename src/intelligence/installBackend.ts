@@ -106,6 +106,17 @@ export function installVectorBackend(opts: InstallBackendOptions): InstallBacken
     return { ok: false, error: `cannot create ${targetDir}: ${(err as Error).message}` };
   }
 
+  // npm 7+ on Windows requires package.json to exist at --prefix before it will
+  // run install; seed a minimal one so the directory looks like a package root.
+  const pkgJsonPath = path.join(targetDir, 'package.json');
+  if (!fs.existsSync(pkgJsonPath)) {
+    try {
+      fs.writeFileSync(pkgJsonPath, JSON.stringify({ name: 'autoclaw-native', version: '1.0.0', private: true }));
+    } catch (err) {
+      return { ok: false, error: `cannot seed package.json: ${(err as Error).message}` };
+    }
+  }
+
   const args = buildInstallArgs(targetDir, version);
   log?.(`installing sqlite-vec@${version} into ${targetDir} (npm ${args.join(' ')})`);
   const res = spawn(npmPath, args, {
