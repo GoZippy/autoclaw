@@ -78,7 +78,6 @@ export function buildInstallArgs(targetDir: string, version: string): string[] {
     `sqlite-vec@${version}`,
     '--prefix',
     targetDir,
-    '--no-save',
     '--no-audit',
     '--no-fund',
     '--loglevel=error',

@@ -54,14 +54,13 @@ suite('intelligence — install vector backend', () => {
     }
   });
 
-  test('buildInstallArgs pins the version and installs into the target prefix without saving', () => {
+  test('buildInstallArgs pins the version and installs into the target prefix', () => {
     const args = buildInstallArgs('/tmp/peer', '0.1.6');
     assert.deepStrictEqual(args, [
       'install',
       'sqlite-vec@0.1.6',
       '--prefix',
       '/tmp/peer',
-      '--no-save',
       '--no-audit',
       '--no-fund',
       '--loglevel=error',
