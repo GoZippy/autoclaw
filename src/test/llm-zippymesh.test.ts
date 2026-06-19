@@ -269,6 +269,98 @@ suite('ZippyMeshProvider — recommendModel (S2 HTTP)', () => {
   });
 });
 
+suite('ZippyMeshProvider — embed() (first-class /v1/embeddings)', () => {
+  test('embed() POSTs to /v1/embeddings with x-intent:embed and returns vectors', async () => {
+    const capture: Capture[] = [];
+    const fetchImpl = makeFetch(
+      {
+        status: 200,
+        body: {
+          model: 'nomic-embed-text',
+          data: [
+            { index: 0, embedding: [0.1, 0.2, 0.3] },
+            { index: 1, embedding: [0.4, 0.5, 0.6] },
+          ],
+          usage: { prompt_tokens: 7 },
+        },
+      },
+      capture,
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const r = await p.embed!({ input: ['alpha', 'beta'], model: 'nomic-embed-text' });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.dimension, 3);
+    assert.strictEqual(r.vectors?.length, 2);
+    assert.deepStrictEqual(r.vectors?.[0], [0.1, 0.2, 0.3]);
+    assert.strictEqual(r.tokens?.input, 7);
+    assert.strictEqual(r.tokens?.output, 0);
+    const call = capture.find((c) => c.url.includes('/v1/embeddings'));
+    assert.ok(call, 'must POST to /v1/embeddings');
+    assert.strictEqual(call!.method, 'POST');
+    assert.strictEqual(call!.headers['x-intent'], 'embed', 'must tag the request as an embed intent');
+    assert.deepStrictEqual((call!.body as { input: unknown }).input, ['alpha', 'beta']);
+  });
+
+  test('embed() reorders out-of-order data by index', async () => {
+    const fetchImpl = makeFetch(
+      {
+        status: 200,
+        body: {
+          model: 'm',
+          data: [
+            { index: 1, embedding: [9, 9] },
+            { index: 0, embedding: [1, 1] },
+          ],
+        },
+      },
+      [],
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const r = await p.embed!({ input: ['first', 'second'] });
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(r.vectors?.[0], [1, 1], 'index 0 must come first');
+    assert.deepStrictEqual(r.vectors?.[1], [9, 9]);
+  });
+
+  test('embed() maps 401 to errorClass=auth (no throw)', async () => {
+    const fetchImpl = makeFetch({ status: 401, body: { error: 'no auth' } }, []);
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const r = await p.embed!({ input: 'x' });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.errorClass, 'auth');
+    assert.strictEqual(r.httpStatus, 401);
+  });
+
+  test('embed() returns ok=false when the response carries no usable vectors', async () => {
+    const fetchImpl = makeFetch({ status: 200, body: { model: 'm', data: [] } }, []);
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const r = await p.embed!({ input: 'x' });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.errorClass, 'internal');
+  });
+
+  test('embed() threads session hints via augmentHeaders while keeping x-intent:embed', async () => {
+    const capture: Capture[] = [];
+    const fetchImpl = makeFetch(
+      { status: 200, body: { model: 'm', data: [{ index: 0, embedding: [1, 2] }] } },
+      capture,
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    await p.embed!({ input: 'x', hints: { intent: 'code', sessionParallel: true, sessionId: 'e-1' } });
+    const call = capture.find((c) => c.url.includes('/v1/embeddings'));
+    assert.ok(call);
+    assert.strictEqual(call!.headers['x-intent'], 'embed', 'embed intent must win regardless of hints');
+    assert.strictEqual(call!.headers['x-session-parallel'], 'true', 'session-parallel hint must thread through');
+    assert.strictEqual(call!.headers['x-session-id'], 'e-1', 'session-id hint must thread through');
+  });
+
+  test('capabilities.embeddings is advertised true', () => {
+    const p = new ZippyMeshProvider({ fetchImpl: (async () => new Response('{}')) as typeof fetch });
+    assert.strictEqual(p.capabilities.embeddings, true);
+    assert.strictEqual(typeof p.embed, 'function');
+  });
+});
+
 suite('zippyMeshAugmentHeaders pure function', () => {
   test('empty hints → empty headers', () => {
     const h = zippyMeshAugmentHeaders({});

@@ -4,6 +4,28 @@
 
 ### Added
 
+- **Universal auto-detect embedding ladder** (`src/intelligence/embeddingResolve.ts`).
+  The embedding provider now defaults to `auto`: on first index it probes
+  **router (Zippy Mesh) → ollama → transformers (offline) → none** and PINS the
+  first reachable one (sidecar `.autoclaw/vector/embedding-resolved.json`) so the
+  vector signature stays stable. Resolution probes with a real embed to measure
+  the true dimension (router/ollama model dims vary), re-checks a pinned
+  provider's liveness before reusing it (a router you stop, or an `ollama pull`,
+  is picked up next run), and never pins `none`. So a fresh install gets the best
+  available embeddings with zero configuration, and the log no longer floods.
+- **Zippy Mesh router embedding provider** — `provider: "router"` POSTs to an
+  OpenAI-compatible `/v1/embeddings` (honoring `ZIPPYMESH_HOST`/`ZIPPYMESH_TOKEN`,
+  tagging `x-intent: embed`). One router install serves chat **and** embeddings,
+  and a team can share one embedding node instead of every developer installing a
+  heavy native model. A first-class `embed()` was added to the OpenAI-compatible
+  provider (inherited by ZippyMesh + Ollama) returning an `EmbeddingsResult`, plus
+  a local-first `embeddings-playbook.json` so ZMLR routes embed calls; the
+  intelligence ladder auto-detects the router once it serves embeddings.
+- New commands **AutoClaw: Intelligence — Set Embedding Provider** (Router /
+  Ollama / Offline / Basic, probing the real dimension) and **Detect Embedding
+  Provider** (re-probe + re-pin). Status/Diagnostics report the active provider +
+  pin.
+
 - **Embeddings provider installer** (`src/intelligence/installEmbeddings.ts`,
   command **AutoClaw: Intelligence — Install Embeddings Provider**) — the
   embeddings-side twin of the vector-backend installer. The default `transformers`
@@ -66,6 +88,14 @@
   codebase). The warning is now de-duplicated (warn-once per distinct message) and
   rewritten as an actionable one-liner pointing at the install command / Ollama /
   the `none` setting.
+- **An index no longer silently mixes vector geometries.** Previously a real
+  provider that failed mid-index degraded each affected chunk to `none` (hashed)
+  vectors stored under the real provider's signature — a different geometry the
+  dimension guard could not detect (same dimension), corrupting retrieval. Now
+  `getEmbedding` does not chain across real providers, a pinned provider's
+  liveness is re-checked before a pass starts, and a mid-pass degradation raises
+  the `staleIndex` flag with a clear "re-index" prompt so the corruption is
+  visible and recoverable.
 - **`transformers` embeddings can actually load in the packaged extension.** The
   loader now imports the installed pure-ESM `@xenova/transformers` via a real
   dynamic `import()` of its resolved entry (a `file://` URL), instead of a bare

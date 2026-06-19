@@ -23,7 +23,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const DEFAULT_ZMLR_HOST = 'http://127.0.0.1:20128';
-const SHIPPED_PLAYBOOKS = ['mateam-playbook.json', 'kdream-playbook.json'];
+const SHIPPED_PLAYBOOKS = [
+  'mateam-playbook.json',
+  'kdream-playbook.json',
+  // Lets one ZMLR install serve the Intelligence Layer's RAG embeddings too; the
+  // intelligence auto-detect ladder picks up the router once this route exists.
+  'embeddings-playbook.json',
+];
 
 /* -------------------------------------------------------------------------- */
 /*  Types                                                                     */

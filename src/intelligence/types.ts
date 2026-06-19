@@ -20,18 +20,32 @@
 /** Vector backend that stores embeddings + metadata. */
 export type VectorBackend = 'sqlite-vec' | 'postgres';
 
-/** Embedding provider. `none` is the always-available degraded fallback that
- *  requires no native modules (see the foundation packaging strategy). */
-export type EmbeddingProvider = 'transformers' | 'ollama' | 'none';
+/**
+ * Embedding provider.
+ *  - `auto` (default): probe the ladder router→ollama→transformers→none, then
+ *    PIN the first reachable one (see `embeddingResolve.ts`). Never reaches the
+ *    raw embed path — it is resolved to a concrete provider before any embed.
+ *  - `router`: a Zippy Mesh / OpenAI-compatible router that serves embeddings at
+ *    `POST {routerHost}/v1/embeddings`. One install covers chat + embeddings and
+ *    a team can share one node; no native modules in the extension.
+ *  - `ollama`: a local Ollama server (`POST {ollamaHost}/api/embeddings`).
+ *  - `transformers`: in-process `@xenova/transformers` (fully offline; heavy
+ *    native peer installed on demand — see `installEmbeddings.ts`).
+ *  - `none`: the always-available degraded fallback (deterministic hashed
+ *    bag-of-words) that requires no native modules and no network.
+ */
+export type EmbeddingProvider = 'auto' | 'router' | 'transformers' | 'ollama' | 'none';
 
 export interface EmbeddingConfig {
   provider: EmbeddingProvider;
-  /** Model id, e.g. `Xenova/nomic-embed-text-v1.5`. */
+  /** Model id, e.g. `Xenova/nomic-embed-text-v1.5` or `nomic-embed-text`. */
   model: string;
   /** Vector dimension the active model emits, e.g. 768. */
   dimension: number;
   /** Base URL for a local Ollama server when `provider === 'ollama'`. */
   ollamaHost?: string;
+  /** Base URL for a Zippy Mesh / OpenAI-compatible router when `provider === 'router'`. */
+  routerHost?: string;
 }
 
 export interface PostgresConfig {
