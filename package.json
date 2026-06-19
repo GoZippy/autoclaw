@@ -170,6 +170,10 @@
         "title": "AutoClaw: Intelligence — Status / Manage (locations, sizes, stats)"
       },
       {
+        "command": "autoclaw.intelligence.diagnostics",
+        "title": "AutoClaw: Intelligence — Diagnostics (debug install / paths / version)"
+      },
+      {
         "command": "autoclaw.startKdream",
         "title": "AutoClaw: Start KDream Background Agent"
       },
@@ -416,6 +420,18 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Directory for the cross-project **system** intelligence tier (generally-useful / tool-use / system-wide knowledge that many projects share). Leave blank to disable. Set an absolute path on any drive (e.g. `K:/autoclaw-intelligence`) to enable — never silently placed on C:."
+        },
+        "autoclaw.intelligence.logLevel": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
+          "default": "info",
+          "markdownDescription": "Verbosity of the **AutoClaw — Intelligence** output channel. Raise to `debug` or `trace` to capture resolved paths, npm argv, and environment details when debugging install/retrieval issues. Run **AutoClaw: Intelligence — Diagnostics** for a one-shot environment dump."
         },
         "autoclaw.support.prompts": {
           "type": "boolean",
@@ -728,7 +744,8 @@
     "publish:ovsx": "node scripts/publish-ovsx.js",
     "publish:all": "npm run package && npm run publish:vscode && npm run publish:ovsx",
     "relay:serve": "node out/relay-server/server.js",
-    "rebuild:native": "node scripts/rebuild-native.js"
+    "rebuild:native": "node scripts/rebuild-native.js",
+    "smoke:vector": "node scripts/smoke-vector-install.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",

@@ -121,4 +121,34 @@ suite('intelligence — install vector backend', () => {
   test('VEC_DIR_ENV is the documented env var the loader reads', () => {
     assert.strictEqual(VEC_DIR_ENV, 'AUTOCLAW_SQLITE_VEC_DIR');
   });
+
+  test('seeds a package.json at the target BEFORE spawning npm (npm 7+ --prefix needs it)', () => {
+    const dir = freshDir('seed');
+    let pkgExistedAtSpawn = false;
+    const spawnSpy: any = (_npm: string, _args: string[]) => {
+      pkgExistedAtSpawn = fs.existsSync(path.join(dir, 'package.json'));
+      return { status: 0 };
+    };
+    installVectorBackend({ targetDir: dir, version: '0.1.6', spawn: spawnSpy });
+    assert.strictEqual(pkgExistedAtSpawn, true, 'package.json must be seeded before npm runs');
+    assert.ok(fs.existsSync(path.join(dir, 'package.json')));
+  });
+
+  test('resolves a relative target to ABSOLUTE and runs npm FROM it (cwd === --prefix)', () => {
+    const abs = freshDir('rel');
+    const rel = path.relative(process.cwd(), abs); // a relative spelling of the same dir
+    let seenArgs: string[] = [];
+    let seenCwd: string | undefined;
+    const spawnSpy: any = (_npm: string, args: string[], opts: { cwd?: string }) => {
+      seenArgs = args;
+      seenCwd = opts?.cwd;
+      return { status: 0 };
+    };
+    installVectorBackend({ targetDir: rel, version: '0.1.6', spawn: spawnSpy });
+    const prefixIdx = seenArgs.indexOf('--prefix');
+    const prefixVal = seenArgs[prefixIdx + 1];
+    assert.ok(path.isAbsolute(prefixVal), `--prefix must be absolute, got ${prefixVal}`);
+    assert.strictEqual(prefixVal, abs, '--prefix must resolve to the intended absolute dir');
+    assert.strictEqual(seenCwd, abs, 'npm cwd must equal the absolute target so the seed is found');
+  });
 });
