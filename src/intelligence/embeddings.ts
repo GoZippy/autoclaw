@@ -24,13 +24,20 @@
  * touches the network.
  */
 
-// @xenova/transformers is an optionalDependency, loaded dynamically at runtime.
-declare module '@xenova/transformers' {
-  export function pipeline(task: string, model: string): Promise<CallableFunction>;
-}
+// `@xenova/transformers` is an optionalDependency loaded dynamically at runtime
+// (see `loadTransformersModule`); it has no static import, so its shape is typed
+// locally via the `TransformersModule` interface below rather than an ambient
+// `declare module`.
+
+import { pathToFileURL } from 'url';
 
 import { EmbeddingConfig } from './types';
 import { LogFn } from './config';
+import {
+  resolveInstalledTransformersEntry,
+  TRANSFORMERS_DIR_ENV,
+  TRANSFORMERS_CACHE_ENV,
+} from './installEmbeddings';
 
 // ---------------------------------------------------------------------------
 // Module-scope cache for the transformers pipeline (R2.2 — cached, lazy)
@@ -38,6 +45,30 @@ import { LogFn } from './config';
 
 let cachedPipeline: unknown | null = null;
 let cachedModel: string | null = null;
+
+// A REAL dynamic `import()`. Under `module: commonjs` (this project's tsconfig)
+// TypeScript downlevels a literal `import()` into `Promise.resolve().then(() =>
+// require(...))`, and `require()` can neither load an ESM `file://` URL nor a
+// pure-ESM package — exactly the two things the transformers loader must do.
+// Building the import through the Function constructor hides it from the
+// transpiler so the native, spec-compliant dynamic import survives.
+const esmImport = new Function('specifier', 'return import(specifier);') as (
+  specifier: string,
+) => Promise<Record<string, unknown>>;
+
+// De-dupe noisy provider warnings: a failed index embeds every chunk, so a raw
+// per-call warn floods the output with thousands of identical lines. Warn once
+// per distinct message for the lifetime of the module (reset in tests).
+const warnedKeys = new Set<string>();
+
+/** Emit `msg` through `warn` at most once per distinct `key` (de-spam). */
+function warnOnce(warn: LogFn, key: string, msg: string): void {
+  if (warnedKeys.has(key)) {
+    return;
+  }
+  warnedKeys.add(key);
+  warn(msg);
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -70,7 +101,15 @@ export async function getEmbedding(
         return getNoneEmbedding(text, config.dimension);
     }
   } catch (err) {
-    warn(`embedding: ${config.provider} failed (${(err as Error).message}); falling back to none`);
+    const msg = (err as Error).message;
+    warnOnce(
+      warn,
+      `provider-fail:${config.provider}:${msg.slice(0, 120)}`,
+      `embedding: ${config.provider} provider unavailable (${msg}); using basic 'none' ` +
+        `embeddings for now (lower retrieval quality). Run "AutoClaw: Intelligence — Install ` +
+        `Embeddings Provider", switch to Ollama, or set embedding.provider to 'none' to silence ` +
+        `this. (further identical warnings this session are suppressed)`,
+    );
     return getNoneEmbedding(text, config.dimension);
   }
 }
@@ -102,11 +141,53 @@ async function getOrCreatePipeline(model: string): Promise<unknown> {
     return cachedPipeline;
   }
 
-  // Dynamic import — never runs at module load (R2.5)
-  const { pipeline } = await import('@xenova/transformers');
-  cachedPipeline = await pipeline('feature-extraction', model);
+  // Dynamic import — never runs at module load (R2.5).
+  const mod = await loadTransformersModule();
+  configureTransformersCache(mod.env);
+  cachedPipeline = await mod.pipeline('feature-extraction', model);
   cachedModel = model;
   return cachedPipeline;
+}
+
+/** The slice of the `@xenova/transformers` module surface this layer touches. */
+interface TransformersModule {
+  pipeline: (task: string, model: string) => Promise<CallableFunction>;
+  /** Mutable global env (cacheDir, allowRemoteModels, …); absent on odd builds. */
+  env?: Record<string, unknown>;
+}
+
+/**
+ * Resolve `@xenova/transformers`, preferring a user-installed copy under
+ * {@link TRANSFORMERS_DIR_ENV} (set by the install command) and falling back to
+ * a bare specifier (which works in the dev tree where the package is a real
+ * dependency). The installed copy is a pure-ESM package with no `exports` map,
+ * so it must be imported by `file://` URL of its resolved entry — a bare
+ * `import('@xenova/transformers')` cannot find it in the packaged extension.
+ */
+async function loadTransformersModule(): Promise<TransformersModule> {
+  const dir = process.env[TRANSFORMERS_DIR_ENV];
+  if (dir && dir.trim() !== '') {
+    const entry = resolveInstalledTransformersEntry(dir);
+    if (entry) {
+      return (await esmImport(pathToFileURL(entry).href)) as unknown as TransformersModule;
+    }
+  }
+  // Fallback: standard module resolution (dev tree / hoisted node_modules).
+  return (await esmImport('@xenova/transformers')) as unknown as TransformersModule;
+}
+
+/**
+ * Point the transformers model cache at the configured dir (set by the install
+ * command from {@link TRANSFORMERS_CACHE_ENV}) so multi-hundred-MB model weights
+ * download to a project-local / user-chosen location instead of silently to a
+ * home/C: cache. No-op when unset or when the env shape is unexpected.
+ */
+function configureTransformersCache(env: Record<string, unknown> | undefined): void {
+  const cache = process.env[TRANSFORMERS_CACHE_ENV];
+  if (env && cache && cache.trim() !== '') {
+    env.cacheDir = cache;
+    env.allowRemoteModels = true; // permit the first-run download from the model hub
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -142,13 +223,17 @@ async function getOllamaEmbeddingWithFallback(
   try {
     return await getOllamaEmbedding(text, config);
   } catch (err) {
-    warn(
+    warnOnce(
+      warn,
+      `ollama-fail:${(err as Error).message.slice(0, 120)}`,
       `embedding: ollama failed (${(err as Error).message}); falling back to transformers`,
     );
     try {
       return await getTransformersEmbedding(text, config);
     } catch (err2) {
-      warn(
+      warnOnce(
+        warn,
+        `ollama-transformers-fail:${(err2 as Error).message.slice(0, 120)}`,
         `embedding: transformers fallback failed (${(err2 as Error).message}); ` +
           `falling back to none`,
       );
@@ -350,8 +435,9 @@ function fnv1aHash(str: string): number {
 // Testing helpers (exported for unit tests only)
 // ---------------------------------------------------------------------------
 
-/** Reset the cached pipeline — for testing teardown. */
+/** Reset the cached pipeline + warn-once ledger — for testing teardown. */
 export function _resetPipelineCache(): void {
   cachedPipeline = null;
   cachedModel = null;
+  warnedKeys.clear();
 }

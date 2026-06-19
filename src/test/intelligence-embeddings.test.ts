@@ -12,12 +12,19 @@
  */
 
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 import {
   getEmbedding,
   getNoneEmbedding,
   _resetPipelineCache,
 } from '../intelligence/embeddings';
+import {
+  TRANSFORMERS_DIR_ENV,
+  TRANSFORMERS_CACHE_ENV,
+} from '../intelligence/installEmbeddings';
 import { EmbeddingConfig } from '../intelligence/types';
 
 // ---------------------------------------------------------------------------
@@ -84,10 +91,11 @@ suite('intelligence-embeddings: transformers fallback', function () {
 
     // Should have produced a valid vector (from the none fallback)
     assert.strictEqual(vec.length, 768, 'fallback must still return correct dimension');
-    // Should have logged a warning mentioning the failure
+    // Should have logged a warning mentioning the provider was unavailable + the
+    // basic-'none' degrade (the de-spammed, actionable message).
     assert.ok(
-      warnings.some((w) => /fall(ing)?\s*back/i.test(w)),
-      `expected a fallback warning, got: ${JSON.stringify(warnings)}`,
+      warnings.some((w) => /provider unavailable|basic 'none'/i.test(w)),
+      `expected a provider-unavailable warning, got: ${JSON.stringify(warnings)}`,
     );
   });
 });
@@ -112,6 +120,101 @@ suite('intelligence-embeddings: unknown provider fallback', function () {
     assert.ok(
       warnings.some((w) => /unknown provider/i.test(w)),
       `expected unknown-provider warning, got: ${JSON.stringify(warnings)}`,
+    );
+  });
+});
+
+suite('intelligence-embeddings: installed-dir provider + de-spam', function () {
+  let tmpRoot: string;
+
+  suiteSetup(function () {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ac-embed-loader-'));
+  });
+  suiteTeardown(function () {
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch {
+      /* best effort */
+    }
+  });
+  teardown(function () {
+    delete process.env[TRANSFORMERS_DIR_ENV];
+    delete process.env[TRANSFORMERS_CACHE_ENV];
+    _resetPipelineCache();
+  });
+
+  /** Plant a fake ESM `@xenova/transformers` under `dir` whose entry is `mjs`. */
+  function plant(dir: string, mjs: string): void {
+    const pkgDir = path.join(dir, 'node_modules', '@xenova', 'transformers');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'entry.mjs'), mjs, 'utf8');
+    fs.writeFileSync(
+      path.join(pkgDir, 'package.json'),
+      JSON.stringify({ name: '@xenova/transformers', version: '0.0.0', type: 'module', main: './entry.mjs' }),
+      'utf8',
+    );
+  }
+
+  test('resolves @xenova/transformers from AUTOCLAW_TRANSFORMERS_DIR and uses its pipeline', async function () {
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'ok-'));
+    // Fake pipeline returns a constant 768-wide vector; proves the installed
+    // entry (not the `none` fallback) produced the embedding.
+    plant(
+      dir,
+      'export const env = {};\n' +
+        'export async function pipeline(task, model) {\n' +
+        '  return async (text, opts) => ({ data: Float32Array.from({ length: 768 }, () => 0.5) });\n' +
+        '}\n',
+    );
+    process.env[TRANSFORMERS_DIR_ENV] = dir;
+    process.env[TRANSFORMERS_CACHE_ENV] = path.join(dir, 'cache');
+
+    const warnings: string[] = [];
+    const vec = await getEmbedding('hello', transformersConfig(768), (m) => warnings.push(m));
+
+    assert.strictEqual(vec.length, 768, 'must use the installed pipeline output dimension');
+    assert.strictEqual(vec[0], 0.5, 'value must come from the planted pipeline, not the none fallback');
+    assert.deepStrictEqual(warnings, [], 'a successful load must not warn');
+  });
+
+  test('warns once (de-spam) across many failing embed calls', async function () {
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'boom-'));
+    plant(dir, "throw new Error('boom: deliberately broken transformers build');\n");
+    process.env[TRANSFORMERS_DIR_ENV] = dir;
+
+    const warnings: string[] = [];
+    const cfg = transformersConfig(768);
+    // Simulate indexing many chunks — each call fails to load the provider.
+    for (let i = 0; i < 25; i++) {
+      const vec = await getEmbedding(`chunk ${i}`, cfg, (m) => warnings.push(m));
+      assert.strictEqual(vec.length, 768, 'each call still returns a none-fallback vector');
+    }
+    const providerWarnings = warnings.filter((w) => /provider unavailable|basic 'none'/i.test(w));
+    assert.strictEqual(
+      providerWarnings.length,
+      1,
+      `expected exactly one de-duped provider warning across 25 calls, got ${warnings.length}: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  test('the warn-once ledger resets with the pipeline cache', async function () {
+    const dir = fs.mkdtempSync(path.join(tmpRoot, 'reset-'));
+    plant(dir, "throw new Error('boom');\n");
+    process.env[TRANSFORMERS_DIR_ENV] = dir;
+    const cfg = transformersConfig(768);
+
+    const first: string[] = [];
+    await getEmbedding('a', cfg, (m) => first.push(m));
+    assert.strictEqual(first.filter((w) => /provider unavailable/i.test(w)).length, 1);
+
+    _resetPipelineCache(); // clears warnedKeys
+
+    const second: string[] = [];
+    await getEmbedding('b', cfg, (m) => second.push(m));
+    assert.strictEqual(
+      second.filter((w) => /provider unavailable/i.test(w)).length,
+      1,
+      'after reset, the warning is allowed to fire again',
     );
   });
 });

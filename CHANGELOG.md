@@ -4,6 +4,19 @@
 
 ### Added
 
+- **Embeddings provider installer** (`src/intelligence/installEmbeddings.ts`,
+  command **AutoClaw: Intelligence — Install Embeddings Provider**) — the
+  embeddings-side twin of the vector-backend installer. The default `transformers`
+  provider depends on `@xenova/transformers`, which is excluded from the packaged
+  `.vsix` (~135 MB of native peers), so a packaged install could never load it and
+  silently degraded to the low-quality `none` provider. The new command installs
+  `@xenova/transformers` **project-local** (into the same `<workspace>/.autoclaw/
+  native` dir as sqlite-vec — never forced onto C:), and the loader resolves it
+  from there. A first-run prompt before indexing offers **Install semantic /
+  Use Ollama / Keep basic**. New setting `autoclaw.intelligence.modelCacheDir`
+  controls where model weights download (default project-local
+  `<workspace>/.autoclaw/models`, relocatable to any drive). The **Status** report
+  now shows the active embeddings provider + whether it is installed.
 - **In-process Knowledge Graph** (`src/intelligence/kg/`) — the shared agent
   Knowledge Graph now runs inside the extension on the Intelligence Layer's
   `node:sqlite` store, so it is ABI-proof (survives IDE/Electron updates), needs
@@ -36,6 +49,20 @@
   no longer spawned by the extension and is no longer on the critical path. It
   remains available as an optional HTTP server for non-Node external agents.
   See `docs/ideas/KG-INTELLIGENCE-CONVERGENCE.md`.
+
+### Fixed
+
+- **Indexing no longer floods the output channel.** When the embeddings provider
+  failed to load, `/index-code` logged the same `transformers failed (Cannot find
+  module …)` warning once **per chunk** (thousands of identical lines on a real
+  codebase). The warning is now de-duplicated (warn-once per distinct message) and
+  rewritten as an actionable one-liner pointing at the install command / Ollama /
+  the `none` setting.
+- **`transformers` embeddings can actually load in the packaged extension.** The
+  loader now imports the installed pure-ESM `@xenova/transformers` via a real
+  dynamic `import()` of its resolved entry (a `file://` URL), instead of a bare
+  specifier that TypeScript downleveled to `require()` under `module: commonjs`
+  (which cannot load an ESM `file://` URL or a pure-ESM package).
 
 ## [3.5.0] - 2026-06-15
 
