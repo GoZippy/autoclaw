@@ -79,20 +79,28 @@ suite('embeddingResolve: auto → none when nothing is reachable', function () {
 });
 
 suite('embeddingResolve: sidecar pin', function () {
-  test('a present pin short-circuits resolution (source=pinned, no probe)', async function () {
+  test('a present, still-reachable pin short-circuits resolution (source=pinned)', async function () {
     const ws = tmpWorkspace();
     const vectorDir = path.join(ws, '.autoclaw', 'vector');
     fs.mkdirSync(vectorDir, { recursive: true });
+    // Pin `transformers` — its liveness check is an ON-DISK install probe (no
+    // network), keeping this test hermetic (CI has no Ollama/router). The
+    // liveness gate re-verifies a pin before reuse, so we plant a fake install.
     fs.writeFileSync(
       path.join(vectorDir, 'embedding-resolved.json'),
-      JSON.stringify({ provider: 'ollama', model: 'nomic-embed-text', dimension: 768, resolvedAt: '2026-01-01T00:00:00Z' }),
+      JSON.stringify({ provider: 'transformers', model: 'Xenova/nomic-embed-text-v1.5', dimension: 768, resolvedAt: '2026-01-01T00:00:00Z' }),
     );
-    // Point hosts at a dead port to PROVE no probe runs (a probe would fail).
+    const tdir = tmpWorkspace();
+    const pkgDir = path.join(tdir, 'node_modules', '@xenova', 'transformers');
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: '@xenova/transformers', main: 'index.js' }));
+    fs.writeFileSync(path.join(pkgDir, 'index.js'), 'module.exports = {};');
+    // Dead network hosts prove the pin is honored via the on-disk check, not a probe.
     const cfg = autoConfig({ routerHost: DEAD, ollamaHost: DEAD });
-    const res = await resolveEmbeddingConfig(cfg, ws);
+    const res = await resolveEmbeddingConfig(cfg, ws, { transformersDir: tdir });
     assert.strictEqual(res.source, 'pinned');
-    assert.strictEqual(res.provider, 'ollama');
-    assert.strictEqual(res.config.embedding.model, 'nomic-embed-text');
+    assert.strictEqual(res.provider, 'transformers');
+    assert.strictEqual(res.config.embedding.model, 'Xenova/nomic-embed-text-v1.5');
     assert.strictEqual(res.config.embedding.dimension, 768);
   });
 
