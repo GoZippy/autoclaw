@@ -5,19 +5,20 @@
  *
  * Owns the embedding persistence + semantic-search round-trip described by the
  * core-loop design (R3.1-R3.5, D11):
- *   - `initVectorDB` lazily requires `better-sqlite3` + `sqlite-vec`, opens (or
- *     creates) the `.autoclaw/vector/db.sqlite` database, loads the sqlite-vec
- *     extension, and provisions a `vec0` virtual table plus a `meta` row that
- *     records the active embedding model + dimension.
+ *   - `initVectorDB` opens (or creates) the `.autoclaw/vector/db.sqlite` database
+ *     via {@link import('./sqliteDriver').openSqliteDriver} — which prefers the
+ *     ABI-proof `node:sqlite` core module and falls back to native
+ *     `better-sqlite3` — loads the sqlite-vec extension, and provisions a `vec0`
+ *     virtual table plus a `meta` row recording the active embedding model + dim.
  *   - `storeEmbedding` writes a row under an `acquireLock(dbPath)` advisory lock.
  *   - `semanticVectorSearch` runs a KNN query, ranks by cosine similarity, filters
  *     by `minSimilarity` and the project namespace, and caps at `limit`.
  *
- * Degrade path (R3.1): the native backend (better-sqlite3 / sqlite-vec) is an
- * optionalDependency. If it cannot load or initialize, `initVectorDB` NEVER
- * throws — it returns a `degraded` handle whose `storeEmbedding` is a no-op and
- * whose `semanticVectorSearch` returns `[]`, and surfaces
- * "vector backend unavailable; using none/no-RAG" through the injected logger.
+ * Degrade path (R3.1): both SQLite drivers are optional. If NEITHER can load or
+ * initialize, `initVectorDB` NEVER throws — it returns a `degraded` handle whose
+ * `storeEmbedding` is a no-op and whose `semanticVectorSearch` returns `[]`, and
+ * surfaces "vector backend unavailable; using none/no-RAG" through the injected
+ * logger.
  *
  * No `vscode` import; no work or native require at module load time.
  */
@@ -27,6 +28,7 @@ import { LogFn } from '../config';
 import { EmbeddingSignature } from '../types';
 import { ensureDir } from '../paths';
 import { acquireLock } from '../fileLock';
+import { SqliteDriver, openSqliteDriver } from './sqliteDriver';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -228,20 +230,20 @@ class SqliteVectorDB implements VectorDB {
   private readonly deleteByPrefixStmt: any;
 
   constructor(
-    private readonly db: any,
+    private readonly driver: SqliteDriver,
     private readonly dbPath: string,
     readonly model: string,
     readonly dimension: number,
     readonly staleIndex: boolean,
     private readonly warn: LogFn,
   ) {
-    this.insertStmt = db.prepare(
+    this.insertStmt = driver.prepare(
       `INSERT INTO ${VEC_TABLE} ` +
         `(id, embedding, source, project, content, timestamp, metadata) ` +
         `VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
-    this.deleteByIdStmt = db.prepare(`DELETE FROM ${VEC_TABLE} WHERE id = ?`);
-    this.deleteByPrefixStmt = db.prepare(
+    this.deleteByIdStmt = driver.prepare(`DELETE FROM ${VEC_TABLE} WHERE id = ?`);
+    this.deleteByPrefixStmt = driver.prepare(
       `DELETE FROM ${VEC_TABLE} WHERE id LIKE ? ESCAPE '\\'`,
     );
   }
@@ -291,7 +293,7 @@ class SqliteVectorDB implements VectorDB {
     // deletes + inserts into one synchronous transaction under one lock.
     const release = await acquireLock(this.dbPath);
     try {
-      const tx = this.db.transaction(() => {
+      this.driver.transaction(() => {
         for (const prefix of prefixes) {
           this.deleteByPrefixStmt.run(`${escapeLike(prefix)}%`);
         }
@@ -301,7 +303,6 @@ class SqliteVectorDB implements VectorDB {
           this.insertStmt.run(...row);
         }
       });
-      tx();
     } finally {
       release();
     }
@@ -338,7 +339,7 @@ class SqliteVectorDB implements VectorDB {
     const sql =
       `SELECT id FROM ${VEC_TABLE}` + (where.length ? ` WHERE ${where.join(' AND ')}` : '');
     try {
-      const rows: any[] = this.db.prepare(sql).all(...params);
+      const rows: any[] = this.driver.prepare(sql).all(...params);
       return rows.map((r) => String(r.id));
     } catch (err) {
       this.warn(`vector: listIds failed (${(err as Error).message})`);
@@ -383,7 +384,7 @@ class SqliteVectorDB implements VectorDB {
 
     let rows: any[];
     try {
-      rows = this.db.prepare(sql).all(...params);
+      rows = this.driver.prepare(sql).all(...params);
     } catch (err) {
       this.warn(`vector: search failed (${(err as Error).message})`);
       return [];
@@ -412,7 +413,7 @@ class SqliteVectorDB implements VectorDB {
 
   close(): void {
     try {
-      this.db.close();
+      this.driver.close();
     } catch {
       // closing must never throw
     }
@@ -440,14 +441,8 @@ export async function initVectorDB(
 ): Promise<VectorDB> {
   const warn: LogFn = log ?? (() => undefined);
 
-  let db: any;
+  let driver: SqliteDriver | undefined;
   try {
-    // Lazy require — native modules are optionalDependencies (R3.1).
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Database = require('better-sqlite3');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const sqliteVec = require('sqlite-vec');
-
     // Ensure the parent directory exists before opening the DB file.
     const slash = dbPath.replace(/\\/g, '/');
     const lastSlash = slash.lastIndexOf('/');
@@ -455,25 +450,27 @@ export async function initVectorDB(
       await ensureDir(slash.slice(0, lastSlash));
     }
 
-    db = new Database(dbPath);
-    sqliteVec.load(db);
+    // Open the first working SQLite driver: node:sqlite (ABI-proof core module)
+    // preferred, native better-sqlite3 as fallback. The sqlite-vec loadable
+    // extension is loaded inside the driver. Throws only if BOTH fail → degrade.
+    driver = openSqliteDriver(dbPath, warn);
 
     // Concurrency hygiene (issue: KDream / parallel agents share `.autoclaw`).
     // WAL lets readers proceed while a writer holds the lock; busy_timeout makes
     // a contended open wait briefly instead of throwing SQLITE_BUSY immediately.
     try {
-      db.pragma('journal_mode = WAL');
-      db.pragma('busy_timeout = 5000');
+      driver.exec('PRAGMA journal_mode = WAL');
+      driver.exec('PRAGMA busy_timeout = 5000');
     } catch {
       // pragmas are best-effort — never fail init over them
     }
 
     // Meta table records the active embedding identity (model + dimension).
-    db.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`);
+    driver.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)`);
 
     // If a prior run provisioned the vec0 table, its dimension is fixed — adopt
     // the stored dimension so inserts/queries stay consistent (mismatch guard).
-    const existingDim = readMetaNumber(db, 'dimension');
+    const existingDim = readMetaNumber(driver, 'dimension');
     let dimension = signature.dimension;
     if (existingDim !== undefined && existingDim !== signature.dimension) {
       warn(
@@ -490,10 +487,10 @@ export async function initVectorDB(
     // that survives reopen and keeps signalling until a `--force` rebuild clears
     // it. A forced rebuild re-embeds the corpus with the active model, so it is
     // the event that resolves the staleness.
-    const existingModel = readMetaString(db, 'model');
+    const existingModel = readMetaString(driver, 'model');
     const modelChanged = existingModel !== undefined && existingModel !== signature.model;
 
-    let staleIndex = readMetaString(db, 'stale_index') === '1';
+    let staleIndex = readMetaString(driver, 'stale_index') === '1';
     if (opts?.forceRebuild) {
       // Forced rebuild refreshes vectors with the active model — clear staleness.
       staleIndex = false;
@@ -519,7 +516,7 @@ export async function initVectorDB(
 
     // vec0 virtual table: cosine distance, project/source as filterable metadata
     // columns, content/timestamp/metadata as auxiliary (`+`) stored columns.
-    db.exec(
+    driver.exec(
       `CREATE VIRTUAL TABLE IF NOT EXISTS ${VEC_TABLE} USING vec0(\n` +
         `  id TEXT PRIMARY KEY,\n` +
         `  embedding FLOAT[${dimension}] distance_metric=cosine,\n` +
@@ -531,16 +528,16 @@ export async function initVectorDB(
         `)`,
     );
 
-    const upsertMeta = db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`);
+    const upsertMeta = driver.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`);
     upsertMeta.run('model', signature.model);
     upsertMeta.run('dimension', String(dimension));
     upsertMeta.run('stale_index', staleIndex ? '1' : '0');
 
-    return new SqliteVectorDB(db, dbPath, signature.model, dimension, staleIndex, warn);
+    return new SqliteVectorDB(driver, dbPath, signature.model, dimension, staleIndex, warn);
   } catch (err) {
-    if (db) {
+    if (driver) {
       try {
-        db.close();
+        driver.close();
       } catch {
         // ignore
       }
@@ -550,8 +547,8 @@ export async function initVectorDB(
   }
 }
 
-function readMetaNumber(db: any, key: string): number | undefined {
-  const raw = readMetaString(db, key);
+function readMetaNumber(driver: SqliteDriver, key: string): number | undefined {
+  const raw = readMetaString(driver, key);
   if (raw !== undefined) {
     const n = Number(raw);
     if (Number.isFinite(n)) {
@@ -561,9 +558,9 @@ function readMetaNumber(db: any, key: string): number | undefined {
   return undefined;
 }
 
-function readMetaString(db: any, key: string): string | undefined {
+function readMetaString(driver: SqliteDriver, key: string): string | undefined {
   try {
-    const row = db.prepare(`SELECT value FROM meta WHERE key = ?`).get(key);
+    const row = driver.prepare(`SELECT value FROM meta WHERE key = ?`).get(key);
     if (row && typeof row.value === 'string') {
       return row.value;
     }

@@ -18,9 +18,34 @@
  * only on invocation.
  */
 
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
+import {
+  installVectorBackend,
+  isBackendInstalled,
+  VEC_DIR_ENV,
+} from './intelligence/installBackend';
+import {
+  resolveBackendDir,
+  gatherStorageStatus,
+  formatBytes,
+  systemPaths,
+  relocateStore,
+} from './intelligence/storage';
+import {
+  ensureSystemStore,
+  upsertProject,
+  readRegistry,
+  promoteInsight,
+  readSystemLearnings,
+  searchSystemLearnings,
+  parseInsightItems,
+} from './intelligence/systemStore';
+import { buildSteeringMarkdown } from './intelligence/steering';
+import { buildSkillScaffold, slugify } from './intelligence/toolScaffold';
 import {
   LogFn,
   learnFromSessions,
@@ -68,10 +93,36 @@ function getChannel(): vscode.OutputChannel {
   return channel;
 }
 
-/** Append a timestamped line to the output channel. */
-function logLine(msg: string): void {
-  getChannel().appendLine(`[${new Date().toISOString()}] ${msg}`);
+// ---------------------------------------------------------------------------
+// Leveled logging
+// ---------------------------------------------------------------------------
+
+type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
+const LEVEL_RANK: Record<LogLevel, number> = { error: 0, warn: 1, info: 2, debug: 3, trace: 4 };
+
+/** The configured verbosity (`autoclaw.intelligence.logLevel`, default `info`). */
+function configuredLevel(): LogLevel {
+  const raw = vscode.workspace
+    .getConfiguration('autoclaw.intelligence')
+    .get<string>('logLevel', 'info');
+  return (raw in LEVEL_RANK ? raw : 'info') as LogLevel;
 }
+
+/** Emit a line at `level` when the configured verbosity allows it. */
+function logAt(level: LogLevel, msg: string): void {
+  if (LEVEL_RANK[level] <= LEVEL_RANK[configuredLevel()]) {
+    getChannel().appendLine(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
+  }
+}
+
+/** Append an info-level timestamped line. Back-compat `LogFn` sink. */
+function logLine(msg: string): void {
+  logAt('info', msg);
+}
+
+const logError = (msg: string): void => logAt('error', msg);
+const logWarn = (msg: string): void => logAt('warn', msg);
+const logDebug = (msg: string): void => logAt('debug', msg);
 
 /**
  * Has the project ever produced a vector store? Used by the R6.4 guard: when the
@@ -117,6 +168,11 @@ async function runLearn(workspaceRoot: string): Promise<void> {
     `Intelligence: learned ${summary.patterns} pattern(s) + ${summary.workflowsMined} workflow(s) ` +
       `from ${summary.sessionsAnalyzed} session(s).`,
   );
+  recordProjectInSystemTier(workspaceRoot, {
+    learnSessions: summary.sessionsAnalyzed,
+    lastLearnedAt: new Date().toISOString(),
+  });
+  promoteLatestInsightToSystem(workspaceRoot);
 }
 
 async function runIndexCode(workspaceRoot: string): Promise<void> {
@@ -185,6 +241,197 @@ async function runIndexCode(workspaceRoot: string): Promise<void> {
   void vscode.window.showInformationMessage(
     `Intelligence: indexed ${result.filesIndexed} file(s) / ${result.chunksIndexed} chunk(s).`,
   );
+  recordProjectInSystemTier(workspaceRoot, {
+    indexChunks: result.chunksIndexed,
+    lastIndexedAt: new Date().toISOString(),
+  });
+}
+
+/**
+ * Register the project + run stats in the cross-project system registry. No-op
+ * unless `autoclaw.intelligence.systemDir` is configured. Best-effort: never
+ * blocks or throws into the command.
+ */
+function recordProjectInSystemTier(
+  workspaceRoot: string,
+  fields: {
+    indexChunks?: number;
+    lastIndexedAt?: string;
+    learnSessions?: number;
+    lastLearnedAt?: string;
+  },
+): void {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    return;
+  }
+  try {
+    ensureSystemStore(sys);
+    upsertProject(sys.registryPath, {
+      path: workspaceRoot,
+      name: path.basename(workspaceRoot),
+      ...fields,
+    });
+    logLine(`system-tier: registered ${path.basename(workspaceRoot)} in ${sys.registryPath}`);
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
+ * After a learn run, promote the distilled pattern bullets of the newest insight
+ * into the cross-project system store (deduped). No-op unless a system dir is set.
+ * Best-effort.
+ */
+/** Read the newest `insight-*.md` from the project's learnings dir, or undefined. */
+function latestInsightMarkdown(workspaceRoot: string): string | undefined {
+  try {
+    const learningsDir = intelligencePaths(workspaceRoot).learningsDir;
+    const insights = fs
+      .readdirSync(learningsDir)
+      .filter((f) => /^insight-.*\.md$/.test(f))
+      .map((f) => ({ f, m: fs.statSync(path.join(learningsDir, f)).mtimeMs }))
+      .sort((a, b) => b.m - a.m);
+    if (insights.length === 0) {
+      return undefined;
+    }
+    return fs.readFileSync(path.join(learningsDir, insights[0].f), 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+function promoteLatestInsightToSystem(workspaceRoot: string): void {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    return;
+  }
+  const md = latestInsightMarkdown(workspaceRoot);
+  if (!md) {
+    return;
+  }
+  try {
+    const res = promoteInsight(sys, {
+      project: workspaceRoot,
+      insightMarkdown: md,
+      capturedAt: new Date().toISOString(),
+    });
+    if (res.promoted > 0) {
+      logLine(`system-tier: promoted ${res.promoted}/${res.scanned} distilled learning(s) to ${sys.root}`);
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+/**
+ * `autoclaw.intelligence.generateSteering` — write a steering file from the
+ * distilled learnings (latest insight + optional system tier) so any agent can
+ * pick up this project's learned conventions. Writes `<workspace>/.autoclaw/steering.md`.
+ */
+async function runGenerateSteering(workspaceRoot: string): Promise<void> {
+  const md = latestInsightMarkdown(workspaceRoot);
+  if (!md) {
+    void vscode.window.showWarningMessage(
+      'Intelligence: no learnings yet. Run "Learn from Sessions" first, then generate steering.',
+    );
+    return;
+  }
+  const items = parseInsightItems(md);
+  const byKind = (kind: string): string[] => items.filter((i) => i.kind === kind).map((i) => i.text);
+
+  const sys = systemPaths(systemDirSetting());
+  const systemLearnings = sys
+    ? readSystemLearnings(sys).slice(-12).map((l) => ({ text: l.text, kind: l.kind, project: path.basename(l.project) }))
+    : undefined;
+
+  const steering = buildSteeringMarkdown({
+    projectName: path.basename(workspaceRoot),
+    generatedAt: new Date().toISOString(),
+    patterns: byKind('pattern'),
+    avoid: byKind('avoid'),
+    tools: byKind('tool'),
+    systemLearnings,
+  });
+
+  const outPath = path.join(intelligencePaths(workspaceRoot).root, 'steering.md');
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, steering, 'utf8');
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed to write steering file: ${String(err)}`);
+    return;
+  }
+  logLine(`generate-steering: wrote ${toForwardSlashLocal(outPath)}`);
+  const choice = await vscode.window.showInformationMessage(
+    `Intelligence: steering written to .autoclaw/steering.md (${items.length} learned item(s)).`,
+    'Open',
+  );
+  if (choice === 'Open') {
+    const doc = await vscode.workspace.openTextDocument(outPath);
+    void vscode.window.showTextDocument(doc);
+  }
+}
+
+/** Local forward-slash helper for log output (paths.ts' toForwardSlash is host-free too). */
+function toForwardSlashLocal(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
+/**
+ * `autoclaw.intelligence.generateScaffold` — scaffold a new skill/tool stub
+ * (SKILL.md) seeded with this project's learned conventions, written under
+ * `<workspace>/.autoclaw/scaffolds/<slug>.md`.
+ */
+async function runGenerateScaffold(workspaceRoot: string): Promise<void> {
+  const name = await vscode.window.showInputBox({
+    title: 'Generate Skill/Tool Scaffold',
+    prompt: 'Name of the new skill/tool',
+    placeHolder: 'e.g. Release Checklist',
+    ignoreFocusOut: true,
+  });
+  if (!name || name.trim() === '') {
+    return;
+  }
+  const purpose =
+    (await vscode.window.showInputBox({
+      title: 'Generate Skill/Tool Scaffold',
+      prompt: 'One-line purpose (optional)',
+      ignoreFocusOut: true,
+    })) ?? '';
+
+  const md = latestInsightMarkdown(workspaceRoot);
+  const items = md ? parseInsightItems(md) : [];
+  const scaffold = buildSkillScaffold({
+    name: name.trim(),
+    purpose: purpose.trim(),
+    projectName: path.basename(workspaceRoot),
+    conventions: items.filter((i) => i.kind === 'pattern').map((i) => i.text),
+    avoid: items.filter((i) => i.kind === 'avoid').map((i) => i.text),
+    generatedAt: new Date().toISOString(),
+  });
+
+  const outPath = path.join(
+    intelligencePaths(workspaceRoot).root,
+    'scaffolds',
+    `${slugify(name)}.md`,
+  );
+  try {
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, scaffold, 'utf8');
+  } catch (err) {
+    void vscode.window.showErrorMessage(`Failed to write scaffold: ${String(err)}`);
+    return;
+  }
+  logLine(`generate-scaffold: wrote ${toForwardSlashLocal(outPath)}`);
+  const choice = await vscode.window.showInformationMessage(
+    `Intelligence: scaffold written to .autoclaw/scaffolds/${slugify(name)}.md.`,
+    'Open',
+  );
+  if (choice === 'Open') {
+    const doc = await vscode.workspace.openTextDocument(outPath);
+    void vscode.window.showTextDocument(doc);
+  }
 }
 
 async function runRetrieve(workspaceRoot: string): Promise<void> {
@@ -217,7 +464,8 @@ async function runRetrieve(workspaceRoot: string): Promise<void> {
 
   if (hits.length === 0) {
     logLine('retrieve: no matching chunks. The index may be empty or degraded.');
-    void vscode.window.showInformationMessage(`Intelligence: no matches. ${GUIDANCE}`);
+    appendSystemTierCrossRef(query);
+    void vscode.window.showInformationMessage(`Intelligence: no local matches. ${GUIDANCE}`);
     return;
   }
 
@@ -225,6 +473,7 @@ async function runRetrieve(workspaceRoot: string): Promise<void> {
   for (const hit of hits) {
     logLine(`  ${hit.score.toFixed(3)}  ${hit.file}`);
   }
+  appendSystemTierCrossRef(query);
 
   const picked = await vscode.window.showQuickPick(
     hits.map((h) => ({
@@ -296,7 +545,8 @@ async function runSearch(workspaceRoot: string): Promise<void> {
 
   if (results.length === 0) {
     logLine('search: no matching knowledge. The store may be empty or degraded.');
-    void vscode.window.showInformationMessage(`Intelligence: no matches. ${GUIDANCE}`);
+    appendSystemTierCrossRef(query);
+    void vscode.window.showInformationMessage(`Intelligence: no local matches. ${GUIDANCE}`);
     return;
   }
 
@@ -305,6 +555,7 @@ async function runSearch(workspaceRoot: string): Promise<void> {
     const file = typeof r.metadata?.file === 'string' ? (r.metadata.file as string) : r.source;
     logLine(`  ${r.score.toFixed(3)}  [${r.source}] ${file}`);
   }
+  appendSystemTierCrossRef(query);
 
   const picked = await vscode.window.showQuickPick(
     results.map((r) => {
@@ -324,6 +575,39 @@ async function runSearch(workspaceRoot: string): Promise<void> {
       logLine(`--- [${match.source}] (score ${match.score.toFixed(3)}) ---`);
       logLine(match.content);
     }
+  }
+}
+
+/**
+ * Local→system retrieval fallback: when the system tier is enabled, surface
+ * matching cross-project learnings AND which other projects know about the query
+ * (from the registry) alongside the local results. No-op when systemDir is unset.
+ */
+function appendSystemTierCrossRef(query: string): void {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    return;
+  }
+  try {
+    const ch = getChannel();
+    const hits = searchSystemLearnings(sys, query, 6);
+    if (hits.length > 0) {
+      ch.appendLine(`  ↳ cross-project system knowledge (${hits.length}):`);
+      for (const h of hits) {
+        ch.appendLine(`      [${h.kind}/${h.tier}] ${h.text}   — ${path.basename(h.project)}`);
+      }
+    }
+    // Which other projects mention the query (registry name/topic match).
+    const tokens = query.toLowerCase().split(/\W+/).filter((t) => t.length >= 3);
+    const projects = readRegistry(sys.registryPath).projects.filter((p) => {
+      const hay = `${p.name} ${(p.topics ?? []).join(' ')}`.toLowerCase();
+      return tokens.some((t) => hay.includes(t));
+    });
+    if (projects.length > 0) {
+      ch.appendLine(`  ↳ projects that may know about this: ${projects.map((p) => p.name).join(', ')}`);
+    }
+  } catch {
+    /* best effort — cross-ref is additive */
   }
 }
 
@@ -522,16 +806,383 @@ function withWorkspace(
   };
 }
 
+/** The optional `autoclaw.intelligence.backendDir` setting (empty ⇒ unset). */
+function backendDirSetting(): string | undefined {
+  const v = vscode.workspace.getConfiguration('autoclaw.intelligence').get<string>('backendDir');
+  return v && v.trim() !== '' ? v : undefined;
+}
+
+/** The optional `autoclaw.intelligence.systemDir` setting (cross-project tier). */
+function systemDirSetting(): string | undefined {
+  const v = vscode.workspace.getConfiguration('autoclaw.intelligence').get<string>('systemDir');
+  return v && v.trim() !== '' ? v : undefined;
+}
+
 /**
- * Register the four Intelligence commands. Registration is side-effect free
- * beyond pushing disposables onto `context.subscriptions`; no intelligence I/O
- * runs until a command is invoked.
+ * Where the `sqlite-vec` native peer installs. Defaults PROJECT-LOCAL
+ * (`<workspace>/.autoclaw/native`) so nothing is forced onto C:; the
+ * `backendDir` setting overrides; the extension globalStorage is only a
+ * last-resort fallback when there is no workspace.
+ */
+function backendDir(context: vscode.ExtensionContext, workspaceRoot: string | undefined): string {
+  return resolveBackendDir(workspaceRoot, backendDirSetting(), context.globalStorageUri.fsPath);
+}
+
+/** Pinned `sqlite-vec` version from the extension manifest's optionalDependencies. */
+function pinnedSqliteVecVersion(context: vscode.ExtensionContext): string {
+  const opt = (context.extension?.packageJSON?.optionalDependencies ?? {}) as Record<string, string>;
+  return typeof opt['sqlite-vec'] === 'string' ? opt['sqlite-vec'] : 'latest';
+}
+
+/** Point the host-free vector loader at the installed backend when present. */
+function wireInstalledBackend(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): void {
+  const dir = backendDir(context, workspaceRoot);
+  if (isBackendInstalled(dir)) {
+    process.env[VEC_DIR_ENV] = dir;
+  }
+}
+
+/**
+ * `autoclaw.intelligence.installBackend` — install the `sqlite-vec` native peer
+ * (the `vec0` loadable) so RAG/indexing works in the packaged extension, where
+ * the native peers are excluded from the `.vsix`. Installs PROJECT-LOCAL by
+ * default (`<workspace>/.autoclaw/native`, configurable via `backendDir`) — never
+ * forced onto C:. The SQLite engine itself is Node-core `node:sqlite` (no
+ * install). Idempotent + re-runnable.
+ */
+async function runInstallBackend(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  const dir = backendDir(context, workspaceRoot);
+  const version = pinnedSqliteVecVersion(context);
+
+  // Surface the resolved environment up front so a failure report is actionable
+  // without re-running. These DEBUG lines also confirm WHICH build is executing.
+  getChannel().show(true);
+  logLine(`install-backend: starting (extension v${extensionVersion(context)})`);
+  logDebug(`install-backend: workspaceRoot=${workspaceRoot ?? '(none)'}`);
+  logDebug(`install-backend: backendDir setting=${backendDirSetting() ?? '(unset)'}`);
+  logDebug(`install-backend: resolved targetDir=${dir}`);
+  logDebug(`install-backend: process.cwd=${process.cwd()}`);
+  logDebug(`install-backend: node=${process.versions.node} electron=${(process.versions as Record<string, string>).electron ?? '(n/a)'}`);
+
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `AutoClaw Intelligence: installing vector backend (sqlite-vec@${version}) → ${dir}…`,
+      cancellable: false,
+    },
+    () => Promise.resolve(installVectorBackend({ targetDir: dir, version, log: logLine })),
+  );
+
+  if (result.ok) {
+    process.env[VEC_DIR_ENV] = result.installedDir ?? dir;
+    logLine(`install-backend: ready at ${result.installedDir ?? dir} (${result.loadablePath}).`);
+    void vscode.window.showInformationMessage(
+      `Intelligence vector backend installed (${dir}). Run "Index Codebase" to build the RAG index.`,
+    );
+    return;
+  }
+  logError(`install-backend: FAILED — ${result.error}`);
+  logError('install-backend: run "AutoClaw: Intelligence — Diagnostics" and share the output to debug.');
+  const choice = await vscode.window.showErrorMessage(
+    `Intelligence backend install failed: ${result.error}. ` +
+      'Ensure node:sqlite is available (Node 24 / recent Electron) and npm is on PATH.',
+    'Run Diagnostics',
+    'Show Log',
+  );
+  if (choice === 'Run Diagnostics') {
+    await runDiagnostics(context, workspaceRoot);
+  } else if (choice === 'Show Log') {
+    getChannel().show(true);
+  }
+}
+
+/** The running extension's version (the single best signal for "is the new build live?"). */
+function extensionVersion(context: vscode.ExtensionContext): string {
+  const v = context.extension?.packageJSON?.version;
+  return typeof v === 'string' ? v : '(unknown)';
+}
+
+/**
+ * `autoclaw.intelligence.diagnostics` — a one-shot environment dump for debugging
+ * install/retrieval issues across many open windows. Read-only: it resolves every
+ * path the install flow uses, probes npm, and reports the ACTIVE extension version
+ * so we can tell whether a window is running a stale build. Nothing is installed
+ * or mutated.
+ */
+async function runDiagnostics(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  const ch = getChannel();
+  ch.show(true);
+  const dir = backendDir(context, workspaceRoot);
+  const folders = vscode.workspace.workspaceFolders ?? [];
+
+  // Probe npm without throwing — its presence/version is a common failure cause.
+  let npmInfo = '(not found on PATH)';
+  try {
+    const probe = spawnSync('npm', ['--version'], {
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+    });
+    if (!probe.error && probe.status === 0) {
+      npmInfo = `v${(probe.stdout || '').toString().trim()}`;
+    } else if (probe.error) {
+      npmInfo = `(spawn error: ${probe.error.message})`;
+    }
+  } catch (err) {
+    npmInfo = `(probe failed: ${(err as Error).message})`;
+  }
+
+  ch.appendLine('════════════════════════════════════════════════════════');
+  ch.appendLine('AutoClaw Intelligence — Diagnostics');
+  ch.appendLine('════════════════════════════════════════════════════════');
+  ch.appendLine('BUILD:');
+  ch.appendLine(`  extension version : ${extensionVersion(context)}`);
+  ch.appendLine(`  extension path    : ${context.extension?.extensionPath ?? '(unknown)'}`);
+  ch.appendLine(`  VS Code version   : ${vscode.version}`);
+  ch.appendLine(`  node / electron   : ${process.versions.node} / ${(process.versions as Record<string, string>).electron ?? '(n/a)'}`);
+  ch.appendLine(`  process.cwd       : ${process.cwd()}`);
+  ch.appendLine('WORKSPACE:');
+  ch.appendLine(`  resolved root     : ${workspaceRoot ?? '(no workspace open)'}`);
+  ch.appendLine(`  workspaceFolders  : ${folders.length}`);
+  folders.forEach((f, i) =>
+    ch.appendLine(`    [${i}] ${f.name} → ${f.uri.fsPath}`),
+  );
+  ch.appendLine('BACKEND:');
+  ch.appendLine(`  backendDir setting: ${backendDirSetting() ?? '(unset — using project-local default)'}`);
+  ch.appendLine(`  resolved targetDir: ${dir}`);
+  ch.appendLine(`  is absolute path  : ${path.isAbsolute(dir)}`);
+  ch.appendLine(`  installed?        : ${isBackendInstalled(dir)}`);
+  ch.appendLine(`  pinned sqlite-vec : ${pinnedSqliteVecVersion(context)}`);
+  ch.appendLine(`  ${VEC_DIR_ENV} : ${process.env[VEC_DIR_ENV] ?? '(unset)'}`);
+  ch.appendLine(`  npm on PATH       : ${npmInfo}`);
+  ch.appendLine(`  systemDir setting : ${systemDirSetting() ?? '(disabled)'}`);
+  ch.appendLine(`  log level         : ${configuredLevel()}`);
+  ch.appendLine('════════════════════════════════════════════════════════');
+
+  if (backendDirSetting() && !path.isAbsolute(backendDirSetting() as string)) {
+    logWarn(
+      `backendDir setting "${backendDirSetting()}" is RELATIVE — it will resolve against ` +
+        `the process cwd (${process.cwd()}). Set an absolute path or clear it.`,
+    );
+  }
+
+  void vscode.window.showInformationMessage(
+    `Intelligence diagnostics (v${extensionVersion(context)}) written to the "AutoClaw — Intelligence" output. ` +
+      `Backend ${isBackendInstalled(dir) ? 'installed' : 'NOT installed'} at ${dir}.`,
+  );
+}
+
+/**
+ * `autoclaw.intelligence.status` — a visibility report: WHERE every store lives
+ * (project root, vector index, backend dir, optional system tier), HOW MUCH data
+ * is there, the index watermark, and the learn summary. Read-only.
+ */
+async function runStatus(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  if (!workspaceRoot) {
+    void vscode.window.showWarningMessage('AutoClaw Intelligence: open a workspace folder first.');
+    return;
+  }
+  const paths = intelligencePaths(workspaceRoot);
+  const bdir = backendDir(context, workspaceRoot);
+  const status = gatherStorageStatus({
+    workspaceRoot,
+    contractRoot: paths.root,
+    dbPath: paths.dbPath,
+    lastIndexPath: paths.lastIndexPath,
+    backendDir: bdir,
+    backendInstalled: isBackendInstalled(bdir),
+    systemDir: systemDirSetting(),
+  });
+  const s = getDashboardData(workspaceRoot).summary;
+
+  const ch = getChannel();
+  ch.show(true);
+  ch.appendLine('────────────────────────────────────────────────────────');
+  ch.appendLine('AutoClaw Intelligence — Status');
+  ch.appendLine('────────────────────────────────────────────────────────');
+  ch.appendLine('STORAGE (locations + sizes):');
+  ch.appendLine(`  project data : ${status.projectRoot.path}  (${formatBytes(status.projectRoot.sizeBytes)})`);
+  ch.appendLine(`  vector index : ${status.index.dbPath}  (${formatBytes(status.index.dbSizeBytes)})`);
+  ch.appendLine(
+    `  backend      : ${status.backend.path}  (${status.backend.installed ? 'installed' : 'NOT installed'})`,
+  );
+  ch.appendLine(
+    `  system tier  : ${status.system.enabled ? `${(status.system as { path: string }).path}` : 'disabled (set autoclaw.intelligence.systemDir to enable)'}`,
+  );
+  ch.appendLine('INDEX:');
+  ch.appendLine(
+    `  last indexed : ${status.index.indexedAt ?? '(never)'}${status.index.commit ? `  @ ${status.index.commit.slice(0, 8)}` : ''}`,
+  );
+  ch.appendLine('LEARN:');
+  ch.appendLine(
+    `  sessions=${s.totalSessions}  patterns=${s.totalPatterns}  kept-rate=${(s.avgKeptRate * 100).toFixed(1)}%  runs=${s.totalRuns}`,
+  );
+  ch.appendLine(
+    `  tokens(est)=${s.tokens.estimated}  cost=$${s.totalCostUsd.toFixed(4)}`,
+  );
+  ch.appendLine('────────────────────────────────────────────────────────');
+
+  void vscode.window.showInformationMessage(
+    `Intelligence: index ${formatBytes(status.index.dbSizeBytes)} at ${status.index.dbPath} · ${s.totalSessions} sessions learned. Details in the "AutoClaw — Intelligence" output.`,
+  );
+}
+
+/**
+ * `autoclaw.intelligence.systemTier` — view the cross-project SYSTEM tier: its
+ * store location and the project↔store registry (which projects have intelligence,
+ * how much). Off until `autoclaw.intelligence.systemDir` is set.
+ */
+async function runSystemTier(): Promise<void> {
+  const sys = systemPaths(systemDirSetting());
+  if (!sys) {
+    const choice = await vscode.window.showInformationMessage(
+      'The cross-project system intelligence tier is OFF. Set "autoclaw.intelligence.systemDir" to a directory (any drive) to enable it.',
+      'Open Settings',
+    );
+    if (choice === 'Open Settings') {
+      void vscode.commands.executeCommand(
+        'workbench.action.openSettings',
+        'autoclaw.intelligence.systemDir',
+      );
+    }
+    return;
+  }
+  ensureSystemStore(sys);
+  const reg = readRegistry(sys.registryPath);
+  const learnings = readSystemLearnings(sys);
+  const ch = getChannel();
+  ch.show(true);
+  ch.appendLine('────────────────────────────────────────────────────────');
+  ch.appendLine('AutoClaw Intelligence — System Tier (cross-project)');
+  ch.appendLine('────────────────────────────────────────────────────────');
+  ch.appendLine(`  store     : ${sys.root}`);
+  ch.appendLine(`  registry  : ${sys.registryPath}`);
+  ch.appendLine(`  projects  : ${reg.projects.length}`);
+  ch.appendLine(`  learnings : ${learnings.length} (distilled cross-project patterns)`);
+  for (const p of reg.projects) {
+    ch.appendLine(
+      `   • ${p.name}  (${p.path})` +
+        `${p.indexChunks != null ? `  chunks=${p.indexChunks}` : ''}` +
+        `${p.learnSessions != null ? `  sessions=${p.learnSessions}` : ''}` +
+        `${p.lastIndexedAt ? `  indexed=${p.lastIndexedAt.slice(0, 10)}` : ''}`,
+    );
+  }
+  ch.appendLine('────────────────────────────────────────────────────────');
+
+  // Offer a cross-project search over the promoted learnings.
+  const query = await vscode.window.showInputBox({
+    title: 'Search System Intelligence',
+    prompt: `Search ${learnings.length} cross-project learning(s) — leave empty to skip`,
+    ignoreFocusOut: true,
+  });
+  if (query && query.trim() !== '') {
+    const hits = searchSystemLearnings(sys, query.trim(), 15);
+    ch.appendLine(`\nSearch "${query.trim()}" → ${hits.length} hit(s):`);
+    for (const h of hits) {
+      ch.appendLine(`   [${h.kind}/${h.tier}] ${h.text}   — ${path.basename(h.project)}`);
+    }
+    ch.appendLine('────────────────────────────────────────────────────────');
+    void vscode.window.showInformationMessage(
+      `System search "${query.trim()}": ${hits.length} hit(s). See the "AutoClaw — Intelligence" output.`,
+    );
+    return;
+  }
+  void vscode.window.showInformationMessage(
+    `Intelligence system tier: ${reg.projects.length} project(s), ${learnings.length} learning(s) at ${sys.root}.`,
+  );
+}
+
+/**
+ * `autoclaw.intelligence.relocateBackend` — move the installed vector backend
+ * (sqlite-vec) to a new directory/drive and persist the choice in the
+ * `backendDir` setting. Post-install control over where data lives.
+ */
+async function runRelocateBackend(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  const current = backendDir(context, workspaceRoot);
+  const target = await vscode.window.showInputBox({
+    title: 'Relocate Intelligence Vector Backend',
+    prompt: 'New directory for the sqlite-vec backend (any drive). Its contents will be moved here.',
+    value: current,
+    ignoreFocusOut: true,
+  });
+  if (!target || target.trim() === '' || target.trim() === current) {
+    return;
+  }
+  const dest = target.trim();
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: `AutoClaw Intelligence: relocating backend → ${dest}…`,
+      cancellable: false,
+    },
+    () => Promise.resolve(relocateStore(current, dest)),
+  );
+
+  if (!result.ok) {
+    logLine(`relocate-backend: FAILED — ${result.error}`);
+    void vscode.window.showErrorMessage(
+      `Relocate failed: ${result.error}. (If the backend is in use, reload the window and retry.)`,
+    );
+    return;
+  }
+  // Persist the choice so future resolves + installs use the new dir.
+  await vscode.workspace
+    .getConfiguration('autoclaw.intelligence')
+    .update('backendDir', dest, vscode.ConfigurationTarget.Global);
+  process.env[VEC_DIR_ENV] = dest;
+  logLine(`relocate-backend: moved ${formatBytes(result.movedBytes ?? 0)} → ${result.to}`);
+  void vscode.window.showInformationMessage(
+    `Intelligence backend relocated to ${result.to} (${formatBytes(result.movedBytes ?? 0)}). Reload the window if retrieval was active.`,
+  );
+}
+
+/**
+ * Register the Intelligence commands. Registration is side-effect free beyond
+ * pushing disposables onto `context.subscriptions` and pointing the vector
+ * loader at an already-installed backend; no intelligence I/O runs until a
+ * command is invoked.
  */
 export function registerIntelligenceCommands(
   context: vscode.ExtensionContext,
   getWorkspaceRoot: () => string | undefined,
 ): void {
+  wireInstalledBackend(context, getWorkspaceRoot());
   context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.intelligence.installBackend', () =>
+      runInstallBackend(context, getWorkspaceRoot()),
+    ),
+    vscode.commands.registerCommand('autoclaw.intelligence.status', () =>
+      runStatus(context, getWorkspaceRoot()),
+    ),
+    vscode.commands.registerCommand('autoclaw.intelligence.diagnostics', () =>
+      runDiagnostics(context, getWorkspaceRoot()),
+    ),
+    vscode.commands.registerCommand('autoclaw.intelligence.systemTier', () => runSystemTier()),
+    vscode.commands.registerCommand('autoclaw.intelligence.relocateBackend', () =>
+      runRelocateBackend(context, getWorkspaceRoot()),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.generateSteering',
+      withWorkspace(getWorkspaceRoot, runGenerateSteering),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.generateScaffold',
+      withWorkspace(getWorkspaceRoot, runGenerateScaffold),
+    ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.learn',
       withWorkspace(getWorkspaceRoot, runLearn),

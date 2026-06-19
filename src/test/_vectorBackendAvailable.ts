@@ -18,48 +18,37 @@
  * integration runner's compiled-test glob never picks it up as a suite.
  */
 
+import { vectorBackendPreflight } from '../intelligence/vector';
+
 /** Memoised probe result — the runtime backend can't change mid-process. */
 let cached: boolean | undefined;
 
 /**
- * Returns true only when a WORKING native vector backend is present in the
+ * Returns true when a WORKING vector backend (any driver) is present in the
  * current runtime.
  *
- * A plain `require()` of the two native peers is NOT sufficient: under the
- * Electron extension host both modules import successfully (the JS shims are
- * there), yet the native binding degrades at RUNTIME the moment it is actually
- * exercised — `new Database()`, loading the `sqlite-vec` loadable extension, or
- * creating a `vec0` virtual table throws because the binding was compiled for a
- * different ABI. `src/intelligence/vectorEngine.ts` catches that and silently
- * falls back to a no-RAG no-op path (R3.1), which a require-only probe can't see.
+ * A plain `require()` is NOT sufficient: under the Electron extension host a
+ * native module's JS shim imports fine yet its binding degrades at RUNTIME the
+ * moment it is exercised (an ABI mismatch throws on `new Database()`, loading the
+ * `sqlite-vec` extension, or creating a `vec0` table). `initVectorDB` catches
+ * that and falls back to a no-RAG no-op path (R3.1), which a require-only probe
+ * can't see.
  *
- * So this helper performs the exact same sequence of operations the production
- * `initVectorDB` performs — require, open a DB, `sqliteVec.load(db)`, create a
- * `vec0` table — against an in-memory database, inside one try/catch. If ANY
- * step throws it returns false, which is what lets the guarded suites skip under
- * Electron while still running fully in plain Node. Never throws.
+ * So this delegates to {@link vectorBackendPreflight}, which exercises the exact
+ * sequence production uses — open a DB, load the sqlite-vec extension, create a
+ * `vec0` table — for EACH candidate driver (`node:sqlite` first, then
+ * `better-sqlite3`). It reports healthy when ANY driver works, so guarded suites
+ * run wherever the store actually works (e.g. `node:sqlite` in plain Node, even
+ * if the native addon's ABI is wrong) and skip cleanly only when none load.
+ * Never throws.
  */
 export function nativeVectorAvailable(): boolean {
   if (cached !== undefined) {
     return cached;
   }
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Database = require('better-sqlite3');
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const sqliteVec = require('sqlite-vec');
-
-    // Mirror initVectorDB: open a DB, load the loadable extension, and create a
-    // vec0 virtual table. Use an in-memory DB so the probe leaves no artifacts.
-    const db = new Database(':memory:');
-    sqliteVec.load(db);
-    db.exec('CREATE VIRTUAL TABLE IF NOT EXISTS _probe_vec USING vec0(embedding float[4])');
-    db.close();
-
-    cached = true;
+    cached = vectorBackendPreflight().healthy;
   } catch {
-    // Any failure (missing module, ABI mismatch, loadable-extension refusal,
-    // vec0 unavailable) means the backend is not usable here.
     cached = false;
   }
   return cached;

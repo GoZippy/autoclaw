@@ -31,6 +31,13 @@ body {
   margin-bottom: var(--gap);
 }
 
+/* Management row: visually separated from the primary actions. */
+.toolbar.manage {
+  margin-top: -2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+}
+
 button.action {
   flex: 1 1 auto;
   min-width: 56px;

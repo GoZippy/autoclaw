@@ -87,3 +87,16 @@ export function initVectorBackend(
 // import everything vector-related from `./vector`.
 export * from './sqliteVec';
 export { initPostgresDB, InitPostgresDBOptions } from './postgres';
+
+// Driver selection + the preflight/compat surface (the "detect ABI mismatch" hook).
+export {
+  SqliteDriver,
+  SqliteDriverKind,
+  DEFAULT_DRIVER_ORDER,
+  openSqliteDriver,
+  probeDriver,
+  DriverProbe,
+  vectorBackendPreflight,
+  VectorBackendPreflight,
+} from './sqliteDriver';
+export { NATIVE_COMPAT, NativeCompat } from './nativeCompat';
