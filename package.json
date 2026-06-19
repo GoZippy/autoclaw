@@ -453,6 +453,11 @@
           "default": "",
           "description": "Checkout/subscription link for a commercial (Pro/Teams) license."
         },
+        "autoclaw.support.koFiUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Ko-fi page for one-time tips and memberships. Leave blank to use the bundled default."
+        },
         "autoclaw.support.reviewVscodeUrl": {
           "type": "string",
           "default": "",

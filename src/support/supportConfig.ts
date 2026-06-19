@@ -10,6 +10,7 @@
 //   "autoclaw.support.donationUrl":   "https://square.link/u/XXXX"
 //   "autoclaw.support.customAmountUrl":"https://square.link/u/XXXX"
 //   "autoclaw.support.proUrl":        "https://square.link/u/XXXX"
+//   "autoclaw.support.koFiUrl":       "https://ko-fi.com/yourname"
 //   "autoclaw.support.cryptoWallets": { "BTC": "...", "ETH": "...", "SOL": "...", "USDC": "..." }
 //
 // Settings always win over the DEFAULTS in this file.
@@ -26,6 +27,8 @@ export interface SupportLinks {
   customAmountUrl: string;
   /** Square subscription / commercial-license checkout link. */
   proUrl: string;
+  /** Ko-fi page for one-time tips and memberships. */
+  koFiUrl: string;
   /** Marketplace review deep-links. */
   reviewVscode: string;
   reviewOpenVsx: string;
@@ -44,6 +47,7 @@ const DEFAULTS: SupportLinks = {
   donationUrl: `https://square.link/u/${PLACEHOLDER}`,
   customAmountUrl: `https://square.link/u/${PLACEHOLDER}`,
   proUrl: `https://square.link/u/${PLACEHOLDER}`,
+  koFiUrl: 'https://ko-fi.com/gozippy',
   reviewVscode: `https://marketplace.visualstudio.com/items?itemName=${EXT_ID}&ssr=false#review-details`,
   reviewOpenVsx: `https://open-vsx.org/extension/ZippyTechnologiesLLC/autoclaw/reviews`,
   feedbackUrl: 'https://github.com/GoZippy/autoclaw/issues/new',
@@ -73,6 +77,7 @@ export function getSupportLinks(): SupportLinks {
     donationUrl: pick('donationUrl', DEFAULTS.donationUrl),
     customAmountUrl: pick('customAmountUrl', DEFAULTS.customAmountUrl),
     proUrl: pick('proUrl', DEFAULTS.proUrl),
+    koFiUrl: pick('koFiUrl', DEFAULTS.koFiUrl),
     reviewVscode: pick('reviewVscodeUrl', DEFAULTS.reviewVscode),
     reviewOpenVsx: pick('reviewOpenVsxUrl', DEFAULTS.reviewOpenVsx),
     feedbackUrl: pick('feedbackUrl', DEFAULTS.feedbackUrl),
