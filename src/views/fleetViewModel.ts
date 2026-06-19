@@ -219,6 +219,26 @@ export interface PresenceSummary {
 }
 
 // ---------------------------------------------------------------------------
+// Pending tray (FF-3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render-ready row for an agent that has checked in via a fresh beacon but is
+ * not yet admitted to fleet.json. The user Admits or Declines it in the tray.
+ */
+export interface PendingAgentView {
+  agentId: string;
+  sessionId?: string;
+  host?: string;
+  suggestedRole?: string;
+  suggestedType?: string;
+  /** True when this agent consumed an invite (vs. a self-declared beacon). */
+  viaInvite?: boolean;
+  /** Trust ceiling on arrival ('off' | 'auto' | 'turbo'). */
+  trust: string;
+}
+
+// ---------------------------------------------------------------------------
 // Top-level dashboard view-model
 // ---------------------------------------------------------------------------
 
@@ -235,4 +255,6 @@ export interface FleetDashboardModel {
   healthGrid: HealthGridRow[];
   cost: CostLedgerView;
   presence: PresenceSummary;
+  /** Agents seen via a fresh beacon but not yet admitted to fleet.json (FF-3). */
+  pending: PendingAgentView[];
 }

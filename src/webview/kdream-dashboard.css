@@ -842,6 +842,71 @@ th {
   padding: 4px 0;
 }
 
+/* ── Pending agents tray (FF-3) ────────────────────────────────────── */
+.pending-invite-btn {
+  margin-left: auto;
+  font-size: 0.75em;
+  padding: 2px 8px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+}
+.pending-invite-btn:hover { background: var(--vscode-button-hoverBackground); }
+.pending-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid var(--vscode-panel-border);
+  border-left: 3px solid var(--vscode-charts-purple);
+  border-radius: 3px;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  background: var(--vscode-editor-inactiveSelectionBackground);
+}
+.pending-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 0.75em;
+}
+.pending-id { font-weight: 700; color: var(--vscode-charts-blue); }
+.pending-tag {
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+.pending-tag.uninvited { opacity: 0.7; }
+.pending-role, .pending-host {
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+.pending-actions { display: flex; gap: 6px; }
+.pending-actions button {
+  font-size: 0.75em;
+  padding: 2px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.pending-admit {
+  border: 1px solid var(--vscode-button-border, transparent);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+.pending-admit:hover { background: var(--vscode-button-hoverBackground); }
+.pending-decline {
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+}
+.pending-decline:hover { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground)); }
+
 /* ── Error state ───────────────────────────────────────────────────── */
 .error-state {
   padding: 12px;

@@ -28,6 +28,7 @@ import {
   buildActivityFeed,
   buildCostLedger,
   buildPresence,
+  buildPending,
   buildFleetDashboard,
   mergeFleetHeartbeats,
   fleetKey,
@@ -510,6 +511,77 @@ suite('Fleet panel — buildFleetDashboard assembly', () => {
     assert.strictEqual(model.cost.totalTokens, 10);
     assert.ok(model.presence.text.length > 0);
     assert.ok(model.generatedAt);
+    // FF-3: pending defaults to [] when no pending input is supplied.
+    assert.ok(Array.isArray(model.pending));
+    assert.strictEqual(model.pending.length, 0);
+  });
+
+  test('includes the pending tray when inputs.pending is supplied (FF-3)', () => {
+    const cardInputs: AgentCardInputs = {
+      profiles: [{ id: 'me', name: 'Me' }],
+      heartbeats: new Map(),
+      health: new Map(),
+      messages: [],
+      sprintAssignments: new Map(),
+      claimedTasks: new Map(),
+    };
+    const inputs: FleetDashboardInputs = {
+      selfAgentId: 'me',
+      cardInputs,
+      allMessages: [],
+      selfInboxStates: new Map(),
+      inboxStatesByAgent: new Map(),
+      messagesByRecipient: new Map(),
+      health: [],
+      cost: [],
+      pending: [
+        { agent_id: 'kilo', host: 'kiro', suggested_role: 'coder', via_invite: 'join-abc', trust: 'auto' },
+      ],
+    };
+    const model = buildFleetDashboard(inputs, NOW);
+    assert.strictEqual(model.pending.length, 1);
+    assert.strictEqual(model.pending[0].agentId, 'kilo');
+    assert.strictEqual(model.pending[0].suggestedRole, 'coder');
+    assert.strictEqual(model.pending[0].viaInvite, true);
+  });
+});
+
+suite('Fleet panel — buildPending (FF-3)', () => {
+  test('returns [] for undefined input', () => {
+    assert.deepStrictEqual(buildPending(undefined), []);
+  });
+
+  test('maps snake_case PendingAgent fields onto the view shape', () => {
+    const out = buildPending([
+      {
+        agent_id: 'kilo',
+        session_id: 's-1',
+        host: 'kiro',
+        suggested_role: 'reviewer',
+        suggested_agent_type: 'kilo-code',
+        via_invite: 'join-xyz',
+        trust: 'turbo',
+      },
+    ]);
+    assert.strictEqual(out.length, 1);
+    assert.deepStrictEqual(out[0], {
+      agentId: 'kilo',
+      sessionId: 's-1',
+      host: 'kiro',
+      suggestedRole: 'reviewer',
+      suggestedType: 'kilo-code',
+      viaInvite: true,
+      trust: 'turbo',
+    });
+  });
+
+  test('via_invite undefined maps to viaInvite false; optional fields omitted', () => {
+    const out = buildPending([{ agent_id: 'solo', trust: 'off' }]);
+    assert.strictEqual(out[0].viaInvite, false);
+    assert.strictEqual(out[0].agentId, 'solo');
+    assert.strictEqual(out[0].trust, 'off');
+    assert.ok(!('sessionId' in out[0]));
+    assert.ok(!('host' in out[0]));
   });
 });
 

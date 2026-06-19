@@ -52,6 +52,7 @@ import {
   type ToolAuthPolicy,
 } from './scoping';
 import { LlmRegistry } from '../llm';
+import { writeBeacon, type Beacon } from '../fleet/beacons';
 
 const fsPromises = fs.promises;
 
@@ -1017,6 +1018,106 @@ const llmHealthTool: ToolHandler = {
 };
 
 // ---------------------------------------------------------------------------
+// Tool: presence.beacon (FF-1) — the MCP check-in
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a presence beacon so an MCP-speaking peer (Codex-CLI, Copilot, another
+ * chat session, any tool that mounts this MCP server) becomes a visible fleet
+ * row. This is the one A2A gap the federation work closes: before it, an MCP
+ * agent could message + claim but could NOT check in, so it never appeared in
+ * the fleet.
+ *
+ * The host stamps identity it knows (`host`, `session_id`) so a caller cannot
+ * spoof those; everything else is the caller's self-description. `scope`
+ * defaults to 'workspace' (the beacon ties to this project's comms tree); pass
+ * 'machine' to announce into `~/.autoclaw/beacons/` for a cross-workspace view.
+ * `timestamp` is always set server-side to now.
+ *
+ * Read it back with the `presence.fleet` read tool.
+ */
+const presenceBeaconTool: ToolHandler = {
+  definition: {
+    name: 'presence.beacon',
+    description:
+      'Check in to the fleet by writing a presence beacon — makes this agent a ' +
+      'visible fleet row. The host stamps host + session_id. Requires write access.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent_id: { type: 'string', description: 'Stable agent name. Defaults to the caller host.' },
+        status: { type: 'string', enum: ['active', 'idle'], description: 'Liveness (default active).' },
+        current_task: { type: 'string', description: 'What the agent is working on.' },
+        current_llm: { type: 'string', description: 'Model currently in use.' },
+        role: { type: 'string', description: 'Self-declared role hint (the user fleet.json still wins).' },
+        agent_type: { type: 'string', description: 'Behavioral type hint (coder/runner/auditor/…).' },
+        workspace: { type: 'string', description: 'Absolute workspace path. Defaults to the server root.' },
+        transports: { type: 'array', items: { type: 'string' }, description: "Lanes this peer speaks: fs|mcp|http|relay." },
+        card_url: { type: 'string', description: 'Optional A2A capability card URL.' },
+        endpoint: { type: 'string', description: 'Optional HTTP endpoint for runner-style peers.' },
+        scope: { type: 'string', enum: ['workspace', 'machine'], description: "Where to write (default workspace)." },
+      },
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const scope = args.scope === 'machine' ? 'machine' : 'workspace';
+    const str = (v: unknown): string | undefined =>
+      typeof v === 'string' && v.trim() ? v.trim() : undefined;
+
+    const beacon: Beacon = {
+      // Host stamps identity it owns — callers cannot spoof host/session.
+      agent_id: str(args.agent_id) ?? ctx.host,
+      ...(ctx.sessionId ? { session_id: ctx.sessionId } : {}),
+      timestamp: new Date().toISOString(),
+      status: args.status === 'idle' ? 'idle' : 'active',
+      host: ctx.host,
+      origin: 'beacon',
+      ...(str(args.current_task) ? { current_task: str(args.current_task) } : {}),
+      ...(str(args.current_llm) ? { current_llm: str(args.current_llm) } : {}),
+      ...(str(args.role) ? { role: str(args.role) } : {}),
+      ...(str(args.agent_type) ? { agent_type: str(args.agent_type) } : {}),
+      workspace: str(args.workspace) ?? ctx.workspaceRoot,
+      ...(str(args.card_url) ? { card_url: str(args.card_url) } : {}),
+      ...(str(args.endpoint) ? { endpoint: str(args.endpoint) } : {}),
+      ...(Array.isArray(args.transports)
+        ? { transports: args.transports.filter((t): t is string => typeof t === 'string') }
+        : {}),
+    };
+
+    const msgId = newMsgId();
+    try {
+      const written = await writeBeacon(beacon, {
+        scope,
+        ...(scope === 'workspace' ? { commsDir: commsDir(ctx) } : {}),
+      });
+      const ledger = await appendLedgerEntry(ctx, msgId, {
+        type: 'presence_beacon',
+        agent_id: beacon.agent_id,
+        scope,
+        ...callerOf(ctx),
+      });
+      return {
+        ok: true,
+        data: {
+          id: msgId,
+          agent_id: beacon.agent_id,
+          scope,
+          file: written,
+          ledger_ok: ledger.ok,
+          ledger_detail: ledger.detail,
+        },
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'internal_error',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -1046,6 +1147,7 @@ export const WRITE_TOOLS: ToolHandler[] = [
   claimTaskTool,
   dreamRunTool,
   consensusVoteTool,
+  presenceBeaconTool,
   llmChatTool,
   llmModelsTool,
   llmHealthTool,
@@ -1059,6 +1161,7 @@ export const RAW_WRITE_TOOLS: ToolHandler[] = [
   claimTaskTool,
   dreamRunTool,
   consensusVoteTool,
+  presenceBeaconTool,
   llmChatTool,
   llmModelsTool,
   llmHealthTool,
