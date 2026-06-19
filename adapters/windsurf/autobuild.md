@@ -8,7 +8,7 @@ trigger: model_decision
 
 ## Operating Rules (read first)
 
-1. **Use file tools, not shell, for files and directories.** Create `.autoclaw/autobuild/...` paths with the host's file/write tool. Do NOT use `mkdir -p`, `touch`, or `New-Item` — they break across Bash/PowerShell/cmd.
+1. **Never pre-create directories — just write the target file.** The write tool creates parent dirs for you, so writing `.autoclaw/autobuild/workflows/x.yaml` makes every missing folder along the way. (This is why `mkdir -p` / `touch` / `New-Item` are unnecessary *and* unreliable across Bash/PowerShell/cmd — but you don't have to reason about that: there is simply no directory step to take.)
 2. **Forward slashes in paths.** Always.
 3. **Idempotency.** `schedule` with an existing `<name>` updates the workflow in place — do not duplicate registry entries. `cancel` on a missing name reports "no such workflow" and exits cleanly.
 4. **Step commands are platform-aware.** Default templates use cross-platform npm scripts (`npm run build`, `npm test`). If a step needs a shell builtin, prefer Node/npm scripts in `package.json` over raw shell so it works on every host.
@@ -30,25 +30,37 @@ Determine the sub-command from the user's message:
 ## schedule — Create a Scheduled Workflow
 
 1. Parse the cron expression and workflow name from the user's input.
-2. Create `.autoclaw/autobuild/workflows/<name>.yaml` with this structure:
+2. **Infer a real default step set from the name** — never ship a placeholder
+   the user must remember to replace. Match the name (case-insensitive)
+   against these, first hit wins; if several apply, include each matching step:
+   | Name contains | Default step(s) |
+   |---|---|
+   | `inbox` / `sweep` / `triage` | `id: inbox-sweep`, `mode: report`, `run: npm run autoclaw -- inbox sweep` (or, if no such script, a report-only doctor pass) |
+   | `lint` | `id: lint`, `run: npm run lint` |
+   | `test` | `id: test`, `run: npm test` |
+   | `build` | `id: build`, `run: npm run build` |
+   | `deploy` / `release` | `id: build`+`id: test`+`id: deploy` (deploy gated on `{{test.exit_code}} == 0`) |
+   | `health` / `doctor` / `check` | `id: check`, `mode: report`, `run: npm run doctor` |
+   | none of the above | a single `mode: report` step that runs the project's most relevant npm script; if none is obvious, leave `steps: []` and set status `draft` |
+3. Create `.autoclaw/autobuild/workflows/<name>.yaml`. Example for a `nightly-test` workflow:
    ```yaml
    name: <name>
    cron: "<expression>"
    created: <ISO timestamp>
    steps:
-     - id: plan
-       run: echo "Planning step — customize me"
-     - id: build
-       run: npm run build
      - id: test
        run: npm test
    notify: true
    ```
-3. Register it in `.autoclaw/autobuild/registry.json` (create if missing):
+4. Register it in `.autoclaw/autobuild/registry.json` (create if missing). Set
+   `status` to **`draft`** when the workflow has no concrete steps (empty
+   `steps:` or any step you couldn't resolve to a real command), otherwise
+   `scheduled`. A `draft` workflow is NOT fired by the scheduler — it is parked
+   until its steps are real.
    ```json
    { "workflows": [{ "name": "<name>", "cron": "<expr>", "lastRun": null, "status": "scheduled" }] }
    ```
-4. Confirm: "Workflow `<name>` scheduled (`<cron>`). Edit `.autoclaw/autobuild/workflows/<name>.yaml` to customize the steps."
+5. Confirm: "Workflow `<name>` scheduled (`<cron>`) with N step(s): <ids>. Edit `.autoclaw/autobuild/workflows/<name>.yaml` to refine." — and if `status: draft`, say so plainly: "parked as **draft** (no concrete steps yet) — it will not run until you add real steps."
 
 ## run — Execute a Workflow
 
@@ -65,11 +77,18 @@ Determine the sub-command from the user's message:
 
 ## list — Show All Workflows
 
-Read `registry.json` and display a table:
+1. **Pre-flight: is the scheduler actually running?** Read
+   `.autoclaw/autobuild/scheduler-heartbeat.json`. If it is missing or its
+   `at` timestamp is older than ~3× the tick interval (≥120s old), the
+   AutoClaw scheduler is **dormant** — print a banner first:
+   `⚠ Scheduler dormant — workflows below are registered but NOTHING will run. Open the AutoClaw workspace / re-activate the extension to start it.`
+   Otherwise print `✓ Scheduler live (last tick <relative time>)`.
+2. Read `registry.json` and display a table. Flag any `draft` row as not-yet-runnable:
 ```
 Name           Cron            Last Run             Status
 ───────────────────────────────────────────────────────────
 nightly-build  0 2 * * *       2026-04-01 02:00     passed
+inbox-sweep    */10 * * * *    —                    draft  ⚠ no concrete steps — will not run
 ```
 
 ## cancel — Remove a Workflow
