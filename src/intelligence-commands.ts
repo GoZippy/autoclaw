@@ -18,6 +18,7 @@
  * only on invocation.
  */
 
+import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -92,10 +93,36 @@ function getChannel(): vscode.OutputChannel {
   return channel;
 }
 
-/** Append a timestamped line to the output channel. */
-function logLine(msg: string): void {
-  getChannel().appendLine(`[${new Date().toISOString()}] ${msg}`);
+// ---------------------------------------------------------------------------
+// Leveled logging
+// ---------------------------------------------------------------------------
+
+type LogLevel = 'error' | 'warn' | 'info' | 'debug' | 'trace';
+const LEVEL_RANK: Record<LogLevel, number> = { error: 0, warn: 1, info: 2, debug: 3, trace: 4 };
+
+/** The configured verbosity (`autoclaw.intelligence.logLevel`, default `info`). */
+function configuredLevel(): LogLevel {
+  const raw = vscode.workspace
+    .getConfiguration('autoclaw.intelligence')
+    .get<string>('logLevel', 'info');
+  return (raw in LEVEL_RANK ? raw : 'info') as LogLevel;
 }
+
+/** Emit a line at `level` when the configured verbosity allows it. */
+function logAt(level: LogLevel, msg: string): void {
+  if (LEVEL_RANK[level] <= LEVEL_RANK[configuredLevel()]) {
+    getChannel().appendLine(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
+  }
+}
+
+/** Append an info-level timestamped line. Back-compat `LogFn` sink. */
+function logLine(msg: string): void {
+  logAt('info', msg);
+}
+
+const logError = (msg: string): void => logAt('error', msg);
+const logWarn = (msg: string): void => logAt('warn', msg);
+const logDebug = (msg: string): void => logAt('debug', msg);
 
 /**
  * Has the project ever produced a vector store? Used by the R6.4 guard: when the
@@ -133,7 +160,8 @@ async function runLearn(workspaceRoot: string): Promise<void> {
   logLine(
     `learn: analyzed ${summary.sessionsAnalyzed} session(s), ` +
       `${summary.kept} kept signal(s), ${summary.patterns} pattern(s), ` +
-      `${summary.workflowsMined} workflow(s) from ` +
+      `${summary.workflowsMined} workflow(s), ` +
+      `${summary.coordinationOutcomes} coordination outcome(s) from ` +
       `source(s): ${summary.sources.join(', ') || '(none)'}`,
   );
   void vscode.window.showInformationMessage(
@@ -831,6 +859,17 @@ async function runInstallBackend(
 ): Promise<void> {
   const dir = backendDir(context, workspaceRoot);
   const version = pinnedSqliteVecVersion(context);
+
+  // Surface the resolved environment up front so a failure report is actionable
+  // without re-running. These DEBUG lines also confirm WHICH build is executing.
+  getChannel().show(true);
+  logLine(`install-backend: starting (extension v${extensionVersion(context)})`);
+  logDebug(`install-backend: workspaceRoot=${workspaceRoot ?? '(none)'}`);
+  logDebug(`install-backend: backendDir setting=${backendDirSetting() ?? '(unset)'}`);
+  logDebug(`install-backend: resolved targetDir=${dir}`);
+  logDebug(`install-backend: process.cwd=${process.cwd()}`);
+  logDebug(`install-backend: node=${process.versions.node} electron=${(process.versions as Record<string, string>).electron ?? '(n/a)'}`);
+
   const result = await vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -848,10 +887,96 @@ async function runInstallBackend(
     );
     return;
   }
-  logLine(`install-backend: FAILED — ${result.error}`);
-  void vscode.window.showErrorMessage(
+  logError(`install-backend: FAILED — ${result.error}`);
+  logError('install-backend: run "AutoClaw: Intelligence — Diagnostics" and share the output to debug.');
+  const choice = await vscode.window.showErrorMessage(
     `Intelligence backend install failed: ${result.error}. ` +
       'Ensure node:sqlite is available (Node 24 / recent Electron) and npm is on PATH.',
+    'Run Diagnostics',
+    'Show Log',
+  );
+  if (choice === 'Run Diagnostics') {
+    await runDiagnostics(context, workspaceRoot);
+  } else if (choice === 'Show Log') {
+    getChannel().show(true);
+  }
+}
+
+/** The running extension's version (the single best signal for "is the new build live?"). */
+function extensionVersion(context: vscode.ExtensionContext): string {
+  const v = context.extension?.packageJSON?.version;
+  return typeof v === 'string' ? v : '(unknown)';
+}
+
+/**
+ * `autoclaw.intelligence.diagnostics` — a one-shot environment dump for debugging
+ * install/retrieval issues across many open windows. Read-only: it resolves every
+ * path the install flow uses, probes npm, and reports the ACTIVE extension version
+ * so we can tell whether a window is running a stale build. Nothing is installed
+ * or mutated.
+ */
+async function runDiagnostics(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string | undefined,
+): Promise<void> {
+  const ch = getChannel();
+  ch.show(true);
+  const dir = backendDir(context, workspaceRoot);
+  const folders = vscode.workspace.workspaceFolders ?? [];
+
+  // Probe npm without throwing — its presence/version is a common failure cause.
+  let npmInfo = '(not found on PATH)';
+  try {
+    const probe = spawnSync('npm', ['--version'], {
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+    });
+    if (!probe.error && probe.status === 0) {
+      npmInfo = `v${(probe.stdout || '').toString().trim()}`;
+    } else if (probe.error) {
+      npmInfo = `(spawn error: ${probe.error.message})`;
+    }
+  } catch (err) {
+    npmInfo = `(probe failed: ${(err as Error).message})`;
+  }
+
+  ch.appendLine('════════════════════════════════════════════════════════');
+  ch.appendLine('AutoClaw Intelligence — Diagnostics');
+  ch.appendLine('════════════════════════════════════════════════════════');
+  ch.appendLine('BUILD:');
+  ch.appendLine(`  extension version : ${extensionVersion(context)}`);
+  ch.appendLine(`  extension path    : ${context.extension?.extensionPath ?? '(unknown)'}`);
+  ch.appendLine(`  VS Code version   : ${vscode.version}`);
+  ch.appendLine(`  node / electron   : ${process.versions.node} / ${(process.versions as Record<string, string>).electron ?? '(n/a)'}`);
+  ch.appendLine(`  process.cwd       : ${process.cwd()}`);
+  ch.appendLine('WORKSPACE:');
+  ch.appendLine(`  resolved root     : ${workspaceRoot ?? '(no workspace open)'}`);
+  ch.appendLine(`  workspaceFolders  : ${folders.length}`);
+  folders.forEach((f, i) =>
+    ch.appendLine(`    [${i}] ${f.name} → ${f.uri.fsPath}`),
+  );
+  ch.appendLine('BACKEND:');
+  ch.appendLine(`  backendDir setting: ${backendDirSetting() ?? '(unset — using project-local default)'}`);
+  ch.appendLine(`  resolved targetDir: ${dir}`);
+  ch.appendLine(`  is absolute path  : ${path.isAbsolute(dir)}`);
+  ch.appendLine(`  installed?        : ${isBackendInstalled(dir)}`);
+  ch.appendLine(`  pinned sqlite-vec : ${pinnedSqliteVecVersion(context)}`);
+  ch.appendLine(`  ${VEC_DIR_ENV} : ${process.env[VEC_DIR_ENV] ?? '(unset)'}`);
+  ch.appendLine(`  npm on PATH       : ${npmInfo}`);
+  ch.appendLine(`  systemDir setting : ${systemDirSetting() ?? '(disabled)'}`);
+  ch.appendLine(`  log level         : ${configuredLevel()}`);
+  ch.appendLine('════════════════════════════════════════════════════════');
+
+  if (backendDirSetting() && !path.isAbsolute(backendDirSetting() as string)) {
+    logWarn(
+      `backendDir setting "${backendDirSetting()}" is RELATIVE — it will resolve against ` +
+        `the process cwd (${process.cwd()}). Set an absolute path or clear it.`,
+    );
+  }
+
+  void vscode.window.showInformationMessage(
+    `Intelligence diagnostics (v${extensionVersion(context)}) written to the "AutoClaw — Intelligence" output. ` +
+      `Backend ${isBackendInstalled(dir) ? 'installed' : 'NOT installed'} at ${dir}.`,
   );
 }
 
@@ -1042,6 +1167,9 @@ export function registerIntelligenceCommands(
     ),
     vscode.commands.registerCommand('autoclaw.intelligence.status', () =>
       runStatus(context, getWorkspaceRoot()),
+    ),
+    vscode.commands.registerCommand('autoclaw.intelligence.diagnostics', () =>
+      runDiagnostics(context, getWorkspaceRoot()),
     ),
     vscode.commands.registerCommand('autoclaw.intelligence.systemTier', () => runSystemTier()),
     vscode.commands.registerCommand('autoclaw.intelligence.relocateBackend', () =>

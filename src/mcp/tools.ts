@@ -27,6 +27,7 @@ import type {
 } from './types';
 import { getKnowledgeGraph } from '../intelligence/kg/service';
 import type { SearchStrategy } from '../intelligence/kg/types';
+import { readAllBeacons } from '../fleet/beacons';
 import { retrieveCode } from '../intelligence';
 
 const fsPromises = fs.promises;
@@ -296,6 +297,58 @@ const fleetCardsTool: ToolHandler = {
       .sort((a, b) => a.agent.localeCompare(b.agent));
 
     return { ok: true, data: cards };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: presence.fleet (FF-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the merged beacon fleet — every agent that has checked in via a beacon
+ * (other IDEs, headless runners like Hermes/openclaw, MCP CLIs that called
+ * `presence.beacon`). Reads both the machine-global `~/.autoclaw/beacons/` and
+ * this workspace's `comms/beacons/` and dedupes per (agent_id, session_id),
+ * freshest wins. Stale-beyond-TTL beacons are dropped unless `includeStale`.
+ *
+ * This is the read counterpart to the `presence.beacon` write tool: together
+ * they let any MCP-speaking peer both check in and see who else is live —
+ * closing the one A2A gap where MCP agents could message + claim but not be
+ * visible in the fleet.
+ */
+const presenceFleetTool: ToolHandler = {
+  definition: {
+    name: 'presence.fleet',
+    description:
+      'List the live beacon fleet — agents from other tools/IDEs/runners that ' +
+      'have checked in via a beacon. Merges machine-global + workspace beacons, ' +
+      'deduped freshest-wins, stale ones dropped by default.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        includeStale: {
+          type: 'boolean',
+          description: 'Include beacons older than the freshness window (default false).',
+        },
+      },
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const includeStale = args.includeStale === true;
+    try {
+      const rows = await readAllBeacons({
+        commsDir: path.join(ctx.autoclawDir, 'orchestrator', 'comms'),
+        includeStale,
+      });
+      rows.sort((a, b) => a.agent_id.localeCompare(b.agent_id));
+      return { ok: true, data: rows };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'internal_error',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
   },
 };
 
@@ -867,6 +920,7 @@ export const READ_ONLY_TOOLS: ToolHandler[] = [
   recallQueryTool,
   fleetStatusTool,
   fleetCardsTool,
+  presenceFleetTool,
   inboxReadTool,
   todoListTool,
   doctorRunTool,

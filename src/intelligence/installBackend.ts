@@ -71,14 +71,18 @@ export function isBackendInstalled(targetDir: string): boolean {
 /**
  * The npm argv used to install sqlite-vec. Split out so a test can assert the
  * exact, side-effect-free command without spawning npm.
+ *
+ * Deliberately carries NO path argument. The install target is conveyed via the
+ * spawn `cwd` instead of `--prefix`: under `shell:true` (needed on Windows to
+ * resolve the `npm.cmd` shim) argv is concatenated and re-split on spaces, so a
+ * `--prefix C:\…\Zippy Claims\…` would break at the space and npm would read a
+ * bogus `<cwd>\Claims\…\package.json`. `cwd` is passed in the options object and
+ * is immune to that splitting; none of these args contain spaces.
  */
-export function buildInstallArgs(targetDir: string, version: string): string[] {
+export function buildInstallArgs(version: string): string[] {
   return [
     'install',
     `sqlite-vec@${version}`,
-    '--prefix',
-    targetDir,
-    '--no-save',
     '--no-audit',
     '--no-fund',
     '--loglevel=error',
@@ -92,7 +96,13 @@ export function buildInstallArgs(targetDir: string, version: string): string[] {
  * re-running npm.
  */
 export function installVectorBackend(opts: InstallBackendOptions): InstallBackendResult {
-  const { targetDir, version, npmPath = 'npm', spawn = spawnSync, log } = opts;
+  const { version, npmPath = 'npm', spawn = spawnSync, log } = opts;
+
+  // Always resolve to an ABSOLUTE path. A relative target (or one coming from a
+  // mis-set `backendDir` setting) would otherwise be resolved by npm against its
+  // own cwd — the VS Code install dir — yielding a bogus path like
+  // "<vscode>/Claims/.autoclaw/native" and an ENOENT on package.json.
+  const targetDir = path.resolve(opts.targetDir);
 
   const existing = resolveInstalledLoadable(targetDir);
   if (existing) {
@@ -106,10 +116,25 @@ export function installVectorBackend(opts: InstallBackendOptions): InstallBacken
     return { ok: false, error: `cannot create ${targetDir}: ${(err as Error).message}` };
   }
 
-  const args = buildInstallArgs(targetDir, version);
-  log?.(`installing sqlite-vec@${version} into ${targetDir} (npm ${args.join(' ')})`);
+  // npm 7+ requires package.json to exist at --prefix before it will run
+  // install; seed a minimal one so the directory looks like a package root.
+  const pkgJsonPath = path.join(targetDir, 'package.json');
+  if (!fs.existsSync(pkgJsonPath)) {
+    try {
+      fs.writeFileSync(pkgJsonPath, JSON.stringify({ name: 'autoclaw-native', version: '1.0.0', private: true }));
+    } catch (err) {
+      return { ok: false, error: `cannot seed package.json: ${(err as Error).message}` };
+    }
+  }
+
+  const args = buildInstallArgs(version);
+  log?.(`installing sqlite-vec@${version} into ${targetDir} (cwd) (npm ${args.join(' ')})`);
   const res = spawn(npmPath, args, {
     encoding: 'utf8',
+    // Install target is conveyed via cwd (NOT --prefix): cwd survives the
+    // shell:true argv concatenation that a spaced --prefix path would not.
+    // npm installs into <cwd>/node_modules and uses the seeded package.json.
+    cwd: targetDir,
     // npm is a .cmd shim on Windows — run through the shell so it resolves.
     shell: process.platform === 'win32',
   });

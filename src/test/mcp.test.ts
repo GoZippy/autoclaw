@@ -159,7 +159,7 @@ suite('MCP — JSON-RPC dispatch', () => {
     }
   });
 
-  test('tools/list returns all read-only tools (incl. kg.* readers)', async () => {
+  test('tools/list returns all read-only tools (incl. kg.* readers + presence.fleet)', async () => {
     const root = makeWorkspace();
     try {
       const { ctx, ledger, toolMap } = harness(root);
@@ -171,7 +171,7 @@ suite('MCP — JSON-RPC dispatch', () => {
       const names = result.tools.map(t => t.name).sort();
       assert.deepStrictEqual(names, [
         'doctor.run', 'fabric.route', 'fleet.cards', 'fleet.status',
-        'inbox.read', 'intelligence.retrieve', 'kg.search', 'kg.traverse', 'recall.query', 'todo.list',
+        'inbox.read', 'intelligence.retrieve', 'kg.search', 'kg.traverse', 'presence.fleet', 'recall.query', 'todo.list',
       ]);
     } finally {
       rmrf(root);
@@ -518,9 +518,10 @@ suite('MCP — write-tool gate (BP3)', () => {
       assert.ok(names.includes('note.add'));
       assert.ok(names.includes('claim.task'));
       assert.ok(names.includes('llm.chat'), 'PA-5 llm.chat exposed');
+      assert.ok(names.includes('presence.beacon'), 'FF-1 presence.beacon exposed');
       assert.ok(names.includes('kg.record'), 'KGC-4 kg.record exposed');
-      // 6 original write tools + 3 PA-5 llm.* tools + 2 KGC-4 kg.* write tools.
-      assert.strictEqual(tools.length, READ_ONLY_TOOLS.length + 11);
+      // 6 original write tools + presence.beacon (FF-1) + 3 PA-5 llm.* tools + 2 KGC-4 kg.* write tools.
+      assert.strictEqual(tools.length, READ_ONLY_TOOLS.length + 12);
     } finally {
       rmrf(root);
     }

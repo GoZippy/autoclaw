@@ -45,6 +45,17 @@ export interface Beacon {
   origin?: BeaconOrigin;
   /** Optional HTTP endpoint for runner-style agents. */
   endpoint?: string;
+  /**
+   * Which coordination lanes this peer speaks (FF-4) — lets the orchestrator
+   * pick how to reach it without probing. Any of: 'fs' | 'mcp' | 'http' | 'relay'.
+   * Optional and ignored by older readers.
+   */
+  transports?: string[];
+  /**
+   * Optional pointer to this peer's A2A capability card (FF-4), e.g.
+   * `http://host:port/.well-known/agent.json`. Optional and ignored by older readers.
+   */
+  card_url?: string;
 }
 
 /** A beacon enriched for the panel (origin forced, workspace_id derived). */
