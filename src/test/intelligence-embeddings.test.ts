@@ -1,138 +1,169 @@
 /**
- * intelligence-embeddings.test.ts — unit tests for the embeddings module
- * (Phase-1 intelligence-core-loop, Task 2.2).
+ * intelligence-embeddings.test.ts — unit tests for the embeddings dispatch.
  *
  * Verifies:
  *  - `none` provider deterministic, correct dimension, empty-text zero vector
- *  - `transformers` fallback to `none` when import fails + warning logged
- *  - Unknown provider fallback to `none` + warning logged
- *  - No work at import time (R2.5)
+ *  - a real provider that fails degrades to `none` for THAT call (no cross-
+ *    provider chaining — geometry safety) and warns AT MOST ONCE (de-spam)
+ *  - `embedStrict` throws on failure / on the unresolved `auto` provider
+ *  - unreachable router/ollama hosts degrade to `none`
+ *  - no work at import time
  *
- * Pure-logic tests — no vscode, no extension host.
+ * Pure-logic + loopback-only tests — no vscode, no extension host.
  */
 
 import * as assert from 'assert';
 
 import {
   getEmbedding,
+  embedStrict,
   getNoneEmbedding,
+  detectRouter,
+  detectOllama,
   _resetPipelineCache,
 } from '../intelligence/embeddings';
 import { EmbeddingConfig } from '../intelligence/types';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function noneConfig(dimension = 768): EmbeddingConfig {
-  return { provider: 'none', model: 'none', dimension };
-}
+// An address that refuses fast (TCP discard/unused port on loopback).
+const DEAD = 'http://127.0.0.1:1';
 
 function transformersConfig(dimension = 768): EmbeddingConfig {
   return { provider: 'transformers', model: 'Xenova/nomic-embed-text-v1.5', dimension };
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 suite('intelligence-embeddings: none provider', function () {
-  teardown(function () {
-    _resetPipelineCache();
-  });
+  teardown(() => _resetPipelineCache());
 
   test('returns vector of correct dimension', function () {
-    const vec = getNoneEmbedding('hello world', 768);
-    assert.strictEqual(vec.length, 768, 'vector must match configured dimension');
+    assert.strictEqual(getNoneEmbedding('hello world', 768).length, 768);
   });
 
   test('returns vector of a different configured dimension', function () {
-    const vec = getNoneEmbedding('hello world', 384);
-    assert.strictEqual(vec.length, 384);
+    assert.strictEqual(getNoneEmbedding('hello world', 384).length, 384);
   });
 
   test('deterministic — same text produces the same vector', function () {
-    const a = getNoneEmbedding('deterministic check', 768);
-    const b = getNoneEmbedding('deterministic check', 768);
-    assert.deepStrictEqual(a, b, 'same input must yield identical output');
+    assert.deepStrictEqual(getNoneEmbedding('x', 768), getNoneEmbedding('x', 768));
   });
 
   test('different texts produce different vectors', function () {
     const a = getNoneEmbedding('alpha', 768);
     const b = getNoneEmbedding('beta', 768);
-    const same = a.every((v, i) => v === b[i]);
-    assert.strictEqual(same, false, 'distinct texts should yield distinct vectors');
+    assert.strictEqual(a.every((v, i) => v === b[i]), false);
   });
 
   test('empty text returns a zero vector of correct dimension', function () {
     const vec = getNoneEmbedding('', 768);
     assert.strictEqual(vec.length, 768);
-    assert.ok(vec.every((v) => v === 0), 'every element must be zero for empty text');
+    assert.ok(vec.every((v) => v === 0));
   });
 });
 
-suite('intelligence-embeddings: transformers fallback', function () {
-  teardown(function () {
-    _resetPipelineCache();
+suite('intelligence-embeddings: degrade-to-none + de-spam', function () {
+  teardown(() => _resetPipelineCache());
+
+  test('a failing provider degrades to none (correct dimension) and warns', async function () {
+    const warnings: string[] = [];
+    const vec = await getEmbedding('hello', transformersConfig(768), (m) => warnings.push(m));
+    assert.strictEqual(vec.length, 768, 'degraded vector must keep the configured dimension');
+    assert.ok(
+      warnings.some((w) => /unavailable/i.test(w) && /none/i.test(w)),
+      `expected an "unavailable … none" warning, got: ${JSON.stringify(warnings)}`,
+    );
   });
 
-  test('falls back to none and logs warning when @xenova/transformers is not loadable', async function () {
+  test('repeated failures warn AT MOST ONCE (de-spam)', async function () {
+    // Use a dead router host so the failure message is byte-identical every call
+    // (a connection refusal). The transformers provider can fail at varying later
+    // stages when @xenova is present in the dev tree, which is not a de-spam test.
     const warnings: string[] = [];
-    const config = transformersConfig(768);
+    const cfg: EmbeddingConfig = { provider: 'router', model: 'nomic-embed-text', dimension: 64, routerHost: DEAD };
+    for (let i = 0; i < 50; i++) {
+      await getEmbedding(`chunk ${i}`, cfg, (m) => warnings.push(m));
+    }
+    assert.strictEqual(warnings.length, 1, `expected one warning for 50 calls, got ${warnings.length}`);
+  });
 
-    const vec = await getEmbedding('hello', config, (m) => warnings.push(m));
+  test('unknown provider degrades to none and warns', async function () {
+    const warnings: string[] = [];
+    const cfg: EmbeddingConfig = { provider: 'bogus' as unknown as 'none', model: 'x', dimension: 128 };
+    const vec = await getEmbedding('test', cfg, (m) => warnings.push(m));
+    assert.strictEqual(vec.length, 128);
+    assert.ok(warnings.some((w) => /unknown embedding provider/i.test(w)));
+  });
 
-    // Should have produced a valid vector (from the none fallback)
-    assert.strictEqual(vec.length, 768, 'fallback must still return correct dimension');
-    // Should have logged a warning mentioning the failure
-    assert.ok(
-      warnings.some((w) => /fall(ing)?\s*back/i.test(w)),
-      `expected a fallback warning, got: ${JSON.stringify(warnings)}`,
+  test('onDegrade fires when a REAL provider degrades, never for none', async function () {
+    let degraded = 0;
+    await getEmbedding(
+      'x',
+      { provider: 'router', model: 'm', dimension: 8, routerHost: DEAD },
+      undefined,
+      () => degraded++,
+    );
+    assert.strictEqual(degraded, 1, 'a failed real provider must signal degradation');
+
+    degraded = 0;
+    await getEmbedding('x', { provider: 'none', model: 'none', dimension: 8 }, undefined, () => degraded++);
+    assert.strictEqual(degraded, 0, "the 'none' provider does not degrade");
+  });
+});
+
+suite('intelligence-embeddings: embedStrict (probe path)', function () {
+  teardown(() => _resetPipelineCache());
+
+  test("embedStrict throws on the unresolved 'auto' provider", async function () {
+    await assert.rejects(
+      () => embedStrict('x', { provider: 'auto', model: 'm', dimension: 8 }),
+      /must be resolved/i,
+    );
+  });
+
+  test('embedStrict(none) returns a vector and never throws', async function () {
+    const vec = await embedStrict('x', { provider: 'none', model: 'none-hashed-bow', dimension: 16 });
+    assert.strictEqual(vec.length, 16);
+  });
+
+  test('embedStrict throws (does NOT degrade) when a router host is unreachable', async function () {
+    await assert.rejects(() =>
+      embedStrict('x', { provider: 'router', model: 'nomic-embed-text', dimension: 8, routerHost: DEAD }),
     );
   });
 });
 
-suite('intelligence-embeddings: unknown provider fallback', function () {
-  teardown(function () {
-    _resetPipelineCache();
+suite('intelligence-embeddings: unreachable hosts degrade to none', function () {
+  teardown(() => _resetPipelineCache());
+
+  test('router on a dead host → none + one warning', async function () {
+    const warnings: string[] = [];
+    const vec = await getEmbedding(
+      'x',
+      { provider: 'router', model: 'nomic-embed-text', dimension: 32, routerHost: DEAD },
+      (m) => warnings.push(m),
+    );
+    assert.strictEqual(vec.length, 32);
+    assert.ok(warnings.length >= 1);
   });
 
-  test('unknown provider falls back to none and logs warning', async function () {
-    const warnings: string[] = [];
-    // Cast to force an unknown provider string through
-    const config: EmbeddingConfig = {
-      provider: 'bogus' as any,
-      model: 'x',
-      dimension: 128,
-    };
+  test('ollama on a dead host → none', async function () {
+    const vec = await getEmbedding('x', {
+      provider: 'ollama',
+      model: 'nomic-embed-text',
+      dimension: 32,
+      ollamaHost: DEAD,
+    });
+    assert.strictEqual(vec.length, 32);
+  });
 
-    const vec = await getEmbedding('test', config, (m) => warnings.push(m));
-
-    assert.strictEqual(vec.length, 128, 'fallback must respect configured dimension');
-    assert.ok(
-      warnings.some((w) => /unknown provider/i.test(w)),
-      `expected unknown-provider warning, got: ${JSON.stringify(warnings)}`,
-    );
+  test('detectRouter / detectOllama resolve false on a dead host (no throw)', async function () {
+    assert.strictEqual(await detectRouter(DEAD), false);
+    assert.strictEqual(await detectOllama(DEAD), false);
   });
 });
 
 suite('intelligence-embeddings: import-time safety', function () {
-  teardown(function () {
-    _resetPipelineCache();
-  });
-
-  test('importing the module does not trigger pipeline loading', function () {
-    // The fact that we reach this test without any network error or
-    // @xenova/transformers load attempt proves R2.5: the module-scope
-    // `cachedPipeline` starts null and the dynamic import is never called
-    // until `getEmbedding` is invoked with provider='transformers'.
-    //
-    // If importing eagerly loaded the pipeline, the test runner would fail
-    // at the top-level import with "Cannot find module '@xenova/transformers'"
-    // since it's not installed in CI/test.
-    assert.strictEqual(typeof getEmbedding, 'function', 'export is available');
-    assert.strictEqual(typeof getNoneEmbedding, 'function', 'export is available');
-    assert.strictEqual(typeof _resetPipelineCache, 'function', 'export is available');
-    // No crash ⇒ no eager loading happened.
+  test('exports are functions and importing did not load any provider', function () {
+    assert.strictEqual(typeof getEmbedding, 'function');
+    assert.strictEqual(typeof embedStrict, 'function');
+    assert.strictEqual(typeof getNoneEmbedding, 'function');
   });
 });

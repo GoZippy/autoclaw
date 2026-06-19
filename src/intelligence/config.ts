@@ -30,18 +30,27 @@ import { intelligencePaths } from './paths';
 export type LogFn = (msg: string) => void;
 
 const VECTOR_BACKENDS: readonly VectorBackend[] = ['sqlite-vec', 'postgres'];
-const EMBEDDING_PROVIDERS: readonly EmbeddingProvider[] = ['transformers', 'ollama', 'none'];
+const EMBEDDING_PROVIDERS: readonly EmbeddingProvider[] = [
+  'auto',
+  'router',
+  'transformers',
+  'ollama',
+  'none',
+];
 
 /**
- * Locked-decision defaults (see `.kiro/specs/README.md` D5/D7): sqlite-vec
- * backend, transformers provider with the 768-dim nomic model. Treated as
- * immutable — callers receive a deep clone via {@link loadConfig}.
+ * Locked-decision defaults: sqlite-vec backend. The embedding provider defaults
+ * to `auto` — `embeddingResolve.ts` probes router→ollama→transformers→none at
+ * first index and pins the first reachable one. The `model`/`dimension` here are
+ * only the seed the resolver overrides per chosen provider; they also serve as
+ * the concrete identity if a user pins `provider: 'transformers'` explicitly.
+ * Treated as immutable — callers receive a deep clone via {@link loadConfig}.
  */
 export const DEFAULT_CONFIG: IntelligenceConfig = {
   backend: 'sqlite-vec',
   sqlitePath: '.autoclaw/vector/db.sqlite',
   embedding: {
-    provider: 'transformers',
+    provider: 'auto',
     model: 'Xenova/nomic-embed-text-v1.5',
     dimension: 768,
   },
@@ -231,6 +240,13 @@ function mergeEmbedding(base: EmbeddingConfig, input: unknown, warn: LogFn): Emb
       out.ollamaHost = input.ollamaHost;
     } else {
       warn('intelligence config: invalid embedding.ollamaHost; ignoring');
+    }
+  }
+  if ('routerHost' in input && input.routerHost !== undefined) {
+    if (typeof input.routerHost === 'string' && input.routerHost.trim() !== '') {
+      out.routerHost = input.routerHost;
+    } else {
+      warn('intelligence config: invalid embedding.routerHost; ignoring');
     }
   }
   return out;

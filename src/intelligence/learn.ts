@@ -738,8 +738,11 @@ async function storeMemoryEmbeddings(
     try {
       const vrecs: VectorRecord[] = [];
       let i = 0;
+      let embeddingDegraded = false;
       for (const record of records) {
-        const embedding = await getEmbedding(record.content, config.embedding, log);
+        const embedding = await getEmbedding(record.content, config.embedding, log, () => {
+          embeddingDegraded = true;
+        });
         vrecs.push({
           id: `${SOURCE_TAG}:${project}:${record.createdAt}:${record.kind}:${i++}`,
           content: record.content,
@@ -759,6 +762,13 @@ async function storeMemoryEmbeddings(
       await db.storeEmbeddings(vrecs, {
         deleteIdPrefixes: [`${SOURCE_TAG}:${project}:`],
       });
+      if (embeddingDegraded) {
+        log(
+          `learn: WARNING — the "${config.embedding.provider}" embedding provider failed on some ` +
+            `records; those fell back to basic 'none' vectors (mixed geometry). Fix the provider ` +
+            `and re-run /learn for a clean rebuild.`,
+        );
+      }
     } finally {
       db.close();
     }

@@ -122,6 +122,39 @@ export interface ChatResult {
   httpStatus?: number;
 }
 
+/** Input to {@link LlmProvider.embed} — one or many texts to embed. */
+export interface EmbedOptions {
+  /** Text(s) to embed. A single string yields one vector; an array yields one per item. */
+  input: string | string[];
+  /** Embedding model id; falls back to the provider default. */
+  model?: ModelId;
+  /** Per-request timeout (ms). */
+  timeoutMs?: number;
+  /** Routing hints (e.g. intent) for a router that selects an embedding backend. */
+  hints?: ChatHints;
+}
+
+/** Result of {@link LlmProvider.embed} — mirrors {@link ChatResult}'s shape. */
+export interface EmbeddingsResult {
+  ok: boolean;
+  /** One vector per input (order-preserving). Present only on success. */
+  vectors?: number[][];
+  /** Vector dimension (length of each vector). Present only on success. */
+  dimension?: number;
+  /** Model id that actually served (may differ from request when a router routes). */
+  model: ModelId;
+  /** Provider id that served. */
+  servedBy: ProviderId;
+  /** Input tokens consumed (embeddings have no output tokens). */
+  tokens?: { input: number; output: number };
+  durationMs: number;
+  /** Cost in cents (ZICO-aligned). Absent when the provider doesn't report. */
+  costCents?: number;
+  errorClass?: ErrorClass;
+  errorMessage?: string;
+  httpStatus?: number;
+}
+
 /** Detection outcome (mirrors runner shape). */
 export type DetectionResult = DetectionResultFound | DetectionResultNotFound;
 
@@ -183,6 +216,11 @@ export interface LlmProvider {
   chat(opts: ChatOptions): Promise<ChatResult>;
   models(): Promise<ModelInfo[]>;
   health(): Promise<HealthReport>;
+  /**
+   * Embed text(s) via the provider's OpenAI-compatible `/v1/embeddings` surface.
+   * Optional — present only on providers whose `capabilities.embeddings` is true.
+   */
+  embed?(opts: EmbedOptions): Promise<EmbeddingsResult>;
 }
 
 /* -------------------------------------------------------------------------- */

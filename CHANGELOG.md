@@ -1,5 +1,47 @@
 # Changelog
 
+## [Unreleased]
+
+_Embeddings that just work, everywhere — a universal, privacy-first auto-detect
+ladder so the Intelligence Layer stops degrading to keyword-only `none` (and
+stops flooding the log) on a fresh install._
+
+### Added
+
+- **Auto-detecting embedding provider ladder** (`src/intelligence/embeddingResolve.ts`).
+  The embedding provider now defaults to `auto`: on first index it probes
+  **router (Zippy Mesh) → ollama → transformers (offline) → none**, then PINS the
+  first reachable one (sidecar `.autoclaw/vector/embedding-resolved.json`) so the
+  vector signature stays stable. Resolution probes with a real embed to measure
+  the true vector dimension (router/ollama model dims vary). `none` is never
+  pinned, so a router you start later or an `ollama pull` is picked up next run.
+- **Zippy Mesh router embedding provider** — `provider: "router"` POSTs to an
+  OpenAI-compatible `/v1/embeddings` (honoring `ZIPPYMESH_HOST`/`ZIPPYMESH_TOKEN`,
+  tagging `x-intent: embed`). One router install serves chat **and** embeddings,
+  and a team can share one embedding node instead of every dev installing a heavy
+  native model. First-class `embed()` added to the OpenAI-compatible provider
+  (inherited by ZippyMesh + Ollama) returning an `EmbeddingsResult`; a shipped
+  `embeddings-playbook.json` (local-first) lets ZMLR route embed calls.
+- **Offline embeddings installer** (`src/intelligence/installEmbeddings.ts`) — a
+  one-command install of `@xenova/transformers` for fully-offline, in-process
+  embeddings, **project-local** (never C:) with a project-local model cache. The
+  install conveys its target via spawn **`cwd`, never `--prefix`**, so paths with
+  spaces (e.g. `Zippy Claims`) no longer break it.
+- New commands: **Set Embedding Provider**, **Detect Embedding Provider**, and
+  **Install Offline Embeddings**; Status/Diagnostics now report the active
+  provider + pin.
+
+### Fixed
+
+- **Embeddings no longer flood the log.** The `transformers failed (Cannot find
+  module '@xenova/transformers')` warning was emitted once per indexed chunk
+  (hundreds–thousands of identical lines) and the layer silently degraded to the
+  low-quality `none` provider. Provider warnings are now de-duped to one message
+  per distinct failure, and `auto` resolves to a working provider instead.
+- A failing provider degrades to `none` for that call **without chaining across
+  other real providers**, so a single index never mixes incompatible vector
+  geometries.
+
 ## [3.5.0] - 2026-06-15
 
 _The intelligence release: local-first learning + retrieval over your past AI
