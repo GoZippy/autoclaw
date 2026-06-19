@@ -91,7 +91,13 @@ export function buildInstallArgs(targetDir: string, version: string): string[] {
  * re-running npm.
  */
 export function installVectorBackend(opts: InstallBackendOptions): InstallBackendResult {
-  const { targetDir, version, npmPath = 'npm', spawn = spawnSync, log } = opts;
+  const { version, npmPath = 'npm', spawn = spawnSync, log } = opts;
+
+  // Always resolve to an ABSOLUTE path. A relative target (or one coming from a
+  // mis-set `backendDir` setting) would otherwise be resolved by npm against its
+  // own cwd — the VS Code install dir — yielding a bogus path like
+  // "<vscode>/Claims/.autoclaw/native" and an ENOENT on package.json.
+  const targetDir = path.resolve(opts.targetDir);
 
   const existing = resolveInstalledLoadable(targetDir);
   if (existing) {
@@ -105,8 +111,8 @@ export function installVectorBackend(opts: InstallBackendOptions): InstallBacken
     return { ok: false, error: `cannot create ${targetDir}: ${(err as Error).message}` };
   }
 
-  // npm 7+ on Windows requires package.json to exist at --prefix before it will
-  // run install; seed a minimal one so the directory looks like a package root.
+  // npm 7+ requires package.json to exist at --prefix before it will run
+  // install; seed a minimal one so the directory looks like a package root.
   const pkgJsonPath = path.join(targetDir, 'package.json');
   if (!fs.existsSync(pkgJsonPath)) {
     try {
@@ -120,6 +126,9 @@ export function installVectorBackend(opts: InstallBackendOptions): InstallBacken
   log?.(`installing sqlite-vec@${version} into ${targetDir} (npm ${args.join(' ')})`);
   const res = spawn(npmPath, args, {
     encoding: 'utf8',
+    // Run npm FROM the target dir so its cwd, --prefix, and the seeded
+    // package.json all agree on one absolute location.
+    cwd: targetDir,
     // npm is a .cmd shim on Windows — run through the shell so it resolves.
     shell: process.platform === 'win32',
   });
