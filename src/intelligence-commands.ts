@@ -160,7 +160,8 @@ async function runLearn(workspaceRoot: string): Promise<void> {
   logLine(
     `learn: analyzed ${summary.sessionsAnalyzed} session(s), ` +
       `${summary.kept} kept signal(s), ${summary.patterns} pattern(s), ` +
-      `${summary.workflowsMined} workflow(s) from ` +
+      `${summary.workflowsMined} workflow(s), ` +
+      `${summary.coordinationOutcomes} coordination outcome(s) from ` +
       `source(s): ${summary.sources.join(', ') || '(none)'}`,
   );
   void vscode.window.showInformationMessage(

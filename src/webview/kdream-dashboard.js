@@ -108,6 +108,7 @@
         case 'updateAgentCards': renderAgentCardsHtml(data); break;
         case 'updateAwaitingYou': renderAwaitingYouHtml(data); break;
         case 'updateFabricHealth': renderFabricHealthHtml(data); break;
+        case 'updatePending': renderPending(data); break;
         // Errors
         case 'error': showError(data); break;
       }
@@ -269,6 +270,62 @@
       btn.addEventListener('click', () => {
         const action = btn.getAttribute('data-fabric-action');
         if (action) vscode.postMessage({ command: action });
+      });
+    });
+  }
+
+  // ── Pending agents tray (FF-3) ────────────────────────────────────
+  // Wire the "Invite agent…" button (always present in the section header).
+  document.getElementById('btn-invite-agent')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    vscode.postMessage({ command: 'inviteAgent' });
+  });
+
+  // Render the pending tray. Shows the section only when there is at least one
+  // agent waiting to be admitted; otherwise it stays hidden.
+  function renderPending(pending) {
+    const list = Array.isArray(pending) ? pending : [];
+    const section = document.getElementById('pending-section');
+    const el = document.getElementById('pending-content');
+    if (!el) return;
+    setBadge('pending-badge', String(list.length));
+    if (!list.length) {
+      el.innerHTML = '';
+      if (section) section.style.display = 'none';
+      return;
+    }
+    if (section) {
+      section.style.display = '';
+      // Auto-open when agents are waiting, unless the user toggled it shut.
+      if (!Object.prototype.hasOwnProperty.call(uiState.sections, 'pending-section')) {
+        section.classList.add('open');
+      }
+    }
+    let h = '';
+    for (const p of list) {
+      const tag = p.viaInvite ? 'invited' : 'uninvited';
+      h += '<div class="pending-row" data-agent-id="' + esc(p.agentId) + '">';
+      h += '<div class="pending-meta">';
+      h += '<span class="pending-id">' + esc(p.agentId) + '</span>';
+      h += '<span class="pending-tag ' + tag + '">' + tag + '</span>';
+      if (p.suggestedRole) h += '<span class="pending-role">' + esc(p.suggestedRole) + '</span>';
+      if (p.host) h += '<span class="pending-host">' + esc(p.host) + '</span>';
+      h += '</div>';
+      h += '<div class="pending-actions">';
+      h += '<button class="pending-admit" type="button" data-agent-id="' + esc(p.agentId) + '">Admit</button>';
+      h += '<button class="pending-decline" type="button" data-agent-id="' + esc(p.agentId) + '">Decline</button>';
+      h += '</div>';
+      h += '</div>';
+    }
+    el.innerHTML = h;
+    el.querySelectorAll('.pending-admit').forEach(btn => {
+      btn.addEventListener('click', () => {
+        vscode.postMessage({ command: 'admitAgent', agentId: btn.getAttribute('data-agent-id') });
+      });
+    });
+    el.querySelectorAll('.pending-decline').forEach(btn => {
+      btn.addEventListener('click', () => {
+        vscode.postMessage({ command: 'declineAgent', agentId: btn.getAttribute('data-agent-id') });
       });
     });
   }
