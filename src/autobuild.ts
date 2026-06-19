@@ -860,7 +860,7 @@ export function isConcreteStep(step: WorkflowStep): boolean {
  * A workflow is runnable only if it has at least one concrete step. An empty
  * `steps:` list or one made entirely of placeholders is a `draft` — registered
  * but parked, never fired. This is the code-side guarantee behind the skill's
- * "never ship a placeholder" rule (yocooLab learnings #3).
+ * "never ship a placeholder" rule.
  */
 export function isRunnableWorkflow(workflow: Workflow): boolean {
   return Array.isArray(workflow?.steps) && workflow.steps.some(isConcreteStep);
@@ -1143,7 +1143,7 @@ export async function tick(
       continue;
     }
     // A placeholder/empty workflow is parked, never fired — otherwise a
-    // scheduled no-op runs forever (yocooLab learnings #3).
+    // scheduled no-op runs forever.
     if (!isRunnableWorkflow(workflow)) {
       report.skippedDraft.push(workflow.name);
       upsertRegistry(registry, {

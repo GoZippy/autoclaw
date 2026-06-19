@@ -1,6 +1,6 @@
 /**
  * intelligence-coordination.test.ts — coverage for the coordination-signal
- * collector that feeds team outcomes into /learn (yocooLab learnings #8).
+ * collector that feeds team outcomes into /learn.
  */
 
 import * as assert from 'assert';

@@ -248,9 +248,9 @@ function aggregate(
   // Workflows are prepended so they rank ahead of single-snippet patterns.
   const workflows = mineWorkflows(sessions);
   // Coordination outcomes lead both lists: a cross-agent review that confirmed a
-  // finding or gated a merge is the highest-value, most reusable team signal
-  // (yocooLab learnings #8). They are folded BEFORE the empty/default check so a
-  // corpus with coordination signal but no kept code is still treated as real.
+  // finding or gated a merge is the highest-value, most reusable team signal.
+  // They are folded BEFORE the empty/default check so a corpus with coordination
+  // signal but no kept code is still treated as real.
   const successfulList = [
     ...coordination.successful,
     ...workflows.successful

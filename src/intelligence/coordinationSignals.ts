@@ -1,6 +1,6 @@
 /**
  * coordinationSignals.ts — Feed multi-agent COORDINATION outcomes into the
- * learnings store (yocooLab learnings #8).
+ * learnings store.
  *
  * The `/learn` aggregator historically distilled only per-session code-diff
  * signals (kept code, git commits, shipped/discarded). It ignored the richest,

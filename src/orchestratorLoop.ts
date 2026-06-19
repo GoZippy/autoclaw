@@ -425,7 +425,7 @@ export async function readRecentNextDispatches(
  * How long a `task_claim-next-<agent>` placeholder lives before it is garbage.
  * Comfortably longer than the 5-min re-dispatch cooldown so a live agent always
  * has time to claim, but short enough that an idle fleet doesn't leave a litter
- * of stale placeholders (yocooLab observed 50 piled up in shared/).
+ * of stale placeholders (an idle fleet could otherwise pile up dozens in shared/).
  */
 export const NEXT_DISPATCH_TTL_MS = 30 * 60 * 1000;
 
@@ -691,7 +691,7 @@ export async function runTick(
   });
 
   // Reap stale/duplicate dispatch placeholders before discovering new work, so
-  // the shared inbox can't accumulate them unbounded (yocooLab learnings #1).
+  // the shared inbox can't accumulate them unbounded.
   if (workspaceRoot) {
     try {
       const reaped = await gcStaleNextDispatches(workspaceRoot);
@@ -739,7 +739,7 @@ export async function runTick(
 
     // Auto-tally any consensus/active/ vote sets that have reached a verdict:
     // write consensus/resolved/<task>.json and clear the active stub. Closes the
-    // loop the watcher opens (yocooLab learnings #9) so no operator hand-writes it.
+    // loop the watcher opens so no operator hand-writes it.
     try {
       const tally = await resolvePendingConsensus({ workspaceRoot, resolvedBy: 'orchestrator-loop' });
       if (tally.resolved.length > 0) {

@@ -1,5 +1,5 @@
 /**
- * consensusTally.ts — Close the consensus loop (yocooLab learnings #9).
+ * consensusTally.ts — Close the consensus loop.
  *
  * The peer-review watcher OPENS a `consensus/active/<task_id>.json` stub and
  * sends `review_request`s, but until now nothing tallied the votes back: votes

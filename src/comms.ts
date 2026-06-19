@@ -108,7 +108,7 @@ export interface Message {
   /**
    * Absolute time after which this message is stale and may be garbage-collected.
    * Used for ephemeral dispatch placeholders (`task_claim-next-<agent>`) so the
-   * shared inbox can't accumulate them unbounded (yocooLab learnings #1).
+   * shared inbox can't accumulate them unbounded.
    */
   expires_at?: string;
 }
