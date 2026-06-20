@@ -42,11 +42,24 @@ export interface SqliteStatement {
 /** Normalized handle over `node:sqlite` / `better-sqlite3`. */
 export interface SqliteDriver {
   readonly kind: SqliteDriverKind;
+  /** Whether the `sqlite-vec` (`vec0`) loadable extension actually loaded.
+   *  Always `true` when opened with `requireVec` (the default); may be `false`
+   *  when a caller opts into `requireVec: false` (e.g. the KG store, which runs
+   *  FTS-only when sqlite-vec is absent). */
+  readonly vecLoaded: boolean;
   prepare(sql: string): SqliteStatement;
   exec(sql: string): void;
   /** Run `fn` inside a single transaction (commit on return, rollback on throw). */
   transaction(fn: () => void): void;
   close(): void;
+}
+
+/** Options for opening a driver. */
+export interface DriverOpenOptions {
+  /** When `true` (default) sqlite-vec MUST load or the open throws — preserving
+   *  the vector store's contract. When `false`, a missing/broken sqlite-vec is
+   *  tolerated: the driver opens with `vecLoaded === false`. */
+  requireVec?: boolean;
 }
 
 /**
@@ -78,27 +91,34 @@ function sqliteVecLoadablePath(): string {
 }
 
 /** Open `dbPath` with `node:sqlite` and load the sqlite-vec extension. */
-function openNodeSqlite(dbPath: string): SqliteDriver {
+function openNodeSqlite(dbPath: string, requireVec = true): SqliteDriver {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { DatabaseSync } = require('node:sqlite');
-  const extPath = sqliteVecLoadablePath();
   // `allowExtension` must be set at construction for enableLoadExtension to work.
   const db = new DatabaseSync(dbPath, { allowExtension: true });
+  let vecLoaded = false;
   try {
+    const extPath = sqliteVecLoadablePath();
     db.enableLoadExtension(true);
     db.loadExtension(extPath);
     // Re-lock extension loading now that the one extension we need is in.
     db.enableLoadExtension(false);
+    vecLoaded = true;
   } catch (err) {
-    try {
-      db.close();
-    } catch {
-      // ignore — surfacing the original error matters more
+    if (requireVec) {
+      try {
+        db.close();
+      } catch {
+        // ignore — surfacing the original error matters more
+      }
+      throw err;
     }
-    throw err;
+    // requireVec === false: tolerate a missing extension; FTS-only mode.
+    try { db.enableLoadExtension(false); } catch { /* ignore */ }
   }
   return {
     kind: 'node-sqlite',
+    vecLoaded,
     prepare: (sql: string) => db.prepare(sql) as SqliteStatement,
     exec: (sql: string) => {
       db.exec(sql);
@@ -124,24 +144,30 @@ function openNodeSqlite(dbPath: string): SqliteDriver {
 }
 
 /** Open `dbPath` with the native `better-sqlite3` fallback + sqlite-vec. */
-function openBetterSqlite(dbPath: string): SqliteDriver {
+function openBetterSqlite(dbPath: string, requireVec = true): SqliteDriver {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const Database = require('better-sqlite3');
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const sqliteVec = require('sqlite-vec');
   const db = new Database(dbPath);
+  let vecLoaded = false;
   try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const sqliteVec = require('sqlite-vec');
     sqliteVec.load(db);
+    vecLoaded = true;
   } catch (err) {
-    try {
-      db.close();
-    } catch {
-      // ignore
+    if (requireVec) {
+      try {
+        db.close();
+      } catch {
+        // ignore
+      }
+      throw err;
     }
-    throw err;
+    // requireVec === false: tolerate a missing extension; FTS-only mode.
   }
   return {
     kind: 'better-sqlite3',
+    vecLoaded,
     prepare: (sql: string) => db.prepare(sql) as SqliteStatement,
     exec: (sql: string) => {
       db.exec(sql);
@@ -155,8 +181,10 @@ function openBetterSqlite(dbPath: string): SqliteDriver {
   };
 }
 
-function openByKind(kind: SqliteDriverKind, dbPath: string): SqliteDriver {
-  return kind === 'node-sqlite' ? openNodeSqlite(dbPath) : openBetterSqlite(dbPath);
+function openByKind(kind: SqliteDriverKind, dbPath: string, requireVec = true): SqliteDriver {
+  return kind === 'node-sqlite'
+    ? openNodeSqlite(dbPath, requireVec)
+    : openBetterSqlite(dbPath, requireVec);
 }
 
 /**
@@ -170,11 +198,13 @@ export function openSqliteDriver(
   dbPath: string,
   warn: LogFn,
   order: readonly SqliteDriverKind[] = DEFAULT_DRIVER_ORDER,
+  opts: DriverOpenOptions = {},
 ): SqliteDriver {
+  const requireVec = opts.requireVec ?? true;
   let lastErr: unknown;
   for (const kind of order) {
     try {
-      return openByKind(kind, dbPath);
+      return openByKind(kind, dbPath, requireVec);
     } catch (err) {
       lastErr = err;
       warn(`vector: sqlite driver "${kind}" unavailable (${(err as Error).message})`);

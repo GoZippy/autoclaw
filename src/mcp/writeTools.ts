@@ -52,6 +52,7 @@ import {
   type ToolAuthPolicy,
 } from './scoping';
 import { LlmRegistry } from '../llm';
+import { getKnowledgeGraph } from '../intelligence/kg/service';
 import { writeBeacon, type Beacon } from '../fleet/beacons';
 
 const fsPromises = fs.promises;
@@ -1018,6 +1019,138 @@ const llmHealthTool: ToolHandler = {
 };
 
 // ---------------------------------------------------------------------------
+// KGC-4 — Knowledge Graph write-tools (gated + audited; delegate to the
+// in-process KG via getKnowledgeGraph). These are the PRIMARY agent surface for
+// recording shared thoughts; the read side (kg.search / kg.traverse) lives in
+// tools.ts. When the KG is degraded (no SQLite driver) recordThought/Relation
+// are no-ops — the tool still returns ok with `degraded: true` so callers know
+// the thought was not persisted.
+// ---------------------------------------------------------------------------
+
+/**
+ * Default `project` for a KG write when the caller omits it: the workspace
+ * directory basename (mirrors how the Intelligence layer scopes a repo). The
+ * default `agent` is the caller's session id, falling back to `'mcp'`.
+ */
+function defaultProject(ctx: ToolContext): string {
+  return path.basename(ctx.workspaceRoot) || 'workspace';
+}
+function defaultAgent(ctx: ToolContext): string {
+  return ctx.sessionId ?? 'mcp';
+}
+
+/**
+ * `kg.record` — record a thought (finding/decision/observation/…) into the
+ * shared Knowledge Graph so other agents can recall it via `kg.search`.
+ * `project` defaults to the workspace basename and `agent` to the caller's
+ * session (or `'mcp'`) when omitted.
+ */
+const kgRecordTool: ToolHandler = {
+  definition: {
+    name: 'kg.record',
+    description:
+      'Record a thought into the shared Knowledge Graph for other agents to ' +
+      'recall via kg.search. project defaults to the workspace name and agent ' +
+      'to the caller session. Requires write access.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', description: 'Thought kind (thought, finding, decision, observation, question, answer, …).' },
+        text: { type: 'string', description: 'The thought text.' },
+        project: { type: 'string', description: "Project scope. Defaults to the workspace basename." },
+        agent: { type: 'string', description: "Recording agent. Defaults to the caller's session id (or 'mcp')." },
+        sprint: { type: 'string', description: 'Optional sprint id.' },
+        task_id: { type: 'string', description: 'Optional task id.' },
+        meta: { type: 'object', description: 'Optional structured metadata.' },
+      },
+      required: ['kind', 'text'],
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const kind = typeof args.kind === 'string' ? args.kind.trim() : '';
+    const text = typeof args.text === 'string' ? args.text.trim() : '';
+    if (!kind) {
+      return { ok: false, reason: 'invalid_params', detail: 'kind is required' };
+    }
+    if (!text) {
+      return { ok: false, reason: 'invalid_params', detail: 'text is required' };
+    }
+    const project =
+      (typeof args.project === 'string' && args.project.trim()) || defaultProject(ctx);
+    const agent = (typeof args.agent === 'string' && args.agent.trim()) || defaultAgent(ctx);
+    const meta =
+      args.meta && typeof args.meta === 'object' && !Array.isArray(args.meta)
+        ? (args.meta as Record<string, unknown>)
+        : undefined;
+
+    try {
+      const handle = getKnowledgeGraph({ workspaceRoot: ctx.workspaceRoot });
+      const id = await handle.kg.recordThought({
+        project,
+        agent,
+        kind,
+        text,
+        ...(typeof args.sprint === 'string' && args.sprint ? { sprint: args.sprint } : {}),
+        ...(typeof args.task_id === 'string' && args.task_id ? { task_id: args.task_id } : {}),
+        ...(meta ? { meta } : {}),
+      });
+      const ledger = await appendLedgerEntry(ctx, newMsgId(), {
+        type: 'kg_record', project, agent, kind, thought_id: id, ...callerOf(ctx),
+      });
+      return { ok: true, data: { id, degraded: handle.degraded, ledger_ok: ledger.ok } };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: err instanceof Error ? err.message : String(err) };
+    }
+  },
+};
+
+/**
+ * `kg.relate` — record a directed relation between two thoughts (e.g.
+ * `supersedes`, `derives_from`, `mentions`) so `kg.traverse` can walk it.
+ */
+const kgRelateTool: ToolHandler = {
+  definition: {
+    name: 'kg.relate',
+    description:
+      'Record a directed relation (edge) between two Knowledge Graph thoughts ' +
+      'so kg.traverse can walk it. Requires write access.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        from: { type: 'string', description: 'Source thought id.' },
+        kind: { type: 'string', description: 'Edge kind (mentions, supersedes, derives_from, …).' },
+        to: { type: 'string', description: 'Target thought id.' },
+        meta: { type: 'object', description: 'Optional structured metadata for the edge.' },
+      },
+      required: ['from', 'kind', 'to'],
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const from = typeof args.from === 'string' ? args.from.trim() : '';
+    const kind = typeof args.kind === 'string' ? args.kind.trim() : '';
+    const to = typeof args.to === 'string' ? args.to.trim() : '';
+    if (!from || !kind || !to) {
+      return { ok: false, reason: 'invalid_params', detail: 'from, kind, and to are required' };
+    }
+    const meta =
+      args.meta && typeof args.meta === 'object' && !Array.isArray(args.meta)
+        ? (args.meta as Record<string, unknown>)
+        : undefined;
+
+    try {
+      const handle = getKnowledgeGraph({ workspaceRoot: ctx.workspaceRoot });
+      await handle.kg.recordRelation(from, kind, to, meta);
+      const ledger = await appendLedgerEntry(ctx, newMsgId(), {
+        type: 'kg_relate', edge_from: from, kind, edge_to: to, ...callerOf(ctx),
+      });
+      return { ok: true, data: { ok: true, degraded: handle.degraded, ledger_ok: ledger.ok } };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: err instanceof Error ? err.message : String(err) };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Tool: presence.beacon (FF-1) — the MCP check-in
 // ---------------------------------------------------------------------------
 
@@ -1151,6 +1284,8 @@ export const WRITE_TOOLS: ToolHandler[] = [
   llmChatTool,
   llmModelsTool,
   llmHealthTool,
+  kgRecordTool,
+  kgRelateTool,
 ].map(withGate);
 
 /** The un-gated write-tool handlers, exposed for unit tests of tool bodies. */
@@ -1165,4 +1300,6 @@ export const RAW_WRITE_TOOLS: ToolHandler[] = [
   llmChatTool,
   llmModelsTool,
   llmHealthTool,
+  kgRecordTool,
+  kgRelateTool,
 ];

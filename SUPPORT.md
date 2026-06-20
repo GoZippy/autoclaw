@@ -25,9 +25,16 @@ Donate"** from the command palette.
 
 ## ☕ Donate
 
-> **TODO (maintainer):** paste your real Square payment links and wallet
-> addresses below, then update [`src/support/supportConfig.ts`](src/support/supportConfig.ts)
-> with the same values (or set them via VS Code settings — see that file).
+### Ko-fi (tips & monthly) — live now
+
+The easiest way to chip in, one-time or monthly:
+
+**→ https://ko-fi.com/gozippy**
+
+> **TODO (maintainer):** the Square links and wallet addresses below are still
+> placeholders — paste your real values here and in
+> [`src/support/supportConfig.ts`](src/support/supportConfig.ts) (or set them via
+> VS Code settings — see that file).
 
 ### Card / one-time (Square)
 

@@ -140,6 +140,7 @@ import {
   startKgDaemon, stopKgDaemon, fetchKgHealth,
   type KgState,
 } from './kg';
+import { getKnowledgeGraph, closeKnowledgeGraph } from './intelligence/kg/service';
 import {
   startOrchestratorLoop,
   dispatchWork,
@@ -793,11 +794,16 @@ export function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  // KG daemon: opt-in spawn (autoclaw.kg.enabled = true). Best-effort —
-  // logs and skips if deps aren't installed; never blocks activation.
-  maybeStartKgDaemon(context.extensionPath).catch(e => {
-    console.error('kg-daemon auto-start failed:', e);
-  });
+  // Knowledge Graph: the default KG is now an IN-PROCESS store (lazily opened
+  // on first use via getKnowledgeGraph / closed in deactivate). We deliberately
+  // do NOT auto-spawn the standalone child daemon on activation. The optional
+  // daemon stays available behind the explicit `autoclaw.kg.start` command.
+  // (Set autoclaw.kg.spawnDaemonOnActivate to opt back into the legacy spawn.)
+  if (vscode.workspace.getConfiguration('autoclaw.kg').get<boolean>('spawnDaemonOnActivate', false)) {
+    maybeStartKgDaemon(context.extensionPath).catch(e => {
+      console.error('kg-daemon auto-start failed:', e);
+    });
+  }
 
   // AutoBuild scheduler: single setInterval in the extension host.
   startAutobuildScheduler(context);
@@ -1855,6 +1861,24 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           await vscode.env.openExternal(vscode.Uri.parse('https://github.com/GoZippy/autoclaw/blob/master/docs/rfc/runner-bridge-contract.md'));
           break;
         }
+        case 'enableKg': {
+          // KG chip clicked while disabled — enable the in-process store and
+          // surface the setting so the user sees the toggle they flipped.
+          try {
+            await vscode.workspace.getConfiguration('autoclaw.kg')
+              .update('enabled', true, vscode.ConfigurationTarget.Workspace);
+          } catch { /* fall through to opening settings */ }
+          await vscode.commands.executeCommand('workbench.action.openSettings', 'autoclaw.kg.enabled');
+          vscode.window.showInformationMessage('AutoClaw Knowledge Graph enabled (in-process store — no install needed).');
+          break;
+        }
+        case 'openKgDoctor': {
+          // KG chip clicked while degraded — run doctor so the user can see the
+          // KG section (driver/caps) and the KG output channel for warnings.
+          getKgOutputChannel().show(true);
+          await vscode.commands.executeCommand('autoclaw.doctor');
+          break;
+        }
         case 'inviteAgent':
           await vscode.commands.executeCommand('autoclaw.fleet.invite');
           break;
@@ -1867,23 +1891,12 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
         case 'startKgDaemon':
         case 'restartKgDaemon':
         case 'openKgDashboard': {
-          const cmdMap: Record<string, string> = {
-            startKgDaemon: 'autoclaw.kg.start',
-            restartKgDaemon: 'autoclaw.kg.restart',
-            openKgDashboard: 'autoclaw.kg.openDashboard',
-          };
-          const cmd = cmdMap[message.command];
+          const cmd = 'autoclaw.kg.openDashboard';
           const all = await vscode.commands.getCommands(true);
           if (all.includes(cmd)) {
             await vscode.commands.executeCommand(cmd);
           } else {
-            const pick = await vscode.window.showInformationMessage(
-              `Knowledge Graph daemon control ('${cmd}') is not registered in this build. Open the kg-daemon docs?`,
-              'Open docs', 'Dismiss'
-            );
-            if (pick === 'Open docs') {
-              await vscode.env.openExternal(vscode.Uri.parse('https://github.com/GoZippy/autoclaw/blob/master/docs/V3_1_ROADMAP.md'));
-            }
+            getKgOutputChannel().show(true);
           }
           break;
         }
@@ -2166,15 +2179,12 @@ async function runDoctorCommand(
   const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
 
   const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
-  const kgEnabled = kgCfg.get<boolean>('enabled', false);
-  // Prefer the actual port the daemon is running on (after port-fallback).
-  // Falls back to the configured value if no daemon is alive.
+  // The KG is an in-process store; `enabled` defaults on. `port`/`dbPath` are
+  // passed through so the doctor reflects the configured settings (port only
+  // governs the optional standalone daemon).
+  const kgEnabled = kgCfg.get<boolean>('enabled', true);
   const kgConfiguredPort = kgCfg.get<number>('port', 9877);
-  const kgPid = activeKg?.child && activeKg.child.exitCode === null ? (activeKg.child.pid ?? null) : null;
-  const kgPort = activeKg && kgPid !== null ? activeKg.port : kgConfiguredPort;
-  const lastKgHealth = kgPid !== null
-    ? await fetchKgHealth(kgPort).catch(e => ({ ok: false, status: null, body: null, error: (e as Error).message }))
-    : null;
+  const kgDbPath = kgCfg.get<string>('dbPath', '');
 
   const report: DoctorReport = await runDoctor(extensionPath, {
     workspaceRoot,
@@ -2184,11 +2194,8 @@ async function runDoctorCommand(
     zippymeshUrl,
     kg: {
       enabled: kgEnabled,
-      port: kgPort,
-      pid: kgPid,
-      lastHealth: lastKgHealth
-        ? { status: lastKgHealth.status, body: lastKgHealth.body, error: lastKgHealth.error }
-        : null,
+      port: kgConfiguredPort,
+      dbPath: kgDbPath,
     }
   });
 
@@ -4270,7 +4277,7 @@ function activeHostAgentId(): string | undefined {
 /** Probe the local bridge `/api/v1/health` and the kg-daemon to label header
  *  badges. Always resolves — never throws. */
 async function probeFabricHealth(): Promise<FabricHealth> {
-  const out: FabricHealth = { bridge: 'off', kg: 'off' };
+  const out: FabricHealth = { bridge: 'off', kg: 'disabled' };
 
   // Bridge state — only meaningful if the extension actually started one.
   if (activeBridge?.running) {
@@ -4292,19 +4299,25 @@ async function probeFabricHealth(): Promise<FabricHealth> {
     out.bridge = 'off';
   }
 
-  // KG daemon — opt-in. We only set 'running' when the child is alive AND
-  // the health endpoint answers ok. Otherwise label appropriately.
-  if (activeKg?.child && activeKg.child.exitCode === null) {
-    try {
-      const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
-      const port = kgCfg.get<number>('port', 9877);
-      const r = await fetchKgHealth(port);
-      out.kg = r.ok ? 'running' : 'unreachable';
-    } catch {
-      out.kg = 'unreachable';
-    }
+  // Knowledge Graph — in-process store on the Intelligence Layer's ABI-proof
+  // node:sqlite driver (no child process). `disabled` when opted out; else open
+  // the lazily-cached handle and reflect whether a driver loaded.
+  const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
+  if (!kgCfg.get<boolean>('enabled', true)) {
+    out.kg = 'disabled';
   } else {
-    out.kg = 'off';
+    try {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || undefined;
+      const h = getKnowledgeGraph({ workspaceRoot });
+      out.kg = h.degraded ? 'degraded' : 'ready';
+      out.kg_detail = {
+        driverKind: h.driverKind,
+        caps: h.caps,
+        embeddingProvider: h.embedding.provider,
+      };
+    } catch {
+      out.kg = 'degraded';
+    }
   }
 
   return out;
@@ -4673,6 +4686,8 @@ export function deactivate() {
     activeFabric.close().catch(() => {});
     activeFabric = null;
   }
+  // Close the in-process Knowledge Graph store (releases the SQLite handle).
+  try { closeKnowledgeGraph(); } catch { /* ignore */ }
   if (activeKg && activeKg.child && activeKg.child.exitCode === null) {
     stopKgDaemon(activeKg).catch(() => {});
     activeKg = null;

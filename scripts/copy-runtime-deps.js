@@ -1,0 +1,80 @@
+/**
+ * copy-runtime-deps.js — vendor the few PURE-JS production dependencies the
+ * shipped `out/` actually `require()`s into `out/node_modules/`, so they resolve
+ * at runtime even though the .vsix is packaged with `vsce package
+ * --no-dependencies` (no top-level node_modules).
+ *
+ * Why: the extension ships no bundled node_modules. Node-built-ins and the
+ * host-provided `vscode` resolve fine, and the HEAVY NATIVE peers
+ * (@xenova/transformers, better-sqlite3, sqlite-vec, pg, onnxruntime-*, sharp)
+ * are deliberately user-installed/optional with graceful degradation. But a few
+ * SMALL pure-JS regular deps are required by shipped code and were silently
+ * dropped by `--no-dependencies`:
+ *   - `ws`       — the WebSocket bridge (out/bridge-ws.js, eager require) → was
+ *                  throwing "Cannot find module 'ws'" when the bridge started.
+ *   - `chokidar` — the daemon/voidspec file watchers (lazy require) → was falling
+ *                  back to slow 30s polling instead of sub-second reactivity.
+ *
+ * This copies each root + its transitive `dependencies` FLAT into
+ * `out/node_modules/<name>` (Node resolves them by walking up from out/*.js).
+ * Native / optional-peer packages are NEVER vendored. `.vscodeignore` does not
+ * exclude `out/node_modules/**`, so the vendored copies ship in the .vsix.
+ */
+const fs = require('fs');
+const path = require('path');
+
+const repo = path.join(__dirname, '..');
+const NM = path.join(repo, 'node_modules');
+const OUT_NM = path.join(repo, 'out', 'node_modules');
+
+/** Pure-JS production deps the shipped out/ requires at runtime. */
+const ROOTS = ['ws', 'chokidar'];
+
+/** Never vendor these — native builds / heavy optional peers stay user-installed. */
+const SKIP = new Set([
+  'fsevents', // mac-only native optionalDependency of chokidar
+  'better-sqlite3', 'sqlite-vec', '@xenova/transformers', 'pg',
+  'onnxruntime-node', 'onnxruntime-web', 'onnxruntime-common', 'sharp', 'protobufjs',
+]);
+
+const done = new Set();
+
+function pkgDir(name) {
+  const dir = path.join(NM, name);
+  return fs.existsSync(path.join(dir, 'package.json')) ? dir : null;
+}
+
+function vendor(name) {
+  if (done.has(name) || SKIP.has(name)) {
+    return;
+  }
+  done.add(name);
+  const from = pkgDir(name);
+  if (!from) {
+    console.warn(`copy-runtime-deps: SKIP "${name}" — not found in node_modules (run npm install)`);
+    return;
+  }
+  const to = path.join(OUT_NM, name);
+  fs.rmSync(to, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  // dereference: follow the node_modules junction/symlinks to copy real files.
+  fs.cpSync(from, to, { recursive: true, dereference: true });
+  let deps = {};
+  try {
+    deps = JSON.parse(fs.readFileSync(path.join(from, 'package.json'), 'utf8')).dependencies || {};
+  } catch {
+    /* no deps */
+  }
+  for (const dep of Object.keys(deps)) {
+    vendor(dep);
+  }
+}
+
+fs.rmSync(OUT_NM, { recursive: true, force: true });
+for (const root of ROOTS) {
+  vendor(root);
+}
+console.log(
+  `copy-runtime-deps: vendored ${done.size} package(s) -> out/node_modules: ` +
+    `${[...done].sort().join(', ')}`,
+);
