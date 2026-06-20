@@ -18,6 +18,7 @@ import {
   installVectorBackend,
   isBackendInstalled,
   resolveInstalledLoadable,
+  resolvePanelBackendStatus,
   VEC_DIR_ENV,
 } from '../intelligence/installBackend';
 
@@ -77,6 +78,27 @@ suite('intelligence — install vector backend', () => {
     const loadable = plantFakeSqliteVec(withPeer);
     assert.strictEqual(resolveInstalledLoadable(withPeer), loadable);
     assert.strictEqual(isBackendInstalled(withPeer), true);
+  });
+
+  test('resolvePanelBackendStatus reports the resolved dir + install state (panel indicator)', () => {
+    // Workspace with the backend planted under <ws>/.autoclaw/native → installed.
+    const ws = freshDir('panel-ws');
+    plantFakeSqliteVec(path.join(ws, '.autoclaw', 'native'));
+    const present = resolvePanelBackendStatus(ws);
+    assert.strictEqual(present.installed, true);
+    assert.ok(present.path.endsWith('.autoclaw/native'), 'resolves the workspace-local backend dir');
+
+    // Empty workspace → not installed, but still reports the target path.
+    const emptyWs = freshDir('panel-empty');
+    const absent = resolvePanelBackendStatus(emptyWs);
+    assert.strictEqual(absent.installed, false);
+    assert.ok(absent.path.endsWith('.autoclaw/native'));
+
+    // An explicit override dir wins over the workspace location.
+    const overrideDir = freshDir('panel-override');
+    plantFakeSqliteVec(overrideDir);
+    const overridden = resolvePanelBackendStatus(emptyWs, overrideDir);
+    assert.strictEqual(overridden.installed, true);
   });
 
   test('install is idempotent: a present backend returns ok WITHOUT spawning npm', () => {

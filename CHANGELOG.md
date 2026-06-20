@@ -1,5 +1,50 @@
 # Changelog
 
+## [3.6.2] - 2026-06-20
+
+_Fleet-oversight + coordination release: a full-screen Manager Surface, clickable
+session tracking, per-agent token/cost visibility, an automatic cost writer, and a
+bounded consensus revise round — plus the A2A-canonical card alias._
+
+### Added
+
+- **Full-tab Manager Surface** (`AutoClaw: Open Manager Surface` /
+  `autoclaw.manager.open`). The sidebar dashboard is cramped past a couple of live
+  agents; this opens the whole Fleet view — presence, agendaboard, Awaiting-You,
+  health grid, agent cards, parent→subagent tree, cost ledger, and activity feed —
+  as a roomy editor tab for human oversight. Reuses the proven `media/panel/fleet.*`
+  render stack + the unit-tested `gatherFleetData` data layer.
+- **Clickable session tracking in the panel.** Every session row gains an
+  **"Open chat ↗"** action that runs a deep-link ladder: Claude Code resume-by-id
+  (`vscode://anthropic.claude-code/open?session=…`) → clipboard `claude --resume`
+  fallback → reveal the raw transcript (store-allowlisted, out-of-workspace-safe) →
+  an honest "no deep link for <tool>" notice. `Heartbeat` gains optional
+  `adapterId` / `rawRef` to carry the source + transcript pointer (additive).
+- **Per-session token visibility.** Each session row shows a context-window chip
+  (from a new model context-window catalog, marker-aware so `claude-opus-4-8[1m]`
+  reads 1M) and a remaining-budget chip when the agent reports one.
+- **Automatic per-agent cost writer.** A completed runner `DispatchResult` is turned
+  into a per-agent cost-ledger entry (`recordDispatchCost`; skips failed /
+  token-less results, never throws), which feeds the Manager/Fleet cost rollup.
+- **Reachable runner dispatch contract** (`dispatchViaRegistry`). Makes
+  `getPreferred()` / `dispatch()` reachable + tested, wired into the `spawn_runner`
+  hook behind `AUTOCLAW_RUNNER_DIRECT_DISPATCH=true` (off by default — the work-queue
+  path stays the default), auto-feeding the cost ledger.
+- **A2A-canonical card alias.** Publishes `/.well-known/agent.json` alongside the
+  existing `agent-card.json` so strict-A2A peers resolve the fleet's agent cards.
+- **Bounded consensus revise / converge round.** On a dissent verdict with rounds
+  remaining, the author receives a `revision_request` and the panel re-votes,
+  bounded by `reviseMaxRounds` (the orchestrator loop opts in at 2). Back-compatible
+  (default 1 = previous behaviour).
+
+### Changed
+
+- **Intelligence panel auto-detects the vector backend** on refresh and shows a
+  green "● Online" pill / hides the Deploy-backend CTA accordingly.
+- Regenerated the bundled per-tool autobuild adapters so they stay in sync with
+  `skills/` (fixes the `adapters:check` CI gate).
+- Wired the previously-CI-excluded `fleet-panel` unit suite into CI.
+
 ## [3.6.1] - 2026-06-19
 
 _Packaged-runtime fixes found by install-testing the built `.vsix` (things CI,

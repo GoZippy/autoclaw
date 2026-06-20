@@ -140,6 +140,7 @@ never collide.
 | `review_request` | agent → agent | Please review my completed work. |
 | `review_response` | agent → agent | Verdict on a review (`approve`/`request_changes`/`reject`). |
 | `consensus_vote` | agent → consensus | A vote on task approval. |
+| `revision_request` | orchestrator → author | Dissent in consensus (`request_changes`/`reject`) with rounds left: address the dissenting comments and re-broadcast `task_complete` for another vote round. |
 | `finding_report` | agent → shared | Security/quality/conflict finding. |
 | `question` / `answer` | agent ↔ agent | Cross-scope coordination Q&A. |
 | `capability_query` / `capability_offer` | orchestrator ↔ agent | Capability discovery. |

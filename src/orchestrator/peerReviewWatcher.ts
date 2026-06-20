@@ -255,7 +255,18 @@ export async function promotePendingTaskCompletes(
     // before any reviewer sees the request.
     const stub = buildConsensusStub(tc, reviewers, { now, rule });
     const stubPath = path.join(consensusActiveDir(workspaceRoot), `${stub.task_id}.json`);
-    await fsp.writeFile(stubPath, JSON.stringify(stub, null, 2), 'utf8');
+    // Preserve the revise/converge round across a re-broadcast: if an active stub
+    // already exists for this task (the author re-submitted task_complete after a
+    // revision_request), carry its `round` forward. Without this the watcher would
+    // reset round→1 on every re-broadcast and the bounded revise loop
+    // (consensusRevise) could never reach its ceiling — re-rounding indefinitely.
+    let priorRound: number | undefined;
+    try {
+      const prior = JSON.parse(await fsp.readFile(stubPath, 'utf8')) as { round?: unknown };
+      if (typeof prior?.round === 'number') { priorRound = prior.round; }
+    } catch { /* no prior stub — this is a fresh promotion */ }
+    const stubToWrite = priorRound !== undefined ? { ...stub, round: priorRound } : stub;
+    await fsp.writeFile(stubPath, JSON.stringify(stubToWrite, null, 2), 'utf8');
 
     // Deliver per-peer review_request messages.
     for (const reviewer of reviewers) {

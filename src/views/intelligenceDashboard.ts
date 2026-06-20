@@ -26,6 +26,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { getDashboardData } from '../intelligence/metrics/store';
+import { resolvePanelBackendStatus } from '../intelligence/installBackend';
 
 // ---------------------------------------------------------------------------
 // Command ids the dashboard buttons drive (existing intelligence commands).
@@ -149,7 +150,16 @@ export class IntelligenceDashboardProvider implements vscode.WebviewViewProvider
     }
     try {
       const data = getDashboardData(workspaceRoot);
-      this.view.webview.postMessage({ type: 'data', data });
+      // Backend presence drives the "online" pill + conditional Deploy CTA in the
+      // webview. Best-effort — a detection hiccup must not blank the metrics.
+      let backend: { installed: boolean; path: string } | undefined;
+      try {
+        const override = vscode.workspace
+          .getConfiguration('autoclaw.intelligence')
+          .get<string>('backendDir');
+        backend = resolvePanelBackendStatus(workspaceRoot, override);
+      } catch { /* leave backend undefined; panel falls back to showing the CTA */ }
+      this.view.webview.postMessage({ type: 'data', data: { ...data, backend } });
     } catch (err) {
       this.view.webview.postMessage({
         type: 'error',

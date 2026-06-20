@@ -741,11 +741,20 @@ export async function runTick(
     // write consensus/resolved/<task>.json and clear the active stub. Closes the
     // loop the watcher opens so no operator hand-writes it.
     try {
-      const tally = await resolvePendingConsensus({ workspaceRoot, resolvedBy: 'orchestrator-loop' });
+      // reviseMaxRounds:2 — on a dissent verdict (request_changes/reject) the
+      // author gets one automatic "respond before we re-tally" round instead of
+      // an immediate finalize; an approval or a second-round dissent finalizes.
+      const tally = await resolvePendingConsensus({ workspaceRoot, resolvedBy: 'orchestrator-loop', reviseMaxRounds: 2 });
       if (tally.resolved.length > 0) {
         await writeLoopJournal(workspaceRoot, {
           at: new Date().toISOString(), tick: state.tick, phase: 'work',
           action: 'consensus_resolved', detail: { resolved: tally.resolved },
+        });
+      }
+      if (tally.revised.length > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'work',
+          action: 'consensus_revision_requested', detail: { revised: tally.revised },
         });
       }
     } catch (e: any) {

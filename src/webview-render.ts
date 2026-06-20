@@ -17,6 +17,7 @@ import type {
 import {
   type CanonicalRole, ROLE_META, resolveAgentRole, summarizeRoles,
 } from './roles';
+import { contextWindowForModel } from './llm/modelCatalog';
 
 /** Where an agent's presence reached this panel from (CF-2, integrate-automate-v3.2).
  *  Mirrors the `FleetOrigin` in views/fleetViewModel.ts; kept inline so the
@@ -256,6 +257,17 @@ export function renderTeamSummary(agents: readonly AgentWithLive[], now: number 
 // Sessions
 // ---------------------------------------------------------------------------
 
+/** Compact a token count for chips: 1_000_000→"1M", 200_000→"200k", 8_192→"8k". */
+export function formatTokenCount(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) { return '0'; }
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    return (Number.isInteger(m) ? String(m) : m.toFixed(1).replace(/\.0$/, '')) + 'M';
+  }
+  if (n >= 1_000) { return Math.round(n / 1_000) + 'k'; }
+  return String(Math.round(n));
+}
+
 /** Sort sessions newest-first; the primary heartbeat's session (if any) is
  *  not special-cased — every session renders the same way. */
 function sortSessions(sessions: readonly Heartbeat[]): Heartbeat[] {
@@ -277,8 +289,27 @@ export function renderSessionList(sessions: readonly Heartbeat[] | undefined, no
     h += `<span class="session-dot ${stale ? 'status-offline' : 'status-' + esc(s.status || 'idle')}" aria-hidden="true"></span>`;
     h += `<span class="session-id" title="${esc(s.session_id ?? '')}">${esc(shortSessionId(s.session_id) || '(no id)')}</span>`;
     if (s.current_llm) { h += `<span class="session-model" title="${esc(s.current_llm)}">${esc(shortModel(s.current_llm))}</span>`; }
+    // Context-window chip (from the model catalog) + remaining-budget chip when
+    // the agent reports one — the per-session token signals the panel can show.
+    if (s.current_llm) {
+      const win = contextWindowForModel(s.current_llm);
+      h += `<span class="session-ctx" title="Context window: ${win.toLocaleString()} tokens (${esc(s.current_llm)})">ctx ${esc(formatTokenCount(win))}</span>`;
+    }
+    if (typeof s.token_budget_remaining === 'number' && s.token_budget_remaining >= 0) {
+      h += `<span class="session-budget" title="Tokens remaining in this session's budget window: ${s.token_budget_remaining.toLocaleString()}">${esc(formatTokenCount(s.token_budget_remaining))} left</span>`;
+    }
     if (s.current_task) { h += `<span class="session-task" title="${esc(s.current_task)}">${esc(s.current_task)}</span>`; }
     h += `<span class="session-seen">${esc(formatAge(s.timestamp, now))}</span>`;
+    // "Open chat" — only when we have a session id to act on. The host runs a
+    // deep-link ladder (resume-by-id → reveal transcript → copy command).
+    if (s.session_id) {
+      const source = s.adapterId || s.agent_id || '';
+      h += `<button type="button" class="session-open"`
+        + ` data-session-id="${esc(s.session_id)}"`
+        + ` data-source="${esc(source)}"`
+        + ` data-raw-ref="${esc(s.rawRef ?? '')}"`
+        + ` title="Open this chat session">Open chat ↗</button>`;
+    }
     h += '</div>';
   }
   h += '</div>';

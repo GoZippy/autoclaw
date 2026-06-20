@@ -25,6 +25,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { detectDissentAndRevise, emitRevisionRequest } from './consensusRevise';
+
 const fsp = fs.promises;
 
 /* -------------------------------------------------------------------------- */
@@ -54,6 +56,8 @@ export interface ConsensusStub {
   votes?: TallyVote[];
   source_task_complete_id?: string;
   status?: string;
+  /** Review round (1-based). Bumped by the revise/converge loop on dissent. */
+  round?: number;
 }
 
 export interface TallyResult {
@@ -186,6 +190,8 @@ export interface ResolveConsensusResult {
   resolved: Array<{ task_id: string; verdict: ConsensusVerdict; approvals: number; panelSize: number; rule: ConsensusRule }>;
   /** Tasks still waiting on votes. */
   pending: string[];
+  /** Tasks that got a revise/converge request this run (kept open for re-vote). */
+  revised: Array<{ task_id: string; round: number }>;
 }
 
 export interface ResolveConsensusOptions {
@@ -194,6 +200,13 @@ export interface ResolveConsensusOptions {
   now?: Date;
   /** Who closed the gate. Default 'orchestrator-loop'. */
   resolvedBy?: string;
+  /**
+   * Max review rounds before a dissent verdict is finalized. Default 1 = the
+   * original one-round behavior (finalize on first dissent). Set ≥ 2 to enable
+   * the revise/converge loop: on dissent, the author is asked to respond and the
+   * panel re-votes, up to this many rounds total.
+   */
+  reviseMaxRounds?: number;
 }
 
 /**
@@ -209,7 +222,8 @@ export async function resolvePendingConsensus(opts: ResolveConsensusOptions): Pr
   const { workspaceRoot } = opts;
   const now = opts.now ?? new Date();
   const resolvedBy = opts.resolvedBy ?? 'orchestrator-loop';
-  const result: ResolveConsensusResult = { scanned: 0, resolved: [], pending: [] };
+  const reviseMaxRounds = Math.max(1, Math.floor(opts.reviseMaxRounds ?? 1));
+  const result: ResolveConsensusResult = { scanned: 0, resolved: [], pending: [], revised: [] };
 
   const aDir = activeDir(workspaceRoot);
   const rDir = resolvedDir(workspaceRoot);
@@ -260,10 +274,24 @@ export async function resolvePendingConsensus(opts: ResolveConsensusOptions): Pr
         continue;
       }
 
+      // Revise/converge: a dissent verdict with rounds left + a known author is
+      // sent back for one more round instead of being finalized. Default
+      // reviseMaxRounds=1 makes this a no-op (finalize on first dissent).
+      const revise = detectDissentAndRevise(tally, stub, { maxRounds: reviseMaxRounds });
+      if (revise.action === 'emit_revision_request' && stub.author && revise.nextRound) {
+        await emitRevisionRequest({
+          workspaceRoot, stub, votes: tally.votes, nextRound: revise.nextRound, now, from: resolvedBy,
+        });
+        result.revised.push({ task_id: stub.task_id, round: revise.nextRound });
+        result.pending.push(stub.task_id);
+        continue;
+      }
+
       const record = {
         task_id: stub.task_id,
         sprint: stub.sprint,
         author: stub.author,
+        round: Math.max(1, Math.floor(stub.round ?? 1)),
         rule: tally.rule,
         verdict: tally.verdict,
         approvals: tally.approvals,

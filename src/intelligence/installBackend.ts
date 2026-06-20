@@ -21,6 +21,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { LogFn } from './config';
+import { resolveBackendDir } from './storage';
 
 /** Env var the host-free vector loader reads to find a user-installed sqlite-vec. */
 export const VEC_DIR_ENV = 'AUTOCLAW_SQLITE_VEC_DIR';
@@ -66,6 +67,29 @@ export function resolveInstalledLoadable(targetDir: string): string | undefined 
 /** True when a usable sqlite-vec is already installed under `targetDir`. */
 export function isBackendInstalled(targetDir: string): boolean {
   return resolveInstalledLoadable(targetDir) !== undefined;
+}
+
+/** Backend presence for the dashboard's at-a-glance indicator. */
+export interface PanelBackendStatus {
+  /** True when the vector backend is installed at the resolved location. */
+  installed: boolean;
+  /** The resolved backend directory the status was computed for. */
+  path: string;
+}
+
+/**
+ * Resolve the effective backend directory (override → workspace `.autoclaw` →
+ * global storage) and report whether the vector backend is installed there.
+ * Pure + host-free so the dashboard can detect backend state on load without a
+ * `vscode` import. Never throws.
+ */
+export function resolvePanelBackendStatus(
+  workspaceRoot: string | undefined,
+  override?: string,
+  globalStorageFallback?: string,
+): PanelBackendStatus {
+  const dir = resolveBackendDir(workspaceRoot, override, globalStorageFallback);
+  return { installed: isBackendInstalled(dir), path: dir };
 }
 
 /**

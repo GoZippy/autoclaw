@@ -74,9 +74,38 @@
     });
   }
 
+  // ---- Backend status indicator ------------------------------------------
+  // Auto-detected on every refresh: when the vector backend is installed we
+  // hide the "Backend" deploy CTA and show a green "● Online" pill; otherwise
+  // we surface the CTA with an install hint. Undefined backend ⇒ leave the CTA
+  // as-is (detection unavailable).
+  function renderBackendStatus(backend) {
+    const btn = document.querySelector('button[data-action="install-backend"]');
+    const pill = document.getElementById('backend-online');
+    if (!backend) {
+      if (btn) { btn.hidden = false; }
+      if (pill) { pill.hidden = true; }
+      return;
+    }
+    if (backend.installed) {
+      if (btn) { btn.hidden = true; btn.title = 'Vector backend installed at ' + (backend.path || ''); }
+      if (pill) { pill.hidden = false; pill.title = 'Vector backend online — RAG enabled (' + (backend.path || '') + ')'; }
+    } else {
+      if (btn) {
+        btn.hidden = false;
+        btn.title = 'Install the vector backend (sqlite-vec) to enable RAG' +
+          (backend.path ? ' — target: ' + backend.path : '');
+      }
+      if (pill) { pill.hidden = true; }
+    }
+  }
+
   // ---- Render -------------------------------------------------------------
   function render(data) {
     els.error.hidden = true;
+
+    // Backend indicator applies in both empty and populated states.
+    renderBackendStatus(data.backend);
 
     if (data.empty) {
       els.dashboard.hidden = true;
