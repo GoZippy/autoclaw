@@ -75,6 +75,7 @@ import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
 import { registerLicensing } from './licensing/licensing';
 import { GateService } from './licensing/gateService';
+import type { FeatureId } from './licensing/features';
 import { createPremiumApi } from './premium';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
@@ -263,6 +264,28 @@ export type { ParsedTask, AdapterHealth, TodoItem, CodeChurnMetrics, Productivit
 let kdreamView: vscode.WebviewView | undefined = undefined;
 let stateWatcher: vscode.FileSystemWatcher | undefined = undefined;
 let refreshIntervalId: NodeJS.Timeout | undefined = undefined;
+
+/**
+ * Run a paid-feature command behind the licensing gate. First meaningful use
+ * starts the 7-day Pro trial; during trial or with a license `runPaid` runs;
+ * otherwise `gate.require` shows ONE polite upgrade prompt and `runFallback`
+ * (if any) runs. Never throws/blocks — local-first, graceful degradation.
+ */
+async function withGate(
+  context: vscode.ExtensionContext,
+  feature: FeatureId,
+  reason: string,
+  runPaid: () => Promise<void> | void,
+  runFallback?: () => Promise<void> | void,
+): Promise<void> {
+  const gate = new GateService(context);
+  const result = await gate.require(feature, { startTrial: true, reason });
+  if (result.allowed) {
+    await runPaid();
+  } else if (runFallback) {
+    await runFallback();
+  }
+}
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('AutoClaw activated — skills ready');
@@ -492,9 +515,10 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.autobuild.runNow', async () => {
-      await autobuildRunNowCommand();
-    })
+    // Gated (Pro): scheduled/automated AutoBuild. First use starts the trial.
+    vscode.commands.registerCommand('autoclaw.autobuild.runNow', () =>
+      withGate(context, 'pro.autobuild.schedule', 'Scheduled AutoBuild', autobuildRunNowCommand),
+    )
   );
 
   context.subscriptions.push(
@@ -505,9 +529,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Orchestrate commands
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.orchestrate.plan', async () => {
-      await orchestratePlanCommand();
-    })
+    // Gated (Pro): advanced multi-agent orchestration planning. First use starts
+    // the trial. TODO: gate the rest of the pro/team commands from the refactor
+    // spec Step 11 (orchestrate.assign/review/merge, autobuild.tail, fleet.metrics,
+    // voidspec.sync, program.*, cloud.*, bridge.*) using this same withGate helper.
+    vscode.commands.registerCommand('autoclaw.orchestrate.plan', () =>
+      withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestratePlanCommand),
+    )
   );
 
   context.subscriptions.push(
