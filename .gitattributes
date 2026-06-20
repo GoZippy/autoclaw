@@ -25,6 +25,9 @@ adapters/**/*.json     text eol=lf
 # Shell scripts — LF (mandatory for execution under POSIX shells).
 *.sh                   text eol=lf
 
+# Git hooks (extensionless shell scripts) — LF, or they fail under POSIX shells.
+.githooks/**           text eol=lf
+
 # Binary, never normalize.
 *.png                  binary
 *.jpg                  binary
