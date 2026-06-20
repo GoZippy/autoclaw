@@ -146,6 +146,12 @@ export interface DashboardData {
   runs: LearningRunStats[];
   /** True when there is nothing to show yet (drives the empty state). */
   empty: boolean;
+  /**
+   * Vector-backend presence for the at-a-glance indicator. Attached by the
+   * dashboard provider (not the metrics store) so the webview can show a green
+   * "online" pill and hide the Deploy-backend CTA when the backend is installed.
+   */
+  backend?: { installed: boolean; path: string };
 }
 
 // ---------------------------------------------------------------------------
