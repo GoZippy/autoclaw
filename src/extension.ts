@@ -964,7 +964,7 @@ export function activate(context: vscode.ExtensionContext) {
           'Generated a basic free report. Unlock Pro for full evidence reports with tests, risks, changed files, agent history, and reviewer verdicts.',
           'Compare Plans', 'Enter License',
         ).then(choice => {
-          if (choice === 'Compare Plans') { void vscode.commands.executeCommand('autoclaw.support.open'); }
+          if (choice === 'Compare Plans') { void vscode.commands.executeCommand('autoclaw.license.comparePlans'); }
           if (choice === 'Enter License') { void vscode.commands.executeCommand('autoclaw.license.enter'); }
         });
       }

@@ -4,6 +4,8 @@
 // minimum tier it needs, whether the 7-day Pro trial unlocks it, its graceful
 // free fallback, and how (un)obtrusively to surface an upgrade. Local-first
 // philosophy: core.* features are always free; paid features degrade gracefully.
+// The 7-day trial is a PRO trial only — Teams/Enterprise features are never
+// trial-unlocked (trialAllowed:false), so invoking one never burns the trial.
 
 import type { LicenseTier } from './license';
 
@@ -132,27 +134,27 @@ export const FEATURE_DEFINITIONS: Record<FeatureId, FeatureDefinition> = {
   'team.sharedMemory': {
     id: 'team.sharedMemory', label: 'Team Shared Memory',
     description: 'Shared project memory across multiple users/agents.',
-    minimumTier: 'teams', trialAllowed: true, fallbackFeature: 'core.kdream.basic', nagStyle: 'toast',
+    minimumTier: 'teams', trialAllowed: false, fallbackFeature: 'core.kdream.basic', nagStyle: 'toast',
   },
   'team.policyEngine': {
     id: 'team.policyEngine', label: 'Policy Engine',
     description: 'Team and workspace policy enforcement for agent activity.',
-    minimumTier: 'teams', trialAllowed: true, nagStyle: 'toast',
+    minimumTier: 'teams', trialAllowed: false, nagStyle: 'toast',
   },
   'team.auditLogs': {
     id: 'team.auditLogs', label: 'Audit Logs',
     description: 'Team-level audit logs for agent activity.',
-    minimumTier: 'teams', trialAllowed: true, fallbackFeature: 'core.history.limited', nagStyle: 'toast',
+    minimumTier: 'teams', trialAllowed: false, fallbackFeature: 'core.history.limited', nagStyle: 'toast',
   },
   'team.privateSkillRegistry': {
     id: 'team.privateSkillRegistry', label: 'Private Skill Registry',
     description: 'Private team/enterprise skill pack registry.',
-    minimumTier: 'teams', trialAllowed: true, hostedCost: true, nagStyle: 'toast',
+    minimumTier: 'teams', trialAllowed: false, hostedCost: true, nagStyle: 'toast',
   },
   'team.cloudRelay': {
     id: 'team.cloudRelay', label: 'Cloud Relay',
     description: 'Cross-machine relay/sync for teams.',
-    minimumTier: 'teams', trialAllowed: true, hostedCost: true, nagStyle: 'toast',
+    minimumTier: 'teams', trialAllowed: false, hostedCost: true, nagStyle: 'toast',
   },
   'enterprise.sso': {
     id: 'enterprise.sso', label: 'SSO',

@@ -58,7 +58,7 @@ export class NagService {
       'Compare Plans', 'Enter License', 'Continue Free',
     ).then(choice => {
       if (choice === 'Compare Plans') {
-        void vscode.commands.executeCommand('autoclaw.support.open');
+        void vscode.commands.executeCommand('autoclaw.license.comparePlans');
       } else if (choice === 'Enter License') {
         void vscode.commands.executeCommand('autoclaw.license.enter');
       }

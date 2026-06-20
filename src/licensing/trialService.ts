@@ -1,9 +1,11 @@
 // ZIPPY OPEN MATERIAL
 //
 // 7-day full-Pro trial — the vscode wrapper around the pure trialLogic. Starts on
-// first MEANINGFUL use (not install), stored in globalState, no restart on
-// reinstall, no account, no card, no hostile fingerprinting. After expiry the
-// user keeps Free Community mode.
+// first MEANINGFUL use (not install), stored in globalState (survives updates,
+// restarts, and disable/enable; a full uninstall clears it — acceptable, we do
+// NOT fingerprint). No account, no card. After expiry the user keeps Free
+// Community mode. (If stronger reset-resistance is ever wanted, mirror the
+// consumed-flag to ~/.autoclaw — deliberately not done here.)
 
 import * as vscode from 'vscode';
 import {

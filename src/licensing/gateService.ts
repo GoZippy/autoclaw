@@ -83,7 +83,7 @@ export class GateService {
     );
 
     if (choice === 'Compare Plans') {
-      await vscode.commands.executeCommand('autoclaw.support.open');
+      await vscode.commands.executeCommand('autoclaw.license.comparePlans');
     } else if (choice === 'Enter License') {
       await vscode.commands.executeCommand('autoclaw.license.enter');
     }
