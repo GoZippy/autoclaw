@@ -74,6 +74,8 @@ import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
 import { registerLicensing } from './licensing/licensing';
+import { GateService } from './licensing/gateService';
+import { createPremiumApi } from './premium';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -932,9 +934,42 @@ export function activate(context: vscode.ExtensionContext) {
   // today's activity, and (deferred) show a non-invasive milestone prompt.
   registerSupport(context);
 
-  // Commercial licensing + BYO-key. Registers commands only; gates nothing
-  // local. Hosted features opt in via requireHosted() from licensing.ts.
+  // Commercial licensing + BYO-key + 7-day Pro trial + status bar. Registers
+  // commands only; local features degrade gracefully. Hosted features opt in via
+  // requireHosted(); tiered local features gate via GateService.
   registerLicensing(context);
+
+  // PR Evidence Report — the worked example of the gate + trial + premium stack.
+  // During trial/license it runs the (premium) engine; otherwise it generates a
+  // basic free fallback report and offers an upgrade. Never blocks.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.reports.prEvidence', async () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        vscode.window.showWarningMessage('Open a workspace folder before generating a report.');
+        return;
+      }
+      const gate = new GateService(context);
+      const access = await gate.require('pro.reports.prEvidence', {
+        startTrial: true,
+        reason: 'PR Evidence Report',
+        silent: true, // we surface our own tailored upgrade prompt below
+      });
+      const premium = createPremiumApi({ extensionPath: context.extensionPath });
+      const report = await premium.generatePrEvidenceReport({ workspaceRoot });
+      const doc = await vscode.workspace.openTextDocument({ content: report.markdown, language: 'markdown' });
+      await vscode.window.showTextDocument(doc);
+      if (!access.allowed) {
+        void vscode.window.showInformationMessage(
+          'Generated a basic free report. Unlock Pro for full evidence reports with tests, risks, changed files, agent history, and reviewer verdicts.',
+          'Compare Plans', 'Enter License',
+        ).then(choice => {
+          if (choice === 'Compare Plans') { void vscode.commands.executeCommand('autoclaw.support.open'); }
+          if (choice === 'Enter License') { void vscode.commands.executeCommand('autoclaw.license.enter'); }
+        });
+      }
+    }),
+  );
 }
 
 async function installAdapters(
