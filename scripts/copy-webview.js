@@ -10,7 +10,14 @@ fs.mkdirSync(outDir, { recursive: true });
 // Copy webview CSS and JS files
 // NOTE: The HTML template is inline in extension.ts (_getHtmlForWebview method),
 // so only CSS and JS files need to be copied here.
-const files = ['kdream-dashboard.css', 'kdream-dashboard.js'];
+const files = [
+  'kdream-dashboard.css',
+  'kdream-dashboard.js',
+  // section-search.{css,js} are loaded by the dashboard webview (extension.ts);
+  // omitting them shipped a broken search UI (404s) in the packaged .vsix.
+  'section-search.css',
+  'section-search.js',
+];
 for (const file of files) {
   const src = path.join(srcDir, file);
   const dest = path.join(outDir, file);

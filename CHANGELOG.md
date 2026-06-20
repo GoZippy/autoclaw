@@ -1,5 +1,27 @@
 # Changelog
 
+## [3.6.1] - 2026-06-19
+
+_Packaged-runtime fixes found by install-testing the built `.vsix` (things CI,
+which runs against full `node_modules`, cannot catch — the extension ships with
+no bundled `node_modules`)._
+
+### Fixed
+
+- **WebSocket bridge no longer throws "Cannot find module 'ws'".** `ws` is a
+  real runtime dependency of the bridge but was dropped by the lean
+  (`--no-dependencies`) packaging, so `autoclaw.bridge.start` degraded to
+  SSE-only. The build now vendors the small pure-JS runtime deps it actually uses
+  into `out/node_modules/` (new `scripts/copy-runtime-deps.js`), so `ws` resolves
+  in the packaged extension and the WebSocket bridge works.
+- **File watching is reactive again, not 30s-polling.** `chokidar` was likewise
+  unbundled, so the orchestrator inbox / voidspec watchers silently fell back to
+  slow polling. It is now vendored alongside `ws` (its native `fsevents` peer is
+  still excluded — graceful by design).
+- **The dashboard's section-search UI is no longer broken.** `section-search.css`
+  / `section-search.js` were referenced by the webview but never copied into the
+  `.vsix`, 404-ing at runtime. `copy-webview.js` now ships them.
+
 ## [3.6.0] - 2026-06-19
 
 ### Added
