@@ -262,6 +262,16 @@ export function renderSessionList(sessions: readonly Heartbeat[] | undefined, no
     if (s.current_llm) { h += `<span class="session-model" title="${esc(s.current_llm)}">${esc(shortModel(s.current_llm))}</span>`; }
     if (s.current_task) { h += `<span class="session-task" title="${esc(s.current_task)}">${esc(s.current_task)}</span>`; }
     h += `<span class="session-seen">${esc(formatAge(s.timestamp, now))}</span>`;
+    // "Open chat" — only when we have a session id to act on. The host runs a
+    // deep-link ladder (resume-by-id → reveal transcript → copy command).
+    if (s.session_id) {
+      const source = s.adapterId || s.agent_id || '';
+      h += `<button type="button" class="session-open"`
+        + ` data-session-id="${esc(s.session_id)}"`
+        + ` data-source="${esc(source)}"`
+        + ` data-raw-ref="${esc(s.rawRef ?? '')}"`
+        + ` title="Open this chat session">Open chat ↗</button>`;
+    }
     h += '</div>';
   }
   h += '</div>';

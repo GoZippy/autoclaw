@@ -171,6 +171,19 @@
         if (body) body.removeAttribute('hidden');
       }
     });
+    // Wire per-session "Open chat" buttons (session-tracking ph1). stopPropagation
+    // so clicking a session action never toggles the enclosing agent card.
+    el.querySelectorAll('.session-open').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        vscode.postMessage({
+          command: 'openSession',
+          sessionId: btn.getAttribute('data-session-id'),
+          source: btn.getAttribute('data-source'),
+          rawRef: btn.getAttribute('data-raw-ref'),
+        });
+      });
+    });
   }
 
   function toggleAgentCard(head) {

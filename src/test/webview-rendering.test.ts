@@ -792,6 +792,28 @@ suite('webview-render — session list', () => {
     assert.match(html, /session-row stale/);
   });
 
+  test('each session row carries an Open-chat button with deep-link data attrs', () => {
+    const html = renderSessionList([mkHb('abc123', 1)]);
+    assert.match(html, /class="session-open"/);
+    assert.match(html, /data-session-id="abc123"/);
+    assert.match(html, /data-source="cc"/);           // falls back to agent_id
+    assert.match(html, /data-raw-ref=""/);            // absent rawRef → empty attr
+    assert.match(html, /Open chat/);
+  });
+
+  test('adapterId overrides agent_id as the Open-chat source, rawRef is carried', () => {
+    const hb: Heartbeat = { ...mkHb('def456', 1), adapterId: 'claude-code', rawRef: '/home/u/.claude/projects/x/def456.jsonl' };
+    const html = renderSessionList([hb]);
+    assert.match(html, /data-source="claude-code"/);
+    assert.match(html, /data-raw-ref="[^"]*def456\.jsonl"/);
+  });
+
+  test('a session with no id renders no Open-chat button', () => {
+    const noId: Heartbeat = { agent_id: 'cc', timestamp: new Date().toISOString(), status: 'active', current_task: null, sprint: null };
+    const html = renderSessionList([noId]);
+    assert.doesNotMatch(html, /session-open/);
+  });
+
   test('empty → empty string', () => {
     assert.strictEqual(renderSessionList([]), '');
     assert.strictEqual(renderSessionList(undefined), '');

@@ -142,6 +142,20 @@ export interface Heartbeat {
   error_rate_1m?: number;
   /** Optional schema marker; absence implies v1. */
   schema_version?: '1' | '2';
+
+  // --- session-tracking additions (all optional; back-compat) ---
+  /**
+   * Intelligence source/adapter id this session belongs to (e.g. `claude-code`,
+   * `kilocode`). Used by the panel's "Open chat" deep-link ladder to pick how to
+   * reopen the conversation. Falls back to `agent_id` when absent.
+   */
+  adapterId?: string;
+  /**
+   * Opaque pointer to the session's transcript on disk (a file path or task
+   * dir), as recorded by the source adapter's provenance. Lets the panel reveal
+   * the raw transcript for tools without a resume-by-id deep link.
+   */
+  rawRef?: string;
 }
 
 export type AgentStatus =

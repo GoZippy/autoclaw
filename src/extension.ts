@@ -1807,6 +1807,15 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           await handleOpenAwaitingFile(message.file);
           break;
         }
+        case 'openSession': {
+          // Session-tracking ph1: jump from a panel session row to the chat.
+          await handleOpenSession({
+            sessionId: message.sessionId,
+            source: message.source,
+            rawRef: message.rawRef,
+          });
+          break;
+        }
         case 'persistFilterState': {
           // UI-6: per-section filter state persistence (Memento)
           if (message.sectionId && message.state) {
@@ -4431,6 +4440,93 @@ async function handleOpenAwaitingFile(file?: string): Promise<void> {
     await vscode.window.showTextDocument(doc, { preview: true });
   } catch {
     vscode.window.showWarningMessage(`Could not open '${file}' — it may have moved or been removed.`);
+  }
+}
+
+/**
+ * Session-tracking ph1 — "Open chat" deep-link ladder for a panel session row.
+ * Attempts the highest rung the source supports and tells the user which fired:
+ *   1. Claude Code resume-by-id  (`vscode://anthropic.claude-code/open?session=`)
+ *   3. Copy `claude --resume <id>` to the clipboard (when the URI is declined)
+ *   4. Reveal the raw transcript file/dir (any tool, when `rawRef` is present)
+ *   floor. An honest "no deep link for <tool>" notice.
+ *
+ * The session rows come from THIS workspace's session heartbeats, so a
+ * claude-code resume targets the open workspace and won't spawn a blank chat.
+ */
+async function handleOpenSession(msg: { sessionId?: string; source?: string; rawRef?: string }): Promise<void> {
+  const sessionId = (msg.sessionId || '').trim();
+  if (!sessionId) { return; }
+  const source = (msg.source || '').toLowerCase();
+  const rawRef = (msg.rawRef || '').trim();
+  const isClaudeCode = source === 'claude-code' || source === 'claudecode' || source === 'claude';
+
+  // Rung 1 — Claude Code resume-by-id.
+  if (isClaudeCode) {
+    const uri = vscode.Uri.parse(`vscode://anthropic.claude-code/open?session=${encodeURIComponent(sessionId)}`);
+    let opened = false;
+    try { opened = await vscode.env.openExternal(uri); } catch { opened = false; }
+    if (opened) { return; }
+    // Rung 3 — copy a resume command the user can paste in a terminal.
+    try {
+      await vscode.env.clipboard.writeText(`claude --resume ${sessionId}`);
+      vscode.window.showInformationMessage(`Copied resume command: claude --resume ${sessionId.slice(0, 8)}…`);
+    } catch {
+      vscode.window.showInformationMessage(`Resume this session: claude --resume ${sessionId}`);
+    }
+    return;
+  }
+
+  // Rung 4 — reveal the transcript file/dir for tools without a resume deep link.
+  if (rawRef && await openTranscriptRef(rawRef)) { return; }
+
+  // Floor — honest notice.
+  vscode.window.showInformationMessage(
+    `No deep link for ${msg.source || 'this tool'} — session ${sessionId.slice(0, 8)}…` +
+    (rawRef ? ' (transcript not in a known store).' : '.'),
+  );
+}
+
+/**
+ * Open/reveal a transcript reference, but only when it lives under a known
+ * adapter store root — transcripts live OUTSIDE the workspace (e.g. `~/.claude`),
+ * so the workspace-confined guard in `handleOpenAwaitingFile` can't be reused.
+ * A directory (e.g. a Kilo task dir) is revealed in the OS file explorer; a file
+ * is opened read-only. Returns true when something was shown.
+ */
+async function openTranscriptRef(rawRef: string): Promise<boolean> {
+  let target: string;
+  try { target = path.resolve(rawRef); } catch { return false; }
+  const home = os.homedir();
+  const roots = [
+    path.join(home, '.claude'),
+    path.join(home, '.codex'),
+    path.join(home, '.config'),
+    path.join(home, '.autoclaw'),
+    path.join(home, 'AppData', 'Roaming'),   // VS Code globalStorage (Windows)
+    path.join(home, 'Library', 'Application Support'), // macOS
+    path.join(home, '.local', 'share'),      // Linux
+  ];
+  const within = (root: string): boolean => {
+    const rel = path.relative(path.resolve(root), target);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  if (!roots.some(within)) {
+    vscode.window.showWarningMessage(`Refusing to open '${rawRef}' — outside known transcript stores.`);
+    return false;
+  }
+  try {
+    const stat = await fsPromises.stat(target);
+    if (stat.isDirectory()) {
+      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(target));
+    } else {
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(target));
+      await vscode.window.showTextDocument(doc, { preview: true });
+    }
+    return true;
+  } catch {
+    vscode.window.showWarningMessage(`Could not open transcript '${rawRef}' — it may have moved.`);
+    return false;
   }
 }
 

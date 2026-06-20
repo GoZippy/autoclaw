@@ -1110,6 +1110,20 @@ th {
 }
 .session-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
 .session-seen { margin-left: auto; color: var(--vscode-descriptionForeground); white-space: nowrap; }
+.session-open {
+  flex: none;
+  font-size: 0.95em;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  cursor: pointer;
+  opacity: 0.55;
+}
+.session-row:hover .session-open { opacity: 1; }
+.session-open:hover { background: rgba(127, 127, 127, 0.16); border-color: var(--vscode-panel-border); }
+.session-open:focus-visible { opacity: 1; outline: 1px solid var(--vscode-focusBorder); }
 
 /* -- Kanban board --------------------------------------------------------- */
 .board-kanban {
