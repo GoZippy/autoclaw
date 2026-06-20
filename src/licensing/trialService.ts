@@ -8,6 +8,9 @@
 // consumed-flag to ~/.autoclaw — deliberately not done here.)
 
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   TRIAL_DAYS,
   type TrialState,
@@ -15,21 +18,49 @@ import {
   computeTrialStatus,
   startedTrialState,
   consumedIfExpiredState,
+  mergeTrialStates,
 } from './trialLogic';
 
 export type { TrialState, TrialStatus } from './trialLogic';
 
 const TRIAL_STATE_KEY = 'autoclaw.trial.state';
+/** Cross-install mirror — survives extension reinstall / globalState clear, so a
+ *  consumed trial can't be reset that easily (reasonable, non-hostile). */
+const TRIAL_MIRROR_FILE = path.join(os.homedir(), '.autoclaw', 'trial.json');
 
 export class TrialService {
   constructor(private readonly context: vscode.ExtensionContext) {}
 
   getState(): TrialState {
-    return this.context.globalState.get<TrialState>(TRIAL_STATE_KEY, { trialConsumed: false });
+    const gs = this.context.globalState.get<TrialState>(TRIAL_STATE_KEY, { trialConsumed: false });
+    const mirror = this.readMirror();
+    // Merge to the more-restrictive of globalState + the ~/.autoclaw mirror, so
+    // clearing one (reinstall / wiping globalState) can't grant a fresh trial.
+    return mirror ? mergeTrialStates(gs, mirror) : gs;
   }
 
   async saveState(state: TrialState): Promise<void> {
-    await this.context.globalState.update(TRIAL_STATE_KEY, state);
+    const stamped: TrialState = { ...state, machineId: state.machineId ?? this.machineId() };
+    await this.context.globalState.update(TRIAL_STATE_KEY, stamped);
+    // Best-effort cross-install mirror (failure must never break the trial).
+    try {
+      fs.mkdirSync(path.dirname(TRIAL_MIRROR_FILE), { recursive: true });
+      fs.writeFileSync(TRIAL_MIRROR_FILE, JSON.stringify(stamped, null, 2), 'utf8');
+    } catch { /* ignore */ }
+  }
+
+  private readMirror(): TrialState | undefined {
+    try {
+      const raw = fs.readFileSync(TRIAL_MIRROR_FILE, 'utf8').replace(/^﻿/, '');
+      const parsed = JSON.parse(raw) as TrialState;
+      return parsed && typeof parsed === 'object' ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private machineId(): string | undefined {
+    try { return vscode.env.machineId; } catch { return undefined; }
   }
 
   getStatus(now = Date.now()): TrialStatus {

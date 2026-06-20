@@ -11,6 +11,8 @@ export interface TrialState {
   trialEndsAt?: number;
   trialConsumed: boolean;
   lastNagAt?: number;
+  /** VS Code machineId at trial start — recorded for visibility, not a gate. */
+  machineId?: string;
 }
 
 export interface TrialStatus {
@@ -52,6 +54,26 @@ export function startedTrialState(state: TrialState, now: number, trialDays = TR
     firstMeaningfulUseAt: now,
     trialEndsAt: now + trialDays * DAY_MS,
     trialConsumed: false,
+  };
+}
+
+/**
+ * Merge two trial states to the MORE-RESTRICTIVE result — the anti-abuse core.
+ * The globalState copy and the `~/.autoclaw` mirror are merged so that clearing
+ * one (reinstall, wiping globalState) cannot grant a fresh trial: earliest start
+ * wins, earliest end wins, and `consumed` is true if EITHER says so.
+ */
+export function mergeTrialStates(a: TrialState, b: TrialState): TrialState {
+  const nums = (xs: Array<number | undefined>): number[] => xs.filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+  const starts = nums([a.firstMeaningfulUseAt, b.firstMeaningfulUseAt]);
+  const ends = nums([a.trialEndsAt, b.trialEndsAt]);
+  const nags = nums([a.lastNagAt, b.lastNagAt]);
+  return {
+    firstMeaningfulUseAt: starts.length ? Math.min(...starts) : undefined,
+    trialEndsAt: ends.length ? Math.min(...ends) : undefined,
+    trialConsumed: !!a.trialConsumed || !!b.trialConsumed,
+    lastNagAt: nags.length ? Math.max(...nags) : undefined,
+    machineId: a.machineId ?? b.machineId,
   };
 }
 

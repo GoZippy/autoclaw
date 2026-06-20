@@ -10,6 +10,7 @@ import {
   computeTrialStatus,
   startedTrialState,
   consumedIfExpiredState,
+  mergeTrialStates,
 } from '../licensing/trialLogic';
 
 const T0 = 1_700_000_000_000; // fixed clock (ms)
@@ -53,6 +54,21 @@ suite('trialLogic', () => {
     assert.strictEqual(expired.active, false);
     assert.strictEqual(expired.consumed, true);
     assert.strictEqual(expired.daysRemaining, 0);
+  });
+
+  test('mergeTrialStates is reset-resistant: more-restrictive wins', () => {
+    const fresh: TrialState = { trialConsumed: false }; // e.g. wiped globalState
+    const mirrorConsumed: TrialState = { trialConsumed: true, firstMeaningfulUseAt: T0, trialEndsAt: T0 + TRIAL_DAYS * DAY_MS };
+    // Clearing globalState must NOT grant a new trial — the mirror's consumed wins.
+    assert.strictEqual(mergeTrialStates(fresh, mirrorConsumed).trialConsumed, true);
+    // Earliest start + earliest end win across the two copies.
+    const a: TrialState = { trialConsumed: false, firstMeaningfulUseAt: T0 + DAY_MS, trialEndsAt: T0 + 9 * DAY_MS };
+    const b: TrialState = { trialConsumed: false, firstMeaningfulUseAt: T0, trialEndsAt: T0 + 7 * DAY_MS };
+    const m = mergeTrialStates(a, b);
+    assert.strictEqual(m.firstMeaningfulUseAt, T0);
+    assert.strictEqual(m.trialEndsAt, T0 + 7 * DAY_MS);
+    // consumed is true if EITHER is consumed.
+    assert.strictEqual(mergeTrialStates({ trialConsumed: true }, { trialConsumed: false }).trialConsumed, true);
   });
 
   test('consumedIfExpiredState flips consumed once expired, else no-op', () => {
