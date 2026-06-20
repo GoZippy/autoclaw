@@ -783,7 +783,7 @@
     "sample:snapshot": "node scripts/sample-snapshot.js",
     "sample:autobuild": "node scripts/sample-autobuild-run.js",
     "sample:doctor": "node scripts/sample-doctor.js",
-    "package": "vsce package",
+    "package": "vsce package --no-dependencies",
     "publish:vscode": "node scripts/publish-vsce.js",
     "publish:ovsx": "node scripts/publish-ovsx.js",
     "publish:all": "npm run package && npm run publish:vscode && npm run publish:ovsx",
