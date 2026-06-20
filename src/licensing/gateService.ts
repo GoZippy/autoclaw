@@ -11,6 +11,20 @@ import { EntitlementService } from './entitlementService';
 import { LicenseTier } from './license';
 import { decideGate, type GateReason } from './gateLogic';
 
+/**
+ * Whether tiered feature-gate ENFORCEMENT is on. Default **false** — the gates
+ * are built but dormant until the maintainer enables enforcement (which should
+ * only happen once a real purchase path exists). Flip via the
+ * `autoclaw.licensing.enforceGates` setting.
+ */
+export function gateEnforcementEnabled(): boolean {
+  try {
+    return vscode.workspace.getConfiguration('autoclaw').get<boolean>('licensing.enforceGates', false) === true;
+  } catch {
+    return false;
+  }
+}
+
 export interface GateOptions {
   /** Start the trial (if eligible + the feature allows it) before checking. */
   startTrial?: boolean;
@@ -40,6 +54,14 @@ export class GateService {
   async check(feature: FeatureId, options: GateOptions = {}): Promise<GateResult> {
     const def = FEATURE_DEFINITIONS[feature];
     if (!def) { throw new Error(`Unknown AutoClaw feature: ${feature}`); }
+
+    // Monetization master switch. Gates are BUILT but DORMANT until the maintainer
+    // turns enforcement on (which should only happen once a real purchase path
+    // exists). Default OFF → every feature is allowed, so shipping the gates can
+    // never strand a user behind an upgrade prompt with nowhere to buy.
+    if (!gateEnforcementEnabled()) {
+      return { allowed: true, feature, label: def.label, effectiveTier: 'free', reason: 'free' };
+    }
 
     if (options.startTrial && def.trialAllowed) {
       await this.entitlements.startTrialIfNeeded(options.reason ?? def.label);

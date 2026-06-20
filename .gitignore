@@ -10,6 +10,23 @@ tsconfig.tsbuildinfo
 .env.local
 .env.*.local
 
+# Private keys / certs — NEVER commit (only the public verify key lives in src/).
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+
+# Private / paid code lives in the PRIVATE repo (@autoclaw/premium); never
+# co-commit it into this public repo. (Guarded by scripts/check-no-secrets.js.)
+premium-impl/
+src/premium-private/
+packages/premium/
+packages/autoclaw-premium/
+
 # Workspace files generated at runtime by the extension itself
 .kilocodemodes
 

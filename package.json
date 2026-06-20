@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Background agents, parallel sprint orchestration, and multi-agent teams. Type @autoclaw in any chat. Works with Claude, Copilot, Kiro, KiloCode, Cline, Cursor, Windsurf, and Continue. Zero setup.",
-  "version": "3.6.2",
+  "version": "3.6.3",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.95.0"
@@ -487,6 +487,11 @@
           "default": true,
           "description": "Show occasional, non-invasive prompts to rate, review, or support AutoClaw (at usage-day 15, 30, 90, then every 90). Each milestone prompts at most once and includes a permanent opt-out."
         },
+        "autoclaw.licensing.enforceGates": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enforce paid feature gates (Pro/Team commands prompt to upgrade after the 7-day trial). Default OFF — leave off until a purchase path exists, so no feature is ever blocked with nowhere to buy. When off, all gated commands run normally for everyone."
+        },
         "autoclaw.support.donationUrl": {
           "type": "string",
           "default": "",
@@ -805,7 +810,8 @@
     "publish:all": "npm run package && npm run publish:vscode && npm run publish:ovsx",
     "relay:serve": "node out/relay-server/server.js",
     "rebuild:native": "node scripts/rebuild-native.js",
-    "smoke:vector": "node scripts/smoke-vector-install.js"
+    "smoke:vector": "node scripts/smoke-vector-install.js",
+    "secrets:check": "node scripts/check-no-secrets.js"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",
