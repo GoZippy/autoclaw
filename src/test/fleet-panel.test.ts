@@ -49,6 +49,7 @@ import {
   readClaims,
   readCostLedger,
   appendCostLedgerEntry,
+  recordDispatchCost,
 } from '../panel/fleetData';
 
 // ---------------------------------------------------------------------------
@@ -640,6 +641,45 @@ suite('Fleet panel — fleetData read layer', () => {
     try {
       // No agentId → normalizeCostEntry returns null → nothing written, no throw.
       await appendCostLedgerEntry(ws, { agentId: '', tokens: 5, wallMs: 1, because: '', timestamp: iso(0) });
+      const rows = await readCostLedger(ws);
+      assert.strictEqual(rows.length, 0);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('recordDispatchCost writes a cost entry from a successful DispatchResult', async () => {
+    const ws = makeWorkspace();
+    try {
+      await recordDispatchCost(ws, 'claude-code', {
+        ok: true, sessionId: 's1', exitCode: 0,
+        finishedAt: iso(0), durationMs: 5000,
+        tokens: { input: 1000, output: 2000 }, rationale: 'added feature X',
+      }, { taskId: 'T1', sprint: 3 });
+      const rows = await readCostLedger(ws);
+      assert.strictEqual(rows.length, 1);
+      assert.strictEqual(rows[0].agentId, 'claude-code');
+      assert.strictEqual(rows[0].tokens, 3000, 'input + output');
+      assert.strictEqual(rows[0].wallMs, 5000);
+      assert.strictEqual(rows[0].because, 'added feature X');
+      assert.strictEqual(rows[0].taskId, 'T1');
+      assert.strictEqual(rows[0].sprint, 3);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('recordDispatchCost skips a failed dispatch and a result with no tokens', async () => {
+    const ws = makeWorkspace();
+    try {
+      await recordDispatchCost(ws, 'kiro', {
+        ok: false, sessionId: 's', exitCode: 1, finishedAt: iso(0), durationMs: 10,
+        tokens: { input: 5, output: 5 },
+      });
+      await recordDispatchCost(ws, 'cursor', {
+        ok: true, sessionId: 's', exitCode: 0, finishedAt: iso(0), durationMs: 10,
+        // no tokens reported by the host → nothing to record
+      });
       const rows = await readCostLedger(ws);
       assert.strictEqual(rows.length, 0);
     } finally {

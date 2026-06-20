@@ -27,6 +27,7 @@ import {
   type AgentCardInputs,
 } from '../views/fleetViewModelBuilders';
 import type { CostLedgerEntry, FleetDashboardModel } from '../views/fleetViewModel';
+import type { DispatchResult } from '../runners/types';
 import { readAllBeacons } from '../fleet/beacons';
 import { parseFleetManifest } from '../fleet/architecture';
 import { listInvites } from '../fleet/invites';
@@ -407,6 +408,40 @@ export async function appendCostLedgerEntry(
     await fsp.appendFile(path.join(base, 'cost-ledger.jsonl'), JSON.stringify(norm) + '\n', 'utf8');
   } catch {
     /* best-effort — never break a dispatch because cost couldn't be persisted */
+  }
+}
+
+/**
+ * Automatic cost writer: turn a completed runner {@link DispatchResult} into a
+ * per-agent cost-ledger entry. This is the missing "in-process consumer" that
+ * makes the panel's cost rollup fill itself — any dispatch seam that has a
+ * workspace handle and a result can call this and the panel updates.
+ *
+ * Best-effort and non-recording by design when there's nothing to record:
+ *   - a failed dispatch (`ok === false`) is skipped, and
+ *   - a result with no host-reported `tokens` is skipped (we never fabricate a
+ *     token count), and
+ *   - any error is swallowed — recording cost must never break a dispatch.
+ */
+export async function recordDispatchCost(
+  workspaceRoot: string,
+  agentId: string,
+  result: DispatchResult,
+  meta?: { taskId?: string; sprint?: number },
+): Promise<void> {
+  try {
+    if (!agentId || !result || result.ok === false || !result.tokens) { return; }
+    await appendCostLedgerEntry(workspaceRoot, {
+      agentId,
+      tokens: (result.tokens.input ?? 0) + (result.tokens.output ?? 0),
+      wallMs: typeof result.durationMs === 'number' ? result.durationMs : 0,
+      because: result.rationale ?? '',
+      taskId: meta?.taskId,
+      sprint: meta?.sprint,
+      timestamp: result.finishedAt || new Date().toISOString(),
+    });
+  } catch {
+    /* best-effort — cost capture must never break a dispatch */
   }
 }
 

@@ -84,7 +84,8 @@ import {
   CloudRelay, forwardHeartbeats, forwardInbox, applyFetchedToInboxes, fetchAndCacheHeartbeats,
   readRelayConfig, writeRelayConfig, endpointIsSecure, defaultRelayConfig,
 } from './cloud';
-import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS } from './runners';
+import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS, dispatchViaRegistry } from './runners';
+import { recordDispatchCost } from './panel/fleetData';
 // Agent-fabric taxonomy via explicit subpaths (keeps the message-bus + bridge
 // out of modules that only need the taxonomy).
 import { onboardPlatform } from './fabric/onboarding';
@@ -723,6 +724,25 @@ export function activate(context: vscode.ExtensionContext) {
           const known = (BUILTIN_RUNNER_IDS as readonly string[]).includes(target);
           if (!known) { throw new Error(`unknown runner "${target}"`); }
           vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": spawning runner ${target}.`);
+          // Opt-in direct dispatch through the runner contract (§5.5 preference
+          // order + Runner.dispatch). Off by default because it can launch a real
+          // host process; the default path below wakes via the work queue. When
+          // enabled, a completed dispatch auto-feeds the per-agent cost ledger.
+          if (process.env.AUTOCLAW_RUNNER_DIRECT_DISPATCH === 'true') {
+            const outcome = await dispatchViaRegistry(createDefaultRunnerRegistry(), {
+              runnerId: target,
+              prompt: `[AutoClaw hook "${decision.rule.id}"] Resume assigned work (trigger: ${decision.rule.on}).`,
+              workingDir: hooksRoot,
+              trust: 'auto',
+              onResult: (runnerId, result) =>
+                recordDispatchCost(hooksRoot, runnerId, result, {
+                  sprint: Number(decision.event.payload.sprint ?? 1) || 1,
+                }),
+            });
+            if (outcome === null) { throw new Error(`runner "${target}" not detected or disabled`); }
+            if (!outcome.result.ok) { throw new Error(`runner ${target} dispatch failed (exit ${outcome.result.exitCode})`); }
+            return;
+          }
           const pkg = {
             type: 'work_package' as const,
             taskId: `next-${target}`,
