@@ -545,22 +545,26 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Gated (Pro): the orchestrate *action* commands, consistent with plan. NOTE:
+  // orchestrate.status (read-only) stays free, and core-coordination commands
+  // (bridge.*, cloud.*, program.*) are deliberately NOT gated — gating those
+  // would break cross-agent coordination for non-Team users.
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.orchestrate.assign', async () => {
-      await orchestrateAssignNextCommand();
-    })
+    vscode.commands.registerCommand('autoclaw.orchestrate.assign', () =>
+      withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateAssignNextCommand),
+    )
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.orchestrate.review', async () => {
-      await orchestrateReviewCommand();
-    })
+    vscode.commands.registerCommand('autoclaw.orchestrate.review', () =>
+      withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateReviewCommand),
+    )
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.orchestrate.merge', async () => {
-      await orchestrateMergeCommand();
-    })
+    vscode.commands.registerCommand('autoclaw.orchestrate.merge', () =>
+      withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateMergeCommand),
+    )
   );
 
   // Bridge commands
