@@ -229,6 +229,42 @@ suite('peerReviewWatcher — promotePendingTaskCompletes', () => {
     }
   });
 
+  // Revise/converge handoff: when the author re-broadcasts task_complete after a
+  // revision_request, the watcher must PRESERVE the round the consensusRevise loop
+  // advanced the stub to — otherwise it resets round→1 every re-broadcast and the
+  // bounded loop never reaches its ceiling (re-rounds indefinitely).
+  test('preserves an existing stub round across a re-broadcast', async () => {
+    const ws = mkTempWorkspace();
+    try {
+      const pool: ReviewerCandidate[] = [
+        candidate({ agent_id: 'kilocode' }),
+        candidate({ agent_id: 'kiro' }),
+      ];
+      // Post-revision state: an active stub already advanced to round 2 with its
+      // votes cleared (as consensusRevise.emitRevisionRequest leaves it).
+      const stubPath = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active', 'B5.json');
+      fs.mkdirSync(path.dirname(stubPath), { recursive: true });
+      fs.writeFileSync(stubPath, JSON.stringify({ task_id: 'B5', round: 2, votes: [], reviewers: ['kilocode', 'kiro'] }), 'utf8');
+
+      // Author re-broadcasts task_complete with a NEW message id for the same task.
+      const rebroadcast: TaskCompleteLike = { ...TC, id: 'msg-tc-001-r2' };
+      const res = await promotePendingTaskCompletes({
+        workspaceRoot: ws, now: new Date(now + 120_000),
+        reviewerPoolOverride: pool, taskCompletesOverride: [rebroadcast],
+      });
+      assert.strictEqual(res.promoted, 1, 're-broadcast (new id) is promoted');
+
+      const stub = JSON.parse(fs.readFileSync(stubPath, 'utf8'));
+      assert.strictEqual(stub.round, 2, 'round preserved — not reset to 1');
+      assert.deepStrictEqual(stub.votes, [], 'fresh votes for the new round');
+      // Reviewers are re-asked so round 2 can actually collect votes.
+      const kiloInbox = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'inboxes', 'kilocode');
+      assert.ok(fs.readdirSync(kiloInbox).some(f => f.includes('review_request')), 'round-2 review_request sent');
+    } finally {
+      rmrf(ws);
+    }
+  });
+
   test('skipNoPeers leaves no ledger so a future tick can retry', async () => {
     const ws = mkTempWorkspace();
     try {

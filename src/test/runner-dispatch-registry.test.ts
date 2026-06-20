@@ -13,7 +13,7 @@ function fakeRunner(
 ): Runner {
   return {
     id,
-    async detect() { return { found: true as const, version: '1.0.0', endpoint: 'local' }; },
+    async detect() { return { found: true as const, version: '1.0.0', path: '/usr/bin/fake' }; },
     async dispatch(opts: DispatchOptions): Promise<DispatchResult> {
       spy.calls.push(opts);
       return {

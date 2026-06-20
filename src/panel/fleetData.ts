@@ -431,9 +431,11 @@ export async function recordDispatchCost(
 ): Promise<void> {
   try {
     if (!agentId || !result || result.ok === false || !result.tokens) { return; }
+    const total = (result.tokens.input ?? 0) + (result.tokens.output ?? 0);
+    if (total <= 0) { return; } // nothing to record — skip a zero-token no-op row
     await appendCostLedgerEntry(workspaceRoot, {
       agentId,
-      tokens: (result.tokens.input ?? 0) + (result.tokens.output ?? 0),
+      tokens: total,
       wallMs: typeof result.durationMs === 'number' ? result.durationMs : 0,
       because: result.rationale ?? '',
       taskId: meta?.taskId,
