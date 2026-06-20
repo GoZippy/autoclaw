@@ -31,6 +31,8 @@ import {
 } from './autobuild';
 import { detectIde } from './ide-ports';
 import { vectorBackendPreflight, VectorBackendPreflight } from './intelligence/vector';
+import { openKnowledgeGraph } from './intelligence/kg';
+import { intelligencePaths } from './intelligence/paths';
 
 // Vscode is optional at runtime — passed in via dependency injection so the
 // module can run under plain Mocha without `vscode` being on the import path.
@@ -42,13 +44,14 @@ export interface DoctorVscodeShim {
   /** `vscode.env.appName` — used to detect host IDE forks (Kiro/Cursor/…). */
   hostAppName?: string;
   zippymeshUrl?: string;
-  /** KG-daemon settings + live state. Optional — tests can omit. */
+  /** Knowledge Graph settings. Optional — tests can omit. */
   kg?: {
+    /** `autoclaw.kg.enabled` — the in-process store master switch. */
     enabled?: boolean;
+    /** `autoclaw.kg.port` — only applies to the optional standalone daemon. */
     port?: number;
-    pid?: number | null;
-    /** Last `/api/v1/health` response, if the extension probed it. */
-    lastHealth?: { status: number | null; body: unknown; error?: string } | null;
+    /** `autoclaw.kg.dbPath` override — empty string ⇒ `.autoclaw/kg/kg.db` default. */
+    dbPath?: string;
   };
 }
 
@@ -134,18 +137,26 @@ export interface AutobuildSection {
   workflows: AutobuildWorkflowStatus[];
 }
 
+/**
+ * Knowledge Graph doctor section. The KG is an IN-PROCESS store on the
+ * Intelligence Layer's ABI-proof node:sqlite driver (no child process, no
+ * native deps). We report the realized backend, not a daemon's deps/entry.
+ */
 export interface KgDaemonSection {
+  /** `autoclaw.kg.enabled` — the in-process store master switch. */
   enabled: boolean;
+  /** `true` when no SQLite driver loaded (writes no-op, reads []). */
+  degraded: boolean;
+  /** Which SQLite driver is live, or null when degraded / disabled. */
+  driverKind: string | null;
+  /** Realized backend capabilities. */
+  caps: { sqlite: boolean; vec: boolean; fts: boolean };
+  /** Active embedding provider + model + dimension. */
+  embedding: { provider: string; model: string; dimension: number };
+  /** Absolute SQLite db path in use (empty string when degraded). */
+  dbPath: string;
+  /** `autoclaw.kg.port` — only applies to the optional standalone daemon. */
   port: number;
-  pid: number | null;
-  depsInstalled: boolean;
-  entryPath: string;
-  entryExists: boolean;
-  lastHealth: {
-    status: number | null;
-    summary: string;
-    error?: string;
-  } | null;
 }
 
 export interface CompilationSection {
@@ -886,45 +897,53 @@ export function buildSkillsSourceSection(extensionPath: string): SkillsSourceSec
 }
 
 /**
- * Build the KG-daemon doctor section. Reports whether the daemon is
- * configured to run, whether its dependencies are installed, and the
- * last `/health` response the extension observed (when supplied).
+ * Build the Knowledge Graph doctor section. The KG is an IN-PROCESS store on
+ * the Intelligence Layer's ABI-proof node:sqlite driver — there is no daemon,
+ * no `packages/kg-daemon` deps, and no `dist/server.js` entry to check. We open
+ * the lazily-cached handle (never throws) and report the realized backend:
+ * driver kind, capabilities, embedding provider, and db path.
  */
 export function buildKgDaemonSection(
   extensionPath: string,
-  shimKg: DoctorVscodeShim['kg']
+  shimKg: DoctorVscodeShim['kg'],
+  workspaceRoot?: string | null
 ): KgDaemonSection {
-  const enabled = !!shimKg?.enabled;
+  const enabled = shimKg?.enabled !== false; // default-on (in-process store)
   const port = typeof shimKg?.port === 'number' ? shimKg.port : 9877;
-  const pid = typeof shimKg?.pid === 'number' ? shimKg.pid : null;
+  const dbPath = typeof shimKg?.dbPath === 'string' ? shimKg.dbPath : '';
 
-  const nm = path.join(extensionPath, 'packages', 'kg-daemon', 'node_modules');
-  let depsInstalled = false;
-  try { depsInstalled = fs.statSync(nm).isDirectory(); } catch { depsInstalled = false; }
+  // The configured (on-disk) db path — reported but NOT created here.
+  const configuredDbPath = dbPath && dbPath.trim()
+    ? dbPath
+    : (workspaceRoot ? intelligencePaths(workspaceRoot).kgDbPath : '');
 
-  const entryPath = path.join(extensionPath, 'packages', 'kg-daemon', 'dist', 'server.js')
-    .replace(/\\/g, '/');
-  const entryExists = fs.existsSync(entryPath);
-
-  let lastHealth: KgDaemonSection['lastHealth'] = null;
-  if (shimKg?.lastHealth) {
-    const h = shimKg.lastHealth;
-    let summary = '(no body)';
-    if (h.body && typeof h.body === 'object') {
-      const b = h.body as Record<string, unknown>;
-      const flags: string[] = [];
-      if ('ok' in b) { flags.push(`ok=${String(b.ok)}`); }
-      if ('sqlite' in b) { flags.push(`sqlite=${String(b.sqlite)}`); }
-      if ('vec' in b) { flags.push(`vec=${String(b.vec)}`); }
-      if ('fts' in b) { flags.push(`fts=${String(b.fts)}`); }
-      summary = flags.length > 0 ? flags.join(' ') : JSON.stringify(b).slice(0, 120);
-    } else if (typeof h.body === 'string') {
-      summary = h.body.slice(0, 120);
-    }
-    lastHealth = { status: h.status, summary, error: h.error };
+  // Probe capabilities against an IN-MEMORY db (`:memory:`) — the doctor is a
+  // read-only diagnostic and must never create the `.autoclaw/kg/` directory or
+  // the db file as a side effect (see snapshot read-only invariant). caps,
+  // driverKind and the embedding signature are runtime properties, identical
+  // for a :memory: probe and the real file, so this reports accurately without
+  // touching disk. openKnowledgeGraph never throws.
+  const h = openKnowledgeGraph({
+    workspaceRoot: workspaceRoot ?? undefined,
+    dbPath: ':memory:',
+  });
+  try {
+    return {
+      enabled,
+      degraded: h.degraded,
+      driverKind: h.driverKind,
+      caps: { sqlite: h.caps.sqlite, vec: h.caps.vec, fts: h.caps.fts },
+      embedding: {
+        provider: h.embedding.provider,
+        model: h.embedding.model,
+        dimension: h.embedding.dimension,
+      },
+      dbPath: configuredDbPath,
+      port,
+    };
+  } finally {
+    h.close();
   }
-
-  return { enabled, port, pid, depsInstalled, entryPath, entryExists, lastHealth };
 }
 
 /**
@@ -952,7 +971,7 @@ export async function runDoctor(
   const gitHealth = buildGitHealthSection(workspaceRoot);
   const skillsSource = buildSkillsSourceSection(extensionPath);
   const autobuild = buildAutobuildSection(workspaceRoot);
-  const kgDaemon = buildKgDaemonSection(extensionPath, shim.kg);
+  const kgDaemon = buildKgDaemonSection(extensionPath, shim.kg, workspaceRoot);
   const vectorBackend = buildVectorBackendSection();
   const zmlr = await checkZippyMeshHealth(zippymeshUrl);
 
@@ -1143,19 +1162,21 @@ export function renderReport(report: DoctorReport): string {
   }
   lines.push('');
 
-  // KG Daemon
+  // Knowledge Graph (in-process store — no daemon, no native deps)
+  const kg = report.kgDaemon;
   lines.push('## KG Daemon');
-  lines.push(`  enabled:        ${report.kgDaemon.enabled ? 'yes' : 'no (autoclaw.kg.enabled = false)'}`);
-  lines.push(`  port:           ${report.kgDaemon.port}`);
-  lines.push(`  deps installed: ${report.kgDaemon.depsInstalled ? 'yes' : 'no — cd packages/kg-daemon && npm install'}`);
-  lines.push(`  entry:          ${report.kgDaemon.entryExists ? report.kgDaemon.entryPath : `${report.kgDaemon.entryPath} (MISSING — npm run build)`}`);
-  lines.push(`  child pid:      ${report.kgDaemon.pid !== null ? report.kgDaemon.pid : '(not running)'}`);
-  if (report.kgDaemon.lastHealth) {
-    const h = report.kgDaemon.lastHealth;
-    lines.push(`  last /health:   status=${h.status ?? 'n/a'} ${h.summary}${h.error ? `  error=${h.error}` : ''}`);
+  lines.push('  (in-process store on the Intelligence Layer SQLite driver — no child process)');
+  lines.push(`  enabled:        ${kg.enabled ? 'yes' : 'no (autoclaw.kg.enabled = false)'}`);
+  if (kg.degraded) {
+    lines.push('  state:          DEGRADED — no SQLite driver loaded (writes no-op, reads return [])');
   } else {
-    lines.push('  last /health:   (not probed this session)');
+    lines.push('  state:          ready');
   }
+  lines.push(`  driver:         ${kg.driverKind ?? '(none)'}`);
+  lines.push(`  capabilities:   sqlite=${kg.caps.sqlite} vec=${kg.caps.vec} fts=${kg.caps.fts}`);
+  lines.push(`  embedding:      ${kg.embedding.provider} / ${kg.embedding.model} (dim ${kg.embedding.dimension})`);
+  lines.push(`  db path:        ${kg.dbPath ? kg.dbPath.replace(/\\/g, '/') : '(none — degraded)'}`);
+  lines.push(`  daemon port:    ${kg.port} (only used by the optional standalone daemon)`);
   lines.push('');
 
   // AutoBuild

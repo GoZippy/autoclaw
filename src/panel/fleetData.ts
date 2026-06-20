@@ -27,6 +27,10 @@ import {
   type AgentCardInputs,
 } from '../views/fleetViewModelBuilders';
 import type { CostLedgerEntry, FleetDashboardModel } from '../views/fleetViewModel';
+import { readAllBeacons } from '../fleet/beacons';
+import { parseFleetManifest } from '../fleet/architecture';
+import { listInvites } from '../fleet/invites';
+import { computePendingAgents, type PendingAgent } from '../fleet/pending';
 
 const fsp = fs.promises;
 
@@ -420,6 +424,35 @@ export function deriveHealthFromHeartbeats(
 }
 
 // ---------------------------------------------------------------------------
+// Pending tray (FF-3) — agents with a fresh beacon not yet in fleet.json
+// ---------------------------------------------------------------------------
+
+/**
+ * Gather the pending tray: agents present via a fresh beacon (machine-global or
+ * this workspace) that are not yet declared in fleet.json. Suggested role/type +
+ * trust come from a matching consumed invite first, else the beacon's hints.
+ * Best-effort: any read failure degrades to `[]` so the panel never throws.
+ */
+export async function readPendingAgents(
+  workspaceRoot: string,
+  now: number = Date.now(),
+): Promise<PendingAgent[]> {
+  try {
+    const comms = commsDir(workspaceRoot);
+    const fleetFile = path.join(orchestratorDir(workspaceRoot), 'fleet.json');
+    const [beacons, manifest, invitesM, invitesW] = await Promise.all([
+      readAllBeacons({ commsDir: comms, now }).catch(() => []),
+      fsp.readFile(fleetFile, 'utf8').then(parseFleetManifest).catch(() => null),
+      listInvites({}).catch(() => []),
+      listInvites({ scope: 'workspace', commsDir: comms }).catch(() => []),
+    ]);
+    return computePendingAgents(beacons, manifest, [...invitesM, ...invitesW]);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Top-level gather
 // ---------------------------------------------------------------------------
 
@@ -448,7 +481,7 @@ export async function gatherFleetData(
   const now = opts.now ?? Date.now();
   const { workspaceRoot, selfAgentId } = opts;
 
-  const [profiles, heartbeats, located, claims, sprintAssignments, cost] =
+  const [profiles, heartbeats, located, claims, sprintAssignments, cost, pending] =
     await Promise.all([
       readAgentProfiles(workspaceRoot),
       readHeartbeats(workspaceRoot),
@@ -456,6 +489,7 @@ export async function gatherFleetData(
       readClaims(workspaceRoot),
       readSprintAssignments(workspaceRoot),
       readCostLedger(workspaceRoot),
+      readPendingAgents(workspaceRoot, now),
     ]);
 
   const allMessages: RawMessage[] = located.map(l => l.msg);
@@ -512,6 +546,7 @@ export async function gatherFleetData(
     health,
     cost,
     healthEvents,
+    pending,
   };
 
   return buildFleetDashboard(inputs, now);

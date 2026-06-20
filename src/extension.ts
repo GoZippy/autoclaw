@@ -48,7 +48,8 @@ import {
   discoverWorkflows,
   runWorkflow,
   getRunsDir,
-  findLatestRunLog
+  findLatestRunLog,
+  writeSchedulerHeartbeat
 } from './autobuild';
 import {
   generatePlan,
@@ -106,6 +107,9 @@ import {
   resolveFleet, parseFleetManifest, type FleetManifest, type AgentSignal,
 } from './fleet/architecture';
 import { readAllBeacons, type BeaconRow } from './fleet/beacons';
+import { createInvite, listInvites, revokeInvite, type AdmitPolicy } from './fleet/invites';
+import { computePendingAgents, admitAgent } from './fleet/pending';
+import { buildPending } from './views/fleetViewModelBuilders';
 import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
 import {
@@ -135,6 +139,7 @@ import {
   startKgDaemon, stopKgDaemon, fetchKgHealth,
   type KgState,
 } from './kg';
+import { getKnowledgeGraph, closeKnowledgeGraph } from './intelligence/kg/service';
 import {
   startOrchestratorLoop,
   dispatchWork,
@@ -660,6 +665,13 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('autoclaw.designateOrchestrator', () => designateOrchestratorCommand())
   );
 
+  // Fleet federation (FF-3) — invite outside agents, admit/decline the pending tray.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.fleet.invite', () => fleetInviteCommand()),
+    vscode.commands.registerCommand('autoclaw.fleet.admit', () => fleetAdmitCommand()),
+    vscode.commands.registerCommand('autoclaw.fleet.decline', () => fleetDeclineCommand())
+  );
+
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
   // HALT is a file (`.autoclaw/orchestrator/HALT`): while present, neither the
   // orchestrator loop nor trigger hooks dispatch anything in this workspace.
@@ -781,11 +793,16 @@ export function activate(context: vscode.ExtensionContext) {
     }
   }
 
-  // KG daemon: opt-in spawn (autoclaw.kg.enabled = true). Best-effort —
-  // logs and skips if deps aren't installed; never blocks activation.
-  maybeStartKgDaemon(context.extensionPath).catch(e => {
-    console.error('kg-daemon auto-start failed:', e);
-  });
+  // Knowledge Graph: the default KG is now an IN-PROCESS store (lazily opened
+  // on first use via getKnowledgeGraph / closed in deactivate). We deliberately
+  // do NOT auto-spawn the standalone child daemon on activation. The optional
+  // daemon stays available behind the explicit `autoclaw.kg.start` command.
+  // (Set autoclaw.kg.spawnDaemonOnActivate to opt back into the legacy spawn.)
+  if (vscode.workspace.getConfiguration('autoclaw.kg').get<boolean>('spawnDaemonOnActivate', false)) {
+    maybeStartKgDaemon(context.extensionPath).catch(e => {
+      console.error('kg-daemon auto-start failed:', e);
+    });
+  }
 
   // AutoBuild scheduler: single setInterval in the extension host.
   startAutobuildScheduler(context);
@@ -1478,6 +1495,13 @@ export async function refreshDashboardData(view: vscode.WebviewView): Promise<vo
   const productivity = await getProductivityInsights(workspaceRoot, logs, todos);
   const health = await getProjectHealthIndicators(workspaceRoot, todos, adapterHealth);
 
+  // FF-3: pending tray — agents that joined via a fresh beacon but are not yet
+  // admitted to fleet.json. Best-effort; an empty list simply hides the tray.
+  let pending: Awaited<ReturnType<typeof readPendingTray>> = [];
+  try {
+    pending = await readPendingTray(path.join(workspaceRoot, '.autoclaw'));
+  } catch { /* best-effort — leave empty */ }
+
   // Send data to webview
   try {
     view.webview.postMessage({ command: 'updateStatus', data: stateData });
@@ -1488,6 +1512,7 @@ export async function refreshDashboardData(view: vscode.WebviewView): Promise<vo
     view.webview.postMessage({ command: 'updateCodeChurn', data: codeChurn });
     view.webview.postMessage({ command: 'updateProductivity', data: productivity });
     view.webview.postMessage({ command: 'updateHealth', data: health });
+    view.webview.postMessage({ command: 'updatePending', data: buildPending(pending) });
   } catch (e) {
     console.error('Error sending message to webview:', e);
   }
@@ -1822,26 +1847,42 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           await vscode.env.openExternal(vscode.Uri.parse('https://github.com/GoZippy/autoclaw/blob/master/docs/rfc/runner-bridge-contract.md'));
           break;
         }
+        case 'enableKg': {
+          // KG chip clicked while disabled — enable the in-process store and
+          // surface the setting so the user sees the toggle they flipped.
+          try {
+            await vscode.workspace.getConfiguration('autoclaw.kg')
+              .update('enabled', true, vscode.ConfigurationTarget.Workspace);
+          } catch { /* fall through to opening settings */ }
+          await vscode.commands.executeCommand('workbench.action.openSettings', 'autoclaw.kg.enabled');
+          vscode.window.showInformationMessage('AutoClaw Knowledge Graph enabled (in-process store — no install needed).');
+          break;
+        }
+        case 'openKgDoctor': {
+          // KG chip clicked while degraded — run doctor so the user can see the
+          // KG section (driver/caps) and the KG output channel for warnings.
+          getKgOutputChannel().show(true);
+          await vscode.commands.executeCommand('autoclaw.doctor');
+          break;
+        }
+        case 'inviteAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.invite');
+          break;
+        case 'admitAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.admit');
+          break;
+        case 'declineAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.decline');
+          break;
         case 'startKgDaemon':
         case 'restartKgDaemon':
         case 'openKgDashboard': {
-          const cmdMap: Record<string, string> = {
-            startKgDaemon: 'autoclaw.kg.start',
-            restartKgDaemon: 'autoclaw.kg.restart',
-            openKgDashboard: 'autoclaw.kg.openDashboard',
-          };
-          const cmd = cmdMap[message.command];
+          const cmd = 'autoclaw.kg.openDashboard';
           const all = await vscode.commands.getCommands(true);
           if (all.includes(cmd)) {
             await vscode.commands.executeCommand(cmd);
           } else {
-            const pick = await vscode.window.showInformationMessage(
-              `Knowledge Graph daemon control ('${cmd}') is not registered in this build. Open the kg-daemon docs?`,
-              'Open docs', 'Dismiss'
-            );
-            if (pick === 'Open docs') {
-              await vscode.env.openExternal(vscode.Uri.parse('https://github.com/GoZippy/autoclaw/blob/master/docs/V3_1_ROADMAP.md'));
-            }
+            getKgOutputChannel().show(true);
           }
           break;
         }
@@ -1936,6 +1977,19 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             </div>
             <div class="section-body" id="awaiting-you-body">
                 <div id="awaiting-you-content" aria-live="polite"><p class="empty">Loading...</p></div>
+            </div>
+        </div>
+
+        <!-- Pending agents tray (FF-3) — joined via beacon, not yet admitted -->
+        <div class="panel-section" id="pending-section" style="display:none">
+            <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="pending-body" data-section="pending">
+                <span class="section-chevron"></span>
+                Pending agents
+                <span class="section-badge" id="pending-badge">0</span>
+                <button id="btn-invite-agent" class="pending-invite-btn" type="button" aria-label="Invite agent">&#10133; Invite agent&#8230;</button>
+            </div>
+            <div class="section-body" id="pending-body">
+                <div id="pending-content" aria-live="polite"></div>
             </div>
         </div>
 
@@ -2111,15 +2165,12 @@ async function runDoctorCommand(
   const isAntigravityHost = /antigravity/i.test(vscode.env.appName || '');
 
   const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
-  const kgEnabled = kgCfg.get<boolean>('enabled', false);
-  // Prefer the actual port the daemon is running on (after port-fallback).
-  // Falls back to the configured value if no daemon is alive.
+  // The KG is an in-process store; `enabled` defaults on. `port`/`dbPath` are
+  // passed through so the doctor reflects the configured settings (port only
+  // governs the optional standalone daemon).
+  const kgEnabled = kgCfg.get<boolean>('enabled', true);
   const kgConfiguredPort = kgCfg.get<number>('port', 9877);
-  const kgPid = activeKg?.child && activeKg.child.exitCode === null ? (activeKg.child.pid ?? null) : null;
-  const kgPort = activeKg && kgPid !== null ? activeKg.port : kgConfiguredPort;
-  const lastKgHealth = kgPid !== null
-    ? await fetchKgHealth(kgPort).catch(e => ({ ok: false, status: null, body: null, error: (e as Error).message }))
-    : null;
+  const kgDbPath = kgCfg.get<string>('dbPath', '');
 
   const report: DoctorReport = await runDoctor(extensionPath, {
     workspaceRoot,
@@ -2129,11 +2180,8 @@ async function runDoctorCommand(
     zippymeshUrl,
     kg: {
       enabled: kgEnabled,
-      port: kgPort,
-      pid: kgPid,
-      lastHealth: lastKgHealth
-        ? { status: lastKgHealth.status, body: lastKgHealth.body, error: lastKgHealth.error }
-        : null,
+      port: kgConfiguredPort,
+      dbPath: kgDbPath,
     }
   });
 
@@ -2174,6 +2222,9 @@ function startAutobuildScheduler(context: vscode.ExtensionContext): void {
     }
     try {
       const cfg = vscode.workspace.getConfiguration('autoclaw.autobuild');
+      // Stamp the scheduler heartbeat so `list`/the panel can tell live
+      // automation from dormant — a registered cron is inert without us.
+      await writeSchedulerHeartbeat(workspaceRoot, intervalSeconds);
       const report = await autobuildTick(workspaceRoot, new Date(), {
         enabled: cfg.get<boolean>('enabled', true),
         runner: runWorkflow
@@ -3884,6 +3935,24 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
       data: { html: renderFabricHealth(health) },
     });
   } catch {}
+
+  // FF-3: pending tray — agents with a fresh beacon not yet admitted to
+  // fleet.json. Mapped to the webview's render shape (PendingAgentView).
+  try {
+    const pending = await readPendingTray(path.join(wr, '.autoclaw'));
+    view.webview.postMessage({
+      command: 'updatePending',
+      data: pending.map(p => ({
+        agentId: p.agent_id,
+        sessionId: p.session_id,
+        host: p.host,
+        suggestedRole: p.suggested_role,
+        suggestedType: p.suggested_agent_type,
+        viaInvite: !!p.via_invite,
+        trust: p.trust,
+      })),
+    });
+  } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -4045,6 +4114,142 @@ async function setAgentRoleCommand(): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fleet federation commands (FF-3) — invite / admit / decline outside agents
+// ---------------------------------------------------------------------------
+
+/** Issue a scoped, single-use invite token an outside agent can use to join. */
+async function fleetInviteCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+
+  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
+  const rolePick = await vscode.window.showQuickPick(roleItems, { title: 'Invite agent — suggested role', placeHolder: 'What role should the invited agent play?' });
+  if (!rolePick) { return; }
+
+  const typePick = await vscode.window.showQuickPick(
+    ['coder', 'runner', 'auditor', 'supervisor', 'assistant', 'governance'].map(t => ({ label: t })),
+    { title: 'Invite agent — behavioral type', placeHolder: 'agent_type (drives routing/gating)' },
+  );
+  if (!typePick) { return; }
+
+  const policyPick = await vscode.window.showQuickPick(
+    [
+      { label: 'auto-preapproved', description: 'Auto-admit if the joining type is pre-approved; else wait in the tray (recommended)' },
+      { label: 'manual', description: 'Every join waits for you to Admit in the tray' },
+      { label: 'open', description: 'Admit any valid invite (trusted LAN / program)' },
+    ],
+    { title: 'Invite agent — admit policy', placeHolder: 'How should a consuming agent be admitted?' },
+  );
+  if (!policyPick) { return; }
+
+  const scopeRaw = await vscode.window.showInputBox({
+    title: 'Invite agent — path scope (optional)',
+    prompt: 'Comma-separated globs the agent may touch (seeds a scope-lease). Blank = whole repo.',
+    placeHolder: 'src/test/**, docs/**',
+    ignoreFocusOut: true,
+  });
+  const scope = (scopeRaw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+
+  try {
+    const project = path.basename(wr);
+    const invite = await createInvite({
+      issued_by: activeHostAgentId() ?? 'claude-code',
+      project,
+      workspace: wr,
+      suggested_role: rolePick.role,
+      suggested_agent_type: typePick.label,
+      admit_policy: policyPick.label as AdmitPolicy,
+      preapproved_types: policyPick.label === 'auto-preapproved' ? [typePick.label] : undefined,
+      ...(scope.length ? { scope } : {}),
+      transports: ['fs', 'mcp', 'http'],
+    });
+    await vscode.env.clipboard.writeText(invite.token);
+    const pick = await vscode.window.showInformationMessage(
+      `AutoClaw: invite created for a ${rolePick.role} on "${project}". Token copied to clipboard — hand it to the agent.\n\n${invite.token}`,
+      { modal: false }, 'Copy token again',
+    );
+    if (pick === 'Copy token again') { await vscode.env.clipboard.writeText(invite.token); }
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not create invite — ${(e as Error).message}`);
+  }
+}
+
+/** Read the pending tray: agents with a fresh beacon not yet in fleet.json. */
+async function readPendingTray(autoclawDir: string) {
+  const commsDir = path.join(autoclawDir, 'orchestrator', 'comms');
+  const [beacons, manifestRaw, invitesM, invitesW] = await Promise.all([
+    readAllBeacons({ commsDir }),
+    fsPromises.readFile(path.join(autoclawDir, 'orchestrator', 'fleet.json'), 'utf8').then(parseFleetManifest).catch(() => null),
+    listInvites({}).catch(() => []),
+    listInvites({ scope: 'workspace', commsDir }).catch(() => []),
+  ]);
+  return computePendingAgents(beacons, manifestRaw, [...invitesM, ...invitesW]);
+}
+
+/** Admit a pending agent into fleet.json with an authoritative role. */
+async function fleetAdmitCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const autoclawDir = path.join(wr, '.autoclaw');
+
+  const pending = await readPendingTray(autoclawDir);
+  if (pending.length === 0) { vscode.window.showInformationMessage('AutoClaw: no agents are waiting to be admitted.'); return; }
+
+  const pick = await vscode.window.showQuickPick(
+    pending.map(p => ({
+      label: p.agent_id,
+      description: `${p.suggested_role ?? 'generalist'}${p.host ? ' · ' + p.host : ''}${p.via_invite ? ' · invited' : ''}`,
+      agent: p,
+    })),
+    { title: 'Admit agent', placeHolder: 'Pick a pending agent to admit' },
+  );
+  if (!pick) { return; }
+
+  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
+  const rolePick = await vscode.window.showQuickPick(roleItems, {
+    title: `Role for ${pick.agent.agent_id}`,
+    placeHolder: pick.agent.suggested_role ? `Suggested: ${pick.agent.suggested_role}` : 'Pick a role',
+  });
+  if (!rolePick) { return; }
+
+  try {
+    await admitAgent(autoclawDir, pick.agent.agent_id, {
+      role: rolePick.role,
+      ...(pick.agent.suggested_agent_type ? { agent_type: pick.agent.suggested_agent_type } : {}),
+    });
+    vscode.window.showInformationMessage(`AutoClaw: admitted ${pick.agent.agent_id} as ${ROLE_META[rolePick.role as CanonicalRole].label}.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not admit — ${(e as Error).message}`);
+  }
+}
+
+/** Decline a pending agent: revoke its invite (its beacon then ages out). */
+async function fleetDeclineCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const autoclawDir = path.join(wr, '.autoclaw');
+  const commsDir = path.join(autoclawDir, 'orchestrator', 'comms');
+
+  const pending = await readPendingTray(autoclawDir);
+  if (pending.length === 0) { vscode.window.showInformationMessage('AutoClaw: no agents are waiting.'); return; }
+
+  const pick = await vscode.window.showQuickPick(
+    pending.map(p => ({ label: p.agent_id, description: p.via_invite ? 'invited' : 'uninvited beacon', agent: p })),
+    { title: 'Decline agent', placeHolder: 'Pick a pending agent to decline' },
+  );
+  if (!pick) { return; }
+
+  if (pick.agent.via_invite) {
+    await revokeInvite(pick.agent.via_invite, {}).catch(() => false);
+    await revokeInvite(pick.agent.via_invite, { scope: 'workspace', commsDir }).catch(() => false);
+  }
+  vscode.window.showInformationMessage(`AutoClaw: declined ${pick.agent.agent_id}. Its invite was revoked; the beacon will age out.`);
+  if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+}
+
 /** Best-effort "who am I?" for the host running this extension instance.
  *  Used to populate the "Awaiting You" filter. Falls back to undefined. */
 function activeHostAgentId(): string | undefined {
@@ -4058,7 +4263,7 @@ function activeHostAgentId(): string | undefined {
 /** Probe the local bridge `/api/v1/health` and the kg-daemon to label header
  *  badges. Always resolves — never throws. */
 async function probeFabricHealth(): Promise<FabricHealth> {
-  const out: FabricHealth = { bridge: 'off', kg: 'off' };
+  const out: FabricHealth = { bridge: 'off', kg: 'disabled' };
 
   // Bridge state — only meaningful if the extension actually started one.
   if (activeBridge?.running) {
@@ -4080,19 +4285,25 @@ async function probeFabricHealth(): Promise<FabricHealth> {
     out.bridge = 'off';
   }
 
-  // KG daemon — opt-in. We only set 'running' when the child is alive AND
-  // the health endpoint answers ok. Otherwise label appropriately.
-  if (activeKg?.child && activeKg.child.exitCode === null) {
-    try {
-      const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
-      const port = kgCfg.get<number>('port', 9877);
-      const r = await fetchKgHealth(port);
-      out.kg = r.ok ? 'running' : 'unreachable';
-    } catch {
-      out.kg = 'unreachable';
-    }
+  // Knowledge Graph — in-process store on the Intelligence Layer's ABI-proof
+  // node:sqlite driver (no child process). `disabled` when opted out; else open
+  // the lazily-cached handle and reflect whether a driver loaded.
+  const kgCfg = vscode.workspace.getConfiguration('autoclaw.kg');
+  if (!kgCfg.get<boolean>('enabled', true)) {
+    out.kg = 'disabled';
   } else {
-    out.kg = 'off';
+    try {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || undefined;
+      const h = getKnowledgeGraph({ workspaceRoot });
+      out.kg = h.degraded ? 'degraded' : 'ready';
+      out.kg_detail = {
+        driverKind: h.driverKind,
+        caps: h.caps,
+        embeddingProvider: h.embedding.provider,
+      };
+    } catch {
+      out.kg = 'degraded';
+    }
   }
 
   return out;
@@ -4374,6 +4585,8 @@ export function deactivate() {
     activeFabric.close().catch(() => {});
     activeFabric = null;
   }
+  // Close the in-process Knowledge Graph store (releases the SQLite handle).
+  try { closeKnowledgeGraph(); } catch { /* ignore */ }
   if (activeKg && activeKg.child && activeKg.child.exitCode === null) {
     stopKgDaemon(activeKg).catch(() => {});
     activeKg = null;

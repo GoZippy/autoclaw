@@ -27,8 +27,10 @@ import type {
   CostLedgerView,
   CostRollupRow,
   PresenceSummary,
+  PendingAgentView,
   FleetDashboardModel,
 } from './fleetViewModel';
+import type { PendingAgent } from '../fleet/pending';
 
 // ---------------------------------------------------------------------------
 // Raw input shapes (subset of comms types — kept local to avoid a hard
@@ -668,6 +670,24 @@ export interface FleetDashboardInputs {
   cost: CostLedgerEntry[];
   /** Synthetic health-derived activity events (agent died, recovered, …). */
   healthEvents?: Array<{ agentId: string; kind: ActivityKind; timestamp: string; text: string }>;
+  /** FF-3: agents seen via a fresh beacon but not yet admitted to fleet.json. */
+  pending?: PendingAgent[];
+}
+
+/**
+ * Map the fs-core {@link PendingAgent} shape onto the render-ready
+ * {@link PendingAgentView}. Tolerant of `undefined` ⇒ empty list. (FF-3)
+ */
+export function buildPending(pending: PendingAgent[] | undefined): PendingAgentView[] {
+  return (pending ?? []).map(p => ({
+    agentId: p.agent_id,
+    ...(p.session_id ? { sessionId: p.session_id } : {}),
+    ...(p.host ? { host: p.host } : {}),
+    ...(p.suggested_role ? { suggestedRole: p.suggested_role } : {}),
+    ...(p.suggested_agent_type ? { suggestedType: p.suggested_agent_type } : {}),
+    viaInvite: !!p.via_invite,
+    trust: p.trust,
+  }));
 }
 
 /**
@@ -711,5 +731,6 @@ export function buildFleetDashboard(
     healthGrid: buildHealthGrid(inputs.health, now),
     cost: buildCostLedger(inputs.cost),
     presence: buildPresence(cards, awaitingByAgent),
+    pending: buildPending(inputs.pending),
   };
 }

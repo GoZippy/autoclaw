@@ -27,7 +27,39 @@ export {
 export { ReleaseFn, acquireLock, lockDirFor } from './fileLock';
 export { resolveProjectKey } from './project';
 export { redactSecrets } from './redact';
-export { getEmbedding, getNoneEmbedding, _resetPipelineCache } from './embeddings';
+export {
+  getEmbedding,
+  embedStrict,
+  getNoneEmbedding,
+  detectOllama,
+  detectRouter,
+  listOllamaModels,
+  resolveRouterHost,
+  _resetPipelineCache,
+} from './embeddings';
+export {
+  ConcreteProvider,
+  ConcreteEmbeddingConfig,
+  EmbeddingPin,
+  ResolveResult,
+  ResolveOptions,
+  DEFAULT_EMBED_MODEL,
+  resolveEmbeddingConfig,
+  setEmbeddingProvider,
+  clearEmbeddingPin,
+  readEmbeddingPin,
+  pickOllamaEmbedModel,
+} from './embeddingResolve';
+export {
+  TRANSFORMERS_DIR_ENV,
+  TRANSFORMERS_CACHE_ENV,
+  InstallEmbeddingsOptions,
+  InstallEmbeddingsResult,
+  installEmbeddingsProvider,
+  isEmbeddingsInstalled,
+  resolveInstalledTransformersEntry,
+  buildEmbeddingsInstallArgs,
+} from './installEmbeddings';
 export {
   VectorRecord,
   VectorSearchOptions,
@@ -98,7 +130,6 @@ export {
   isGlobalNamespace,
   resolveSearchScope,
 } from './namespaces';
-export { detectOllama } from './embeddings';
 
 // universal-ingestion: discovery + watermarks + consent + new adapters + /sources
 export {

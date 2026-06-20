@@ -50,6 +50,7 @@ import { aggregateRealTokens } from './metrics/ledgerBridge';
 import { WorkflowInsights, mineWorkflows, workflowPatternLabel } from './workflows';
 import { computeEffectiveness } from './effectiveness';
 import { recordEffectiveness } from './metrics/effectivenessStore';
+import { CoordinationSignals, collectCoordinationSignals } from './coordinationSignals';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -87,6 +88,8 @@ export interface LearnSummary {
   sources: string[];
   /** Mined successful workflow patterns folded into durable memory this run. */
   workflowsMined: number;
+  /** Coordination outcomes (consensus verdicts + review findings) folded in. */
+  coordinationOutcomes: number;
 }
 
 /** On-disk shape of `preferences.json` (merge target). */
@@ -179,9 +182,20 @@ interface Aggregates extends StyleAggregates {
   usedDefaults: boolean;
   /** Mined workflow signal (folded into the pattern sets below). */
   workflows: WorkflowInsights;
+  /** Multi-agent coordination outcomes (folded into the pattern sets below). */
+  coordination: CoordinationSignals;
 }
 
-function aggregate(sessions: UnifiedSession[]): Aggregates {
+/** Empty coordination signal — used when no comms tree is present. */
+const EMPTY_COORDINATION: CoordinationSignals = {
+  outcomes: [], findings: [], successful: [], avoided: [],
+  counts: { approved: 0, changesRequested: 0, rejected: 0, findings: 0 },
+};
+
+function aggregate(
+  sessions: UnifiedSession[],
+  coordination: CoordinationSignals = EMPTY_COORDINATION,
+): Aggregates {
   const successful = new Set<string>();
   const avoided = new Set<string>();
   const toolCount = new Map<string, number>();
@@ -233,13 +247,19 @@ function aggregate(sessions: UnifiedSession[]): Aggregates {
   // but no per-snippet kept code is still treated as real signal (not defaults).
   // Workflows are prepended so they rank ahead of single-snippet patterns.
   const workflows = mineWorkflows(sessions);
+  // Coordination outcomes lead both lists: a cross-agent review that confirmed a
+  // finding or gated a merge is the highest-value, most reusable team signal.
+  // They are folded BEFORE the empty/default check so a corpus with coordination
+  // signal but no kept code is still treated as real.
   const successfulList = [
+    ...coordination.successful,
     ...workflows.successful
       .slice(0, MAX_WORKFLOWS)
       .map((p) => `Workflow: ${workflowPatternLabel(p)}`),
     ...Array.from(successful),
   ];
   const avoidedList = [
+    ...coordination.avoided,
     ...workflows.antiPatterns
       .slice(0, MAX_WORKFLOWS)
       .map((p) => `Anti-workflow: ${workflowPatternLabel(p)}`),
@@ -272,6 +292,7 @@ function aggregate(sessions: UnifiedSession[]): Aggregates {
     sources: Array.from(sourceSet).sort(),
     usedDefaults,
     workflows,
+    coordination,
   };
 }
 
@@ -345,6 +366,13 @@ function buildDistilledInsight(
   parts.push(
     `Analyzed ${sessionsAnalyzed} session(s) with ${agg.keptCount} kept-code signal(s).`,
   );
+  const c = agg.coordination.counts;
+  if (c.approved + c.changesRequested + c.rejected + c.findings > 0) {
+    parts.push(
+      `Coordination: ${c.approved} approved, ${c.changesRequested} changes-requested, ` +
+        `${c.rejected} rejected, ${c.findings} review finding(s).`,
+    );
+  }
   if (agg.preferredTools.length) {
     parts.push(`Preferred tools: ${agg.preferredTools.join(', ')}.`);
   }
@@ -378,6 +406,13 @@ function renderInsightFile(
   lines.push(`- Sessions analyzed: ${sessionsAnalyzed}`);
   lines.push(`- Kept-code signals: ${agg.keptCount}`);
   lines.push(`- Sources: ${agg.sources.length ? agg.sources.join(', ') : '(none)'}`);
+  const cc = agg.coordination.counts;
+  if (cc.approved + cc.changesRequested + cc.rejected + cc.findings > 0) {
+    lines.push(
+      `- Coordination: ${cc.approved} approved, ${cc.changesRequested} changes-requested, ` +
+        `${cc.rejected} rejected, ${cc.findings} review finding(s)`,
+    );
+  }
   lines.push('');
   lines.push('## Successful Patterns (procedural)');
   lines.push('');
@@ -542,8 +577,18 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
     log,
   });
 
+  // (#8) Harvest multi-agent coordination outcomes from the comms tree
+  // (consensus verdicts + finding reports) so the run learns from team events,
+  // not just per-session code diffs. Pure reads; degrade-safe on a missing tree.
+  let coordination: CoordinationSignals | undefined;
+  try {
+    coordination = collectCoordinationSignals(workspaceRoot);
+  } catch (err) {
+    log(`learn: collecting coordination signals failed (${(err as Error).message})`);
+  }
+
   // (R5.3) Aggregate with sensible defaults so output is never empty.
-  const agg = aggregate(sessions);
+  const agg = aggregate(sessions, coordination);
   const iso = new Date().toISOString();
 
   // (R7.1) Everything below is already redacted via clean()/firstMeaningfulLine().
@@ -616,12 +661,14 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
   }
 
   // (11) The run summary.
+  const c = agg.coordination.counts;
   const summary: LearnSummary = {
     sessionsAnalyzed: sessions.length,
     kept: agg.keptCount,
     patterns: agg.successfulPatterns.length + agg.avoidedPatterns.length,
     sources: agg.sources,
     workflowsMined: agg.workflows.successful.length,
+    coordinationOutcomes: c.approved + c.changesRequested + c.rejected + c.findings,
   };
 
   // (10) Store the distilled-memory embeddings AFTER releasing the preferences
@@ -691,8 +738,11 @@ async function storeMemoryEmbeddings(
     try {
       const vrecs: VectorRecord[] = [];
       let i = 0;
+      let embeddingDegraded = false;
       for (const record of records) {
-        const embedding = await getEmbedding(record.content, config.embedding, log);
+        const embedding = await getEmbedding(record.content, config.embedding, log, () => {
+          embeddingDegraded = true;
+        });
         vrecs.push({
           id: `${SOURCE_TAG}:${project}:${record.createdAt}:${record.kind}:${i++}`,
           content: record.content,
@@ -712,6 +762,13 @@ async function storeMemoryEmbeddings(
       await db.storeEmbeddings(vrecs, {
         deleteIdPrefixes: [`${SOURCE_TAG}:${project}:`],
       });
+      if (embeddingDegraded) {
+        log(
+          `learn: WARNING — the "${config.embedding.provider}" embedding provider failed on some ` +
+            `records; those fell back to basic 'none' vectors (mixed geometry). Fix the provider ` +
+            `and re-run /learn for a clean rebuild.`,
+        );
+      }
     } finally {
       db.close();
     }

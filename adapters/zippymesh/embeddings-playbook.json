@@ -1,0 +1,22 @@
+{
+  "id": "autoclaw-embeddings",
+  "name": "AutoClaw Embeddings — Semantic Index",
+  "description": "Routes embedding requests (X-Intent: embed) to an embedding-capable backend so ONE Zippy Mesh install serves both chat AND the Intelligence Layer's RAG embeddings — and a team can share one embedding node instead of every developer installing a heavy native model. Local-first by default (Ollama); add a cloud embedding provider below only if you accept that code/text leaves the machine.",
+  "version": "1.0.0",
+  "author": "ZippyTechnologies",
+  "tags": ["autoclaw", "embeddings", "rag", "intelligence", "local-first"],
+  "trigger": {
+    "intent": "embed"
+  },
+  "routing": {
+    "strategy": "least-cost",
+    "providers": [
+      { "id": "ollama", "models": ["nomic-embed-text", "mxbai-embed-large", "bge-m3"], "priority": 1 }
+    ],
+    "fallback": "budget-routing"
+  },
+  "costControls": {
+    "preferFree": true,
+    "maxCostPerRequest": 0
+  }
+}

@@ -390,6 +390,12 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
 
     let chunksIndexed = 0;
     let cancelled = false;
+    // Geometry safety: if a real provider fails on some chunks mid-pass,
+    // getEmbedding degrades THAT chunk to `none` (hashed) — a different vector
+    // geometry stored under the same signature. The dimension guard can't see it
+    // (same dimension), so we track it and raise staleIndex to force a clean
+    // re-index once the provider is healthy.
+    let embeddingDegraded = false;
     const records: VectorRecord[] = [];
     // Delete each (re)indexed file's prior chunks before inserting current ones,
     // so an edit that shifts chunk line-ranges cannot orphan the old ids.
@@ -413,7 +419,9 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
         // code: legitimate base64/hashes/URLs/minified lines are not secrets and
         // blanket-redacting them degrades retrieval. Targeted patterns still run.
         const redacted = redactSecrets(chunk.content, { skipGenericToken: true });
-        const embedding = await getEmbedding(redacted, config.embedding, log);
+        const embedding = await getEmbedding(redacted, config.embedding, log, () => {
+          embeddingDegraded = true;
+        });
         records.push({
           id: `${filePrefix(project, relFile)}${chunk.startLine}-${chunk.endLine}`,
           content: redacted,
@@ -448,6 +456,15 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
       await writeLastIndex(paths.lastIndexPath, paths.vectorDir, project, currentCommit);
     }
 
+    if (embeddingDegraded) {
+      log(
+        `rag: WARNING — the "${config.embedding.provider}" embedding provider failed on some ` +
+          `chunks mid-index; those fell back to basic 'none' vectors, so this index now MIXES ` +
+          `vector geometries and retrieval quality is degraded. Fix the provider and re-run ` +
+          `/index-code --force for a clean rebuild.`,
+      );
+    }
+
     return {
       filesIndexed: filesToIndex.length,
       chunksIndexed,
@@ -455,7 +472,9 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
       degraded: false,
       chunksDeleted,
       cancelled,
-      staleIndex: db.staleIndex,
+      // A mid-pass degradation poisons geometry under an unchanged signature, so
+      // surface it through the same staleIndex channel as a model change.
+      staleIndex: db.staleIndex || embeddingDegraded,
       commit: currentCommit ?? undefined,
     };
   } finally {

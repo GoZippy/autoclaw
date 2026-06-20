@@ -25,6 +25,9 @@ import type {
   ToolResult,
   McpToolDefinition,
 } from './types';
+import { getKnowledgeGraph } from '../intelligence/kg/service';
+import type { SearchStrategy } from '../intelligence/kg/types';
+import { readAllBeacons } from '../fleet/beacons';
 import { retrieveCode } from '../intelligence';
 
 const fsPromises = fs.promises;
@@ -294,6 +297,58 @@ const fleetCardsTool: ToolHandler = {
       .sort((a, b) => a.agent.localeCompare(b.agent));
 
     return { ok: true, data: cards };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: presence.fleet (FF-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the merged beacon fleet — every agent that has checked in via a beacon
+ * (other IDEs, headless runners like Hermes/openclaw, MCP CLIs that called
+ * `presence.beacon`). Reads both the machine-global `~/.autoclaw/beacons/` and
+ * this workspace's `comms/beacons/` and dedupes per (agent_id, session_id),
+ * freshest wins. Stale-beyond-TTL beacons are dropped unless `includeStale`.
+ *
+ * This is the read counterpart to the `presence.beacon` write tool: together
+ * they let any MCP-speaking peer both check in and see who else is live —
+ * closing the one A2A gap where MCP agents could message + claim but not be
+ * visible in the fleet.
+ */
+const presenceFleetTool: ToolHandler = {
+  definition: {
+    name: 'presence.fleet',
+    description:
+      'List the live beacon fleet — agents from other tools/IDEs/runners that ' +
+      'have checked in via a beacon. Merges machine-global + workspace beacons, ' +
+      'deduped freshest-wins, stale ones dropped by default.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        includeStale: {
+          type: 'boolean',
+          description: 'Include beacons older than the freshness window (default false).',
+        },
+      },
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const includeStale = args.includeStale === true;
+    try {
+      const rows = await readAllBeacons({
+        commsDir: path.join(ctx.autoclawDir, 'orchestrator', 'comms'),
+        includeStale,
+      });
+      rows.sort((a, b) => a.agent_id.localeCompare(b.agent_id));
+      return { ok: true, data: rows };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'internal_error',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
   },
 };
 
@@ -690,6 +745,127 @@ const fabricRouteTool: ToolHandler = {
 };
 
 // ---------------------------------------------------------------------------
+// Tool: kg.search
+// ---------------------------------------------------------------------------
+// KGC-4: surfaces the in-process Knowledge Graph's similarity recall over MCP
+// so any agent can pull back shared thoughts. Resolves the per-process KG
+// handle via getKnowledgeGraph; reads only (the underlying searchSimilar makes
+// no mutation). When the KG is degraded (no SQLite driver) the search still
+// succeeds with an empty result and a `degraded: true` flag so callers can tell
+// recall is off rather than genuinely empty.
+
+const KG_STRATEGIES: readonly SearchStrategy[] = ['multi', 'vec', 'fts'];
+
+const kgSearchTool: ToolHandler = {
+  definition: {
+    name: 'kg.search',
+    description:
+      'Recall shared agent thoughts from the in-process Knowledge Graph by ' +
+      'similarity to a text query (vector + full-text, optionally graph-aware). ' +
+      'Read-only. Filter by project, agent, recency (since), or a bi-temporal ' +
+      'as-of instant (at). Returns matching thoughts ranked by relevance.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        q: { type: 'string', description: 'Free-text query to recall thoughts for.' },
+        k: { type: 'number', description: 'Max results (default per KG store).' },
+        project: { type: 'string', description: 'Restrict to thoughts in this project.' },
+        agent: { type: 'string', description: 'Restrict to thoughts from this agent.' },
+        since: { type: 'string', description: 'ISO8601 — only thoughts recorded at/after this instant.' },
+        at: { type: 'string', description: 'ISO8601 — bi-temporal as-of: only thoughts valid at this instant.' },
+        strategy: {
+          type: 'string',
+          enum: ['multi', 'vec', 'fts'],
+          description: 'Recall strategy: multi (default), vec, or fts.',
+        },
+      },
+      required: ['q'],
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const q = typeof args.q === 'string' ? args.q.trim() : '';
+    if (!q) {
+      return { ok: false, reason: 'invalid_params', detail: 'q is required' };
+    }
+    const strategyRaw = typeof args.strategy === 'string' ? args.strategy : undefined;
+    if (strategyRaw !== undefined && !KG_STRATEGIES.includes(strategyRaw as SearchStrategy)) {
+      return { ok: false, reason: 'invalid_params', detail: 'strategy must be multi | vec | fts' };
+    }
+
+    try {
+      const handle = getKnowledgeGraph({ workspaceRoot: ctx.workspaceRoot });
+      const thoughts = await handle.kg.searchSimilar(q, {
+        ...(typeof args.k === 'number' && args.k > 0 ? { k: Math.floor(args.k) } : {}),
+        ...(typeof args.project === 'string' && args.project ? { project: args.project } : {}),
+        ...(typeof args.agent === 'string' && args.agent ? { agent: args.agent } : {}),
+        ...(typeof args.since === 'string' && args.since ? { since: args.since } : {}),
+        ...(typeof args.at === 'string' && args.at ? { at: args.at } : {}),
+        ...(strategyRaw ? { strategy: strategyRaw as SearchStrategy } : {}),
+      });
+      return { ok: true, data: { thoughts, degraded: handle.degraded } };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'internal_error',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: kg.traverse
+// ---------------------------------------------------------------------------
+// KGC-4: walk relations out from a seed thought in the Knowledge Graph. Pairs
+// with kg.search (find a seed, then expand its neighbourhood). Read-only; same
+// degraded contract as kg.search.
+
+const kgTraverseTool: ToolHandler = {
+  definition: {
+    name: 'kg.traverse',
+    description:
+      'Traverse relations outward from a seed thought in the Knowledge Graph, ' +
+      'returning the thoughts reachable along the given edge kinds within depth. ' +
+      'Read-only — pair with kg.search to expand a recalled thought.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        seed: { type: 'string', description: 'Seed thought id to traverse from.' },
+        kinds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Edge kinds to follow (e.g. mentions, supersedes). Empty = all kinds.',
+        },
+        depth: { type: 'number', description: 'Max traversal depth (default per KG store).' },
+      },
+      required: ['seed'],
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const seed = typeof args.seed === 'string' ? args.seed.trim() : '';
+    if (!seed) {
+      return { ok: false, reason: 'invalid_params', detail: 'seed is required' };
+    }
+    const kinds = Array.isArray(args.kinds)
+      ? args.kinds.filter((k): k is string => typeof k === 'string')
+      : [];
+    const depth = typeof args.depth === 'number' && args.depth > 0 ? Math.floor(args.depth) : undefined;
+
+    try {
+      const handle = getKnowledgeGraph({ workspaceRoot: ctx.workspaceRoot });
+      const thoughts = await handle.kg.traverseFrom(seed, kinds, depth);
+      return { ok: true, data: { thoughts, degraded: handle.degraded } };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'internal_error',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -744,10 +920,13 @@ export const READ_ONLY_TOOLS: ToolHandler[] = [
   recallQueryTool,
   fleetStatusTool,
   fleetCardsTool,
+  presenceFleetTool,
   inboxReadTool,
   todoListTool,
   doctorRunTool,
   fabricRouteTool,
+  kgSearchTool,
+  kgTraverseTool,
   intelligenceRetrieveTool,
 ];
 

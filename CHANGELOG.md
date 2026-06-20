@@ -1,5 +1,107 @@
 # Changelog
 
+## [3.6.0] - 2026-06-19
+
+### Added
+
+- **Universal auto-detect embedding ladder** (`src/intelligence/embeddingResolve.ts`).
+  The embedding provider now defaults to `auto`: on first index it probes
+  **router (Zippy Mesh) → ollama → transformers (offline) → none** and PINS the
+  first reachable one (sidecar `.autoclaw/vector/embedding-resolved.json`) so the
+  vector signature stays stable. Resolution probes with a real embed to measure
+  the true dimension (router/ollama model dims vary), re-checks a pinned
+  provider's liveness before reusing it (a router you stop, or an `ollama pull`,
+  is picked up next run), and never pins `none`. So a fresh install gets the best
+  available embeddings with zero configuration, and the log no longer floods.
+- **Zippy Mesh router embedding provider** — `provider: "router"` POSTs to an
+  OpenAI-compatible `/v1/embeddings` (honoring `ZIPPYMESH_HOST`/`ZIPPYMESH_TOKEN`,
+  tagging `x-intent: embed`). One router install serves chat **and** embeddings,
+  and a team can share one embedding node instead of every developer installing a
+  heavy native model. A first-class `embed()` was added to the OpenAI-compatible
+  provider (inherited by ZippyMesh + Ollama) returning an `EmbeddingsResult`, plus
+  a local-first `embeddings-playbook.json` so ZMLR routes embed calls; the
+  intelligence ladder auto-detects the router once it serves embeddings.
+- New commands **AutoClaw: Intelligence — Set Embedding Provider** (Router /
+  Ollama / Offline / Basic, probing the real dimension) and **Detect Embedding
+  Provider** (re-probe + re-pin). Status/Diagnostics report the active provider +
+  pin.
+
+- **Embeddings provider installer** (`src/intelligence/installEmbeddings.ts`,
+  command **AutoClaw: Intelligence — Install Embeddings Provider**) — the
+  embeddings-side twin of the vector-backend installer. The default `transformers`
+  provider depends on `@xenova/transformers`, which is excluded from the packaged
+  `.vsix` (~135 MB of native peers), so a packaged install could never load it and
+  silently degraded to the low-quality `none` provider. The new command installs
+  `@xenova/transformers` **project-local** (into the same `<workspace>/.autoclaw/
+  native` dir as sqlite-vec — never forced onto C:), and the loader resolves it
+  from there. A first-run prompt before indexing offers **Install semantic /
+  Use Ollama / Keep basic**. New setting `autoclaw.intelligence.modelCacheDir`
+  controls where model weights download (default project-local
+  `<workspace>/.autoclaw/models`, relocatable to any drive). The **Status** report
+  now shows the active embeddings provider + whether it is installed.
+- **In-process Knowledge Graph** (`src/intelligence/kg/`) — the shared agent
+  Knowledge Graph now runs inside the extension on the Intelligence Layer's
+  `node:sqlite` store, so it is ABI-proof (survives IDE/Electron updates), needs
+  no native build, and works on a plain marketplace install with no setup. It
+  stores thoughts and the edges between them, keeps bi-temporal validity, and
+  recalls by vector, keyword (FTS5), graph traversal, or a mix — degrading
+  cleanly to keyword search when `sqlite-vec` or an embedding provider is
+  absent, and to a no-op handle (never a crash) if storage cannot open. The
+  always-available `none` embedding provider means recall works out of the box
+  and upgrades silently when transformers/ollama are present.
+- **Bridge HTTP routes for the Knowledge Graph** (`src/bridge.ts`) — the
+  Knowledge Graph is served over the existing local bridge under
+  `/api/v1/kg/*` (record thoughts, record relations, search, traverse, list,
+  export, health), so non-Node external agents can reach it without a separate
+  daemon.
+- **MCP tools for the Knowledge Graph** (`src/mcp/`) — `kg.record`, `kg.relate`,
+  `kg.search`, and `kg.traverse` let Claude Code, Kilo Code, and federated
+  agents record and recall shared thoughts directly over MCP.
+
+### Changed
+
+- **Knowledge Graph panel chip tells the truth** (`src/webview-render.ts`,
+  `src/doctor.ts`) — the chip now shows `disabled`, `ready`, or `degraded`
+  for the in-process store instead of the old `off`/`running`/`unreachable`
+  states, and no longer ever prints "run `cd packages/kg-daemon && npm install`"
+  (a path that does not exist in a published install). `doctor` reports the
+  in-process store's active driver, capabilities, embedding provider, and db
+  path.
+- **The standalone `kg-daemon` is now optional** (`packages/kg-daemon/`) — it is
+  no longer spawned by the extension and is no longer on the critical path. It
+  remains available as an optional HTTP server for non-Node external agents.
+  See `docs/ideas/KG-INTELLIGENCE-CONVERGENCE.md`.
+
+### Fixed
+
+- **Embeddings install no longer fails on a workspace path with a space** (e.g.
+  `…/Zippy Claims/…`). The embeddings installer (`installEmbeddings.ts`) passed
+  the target as `npm install --prefix <dir>` while spawning with `shell:true`,
+  so the shell split the path at the space and npm read a bogus directory — the
+  exact bug already fixed for the vector backend. The target is now conveyed via
+  the spawn `cwd` (path-resolved to absolute) with a seeded `package.json`, and
+  carries no path in argv. Regression tests cover the spaced-path, relative→
+  absolute, and seed-before-spawn cases.
+- **Indexing no longer floods the output channel.** When the embeddings provider
+  failed to load, `/index-code` logged the same `transformers failed (Cannot find
+  module …)` warning once **per chunk** (thousands of identical lines on a real
+  codebase). The warning is now de-duplicated (warn-once per distinct message) and
+  rewritten as an actionable one-liner pointing at the install command / Ollama /
+  the `none` setting.
+- **An index no longer silently mixes vector geometries.** Previously a real
+  provider that failed mid-index degraded each affected chunk to `none` (hashed)
+  vectors stored under the real provider's signature — a different geometry the
+  dimension guard could not detect (same dimension), corrupting retrieval. Now
+  `getEmbedding` does not chain across real providers, a pinned provider's
+  liveness is re-checked before a pass starts, and a mid-pass degradation raises
+  the `staleIndex` flag with a clear "re-index" prompt so the corruption is
+  visible and recoverable.
+- **`transformers` embeddings can actually load in the packaged extension.** The
+  loader now imports the installed pure-ESM `@xenova/transformers` via a real
+  dynamic `import()` of its resolved entry (a `file://` URL), instead of a bare
+  specifier that TypeScript downleveled to `require()` under `module: commonjs`
+  (which cannot load an ESM `file://` URL or a pure-ESM package).
+
 ## [3.5.0] - 2026-06-15
 
 _The intelligence release: local-first learning + retrieval over your past AI
