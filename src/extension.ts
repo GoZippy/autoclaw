@@ -102,6 +102,7 @@ import {
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
   readExtensionVersionFromDisk, readGitBranchFromDisk,
   type FabricHealth, type InboxSummary, type AwaitingYouRow, type AgentWithLive,
+  type AwaitingHistoryEntry,
 } from './webview-render';
 import {
   renderBoard, renderMessageFeed, buildThreads, boardTaskCount, inferRoleFromActivity,
@@ -1883,6 +1884,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             messageId: message.messageId,
             from: message.from,
             type: message.type,
+            body: message.body,
           });
           break;
         }
@@ -3966,6 +3968,7 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
       const rows: AwaitingYouRow[] = awaiting.map(m => ({
         message: m,
         excerpt: payloadExcerpt(m.payload as Record<string, unknown>),
+        history: buildAwaitingHistory(m, messages, me),
       }));
       view.webview.postMessage({
         command: 'updateAwaitingYou',
@@ -4440,9 +4443,33 @@ function httpGetJson(url: string, timeoutMs: number): Promise<Record<string, unk
 /** Handle a Reply click from the Awaiting You panel: prompt user for body
  *  text, write a `review_response` or `answer` message back to the sender's
  *  inbox, and mark the original message replied. */
+/**
+ * Build a compact prior-turn history for an awaiting message so the user sees the
+ * context they're replying to: earlier inbox messages in the same task/thread or
+ * from the same sender, oldest→newest, last 5. (One-sided for now — received
+ * turns only; including the user's own sent replies is a future enhancement.)
+ */
+function buildAwaitingHistory(m: Message, inbox: readonly Message[], me: string): AwaitingHistoryEntry[] {
+  const mTime = new Date(m.timestamp).getTime();
+  const prior = inbox
+    .filter(x =>
+      x.id !== m.id
+      && ((m.task_id && x.task_id === m.task_id) || x.from === m.from)
+      && new Date(x.timestamp).getTime() <= mTime,
+    )
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  return prior.slice(-5).map(x => ({
+    from: x.from,
+    type: x.type,
+    text: payloadExcerpt(x.payload as Record<string, unknown>),
+    ts: x.timestamp,
+    mine: x.from === me,
+  }));
+}
+
 async function handleReplyAwaiting(
   view: vscode.WebviewView,
-  args: { messageId?: string; from?: string; type?: string }
+  args: { messageId?: string; from?: string; type?: string; body?: string }
 ): Promise<void> {
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wr || !args.messageId || !args.from) { return; }
@@ -4450,11 +4477,15 @@ async function handleReplyAwaiting(
   const me = activeHostAgentId();
   if (!me) { return; }
 
-  const body = await vscode.window.showInputBox({
-    prompt: `Reply to ${args.from} (${args.type ?? 'message'})`,
-    placeHolder: 'Type your reply…',
-    ignoreFocusOut: true,
-  });
+  // Prefer the inline reply box; fall back to a modal prompt only if it's empty.
+  let body = (args.body ?? '').trim();
+  if (!body) {
+    body = (await vscode.window.showInputBox({
+      prompt: `Reply to ${args.from} (${args.type ?? 'message'})`,
+      placeHolder: 'Type your reply…',
+      ignoreFocusOut: true,
+    }))?.trim() ?? '';
+  }
   if (!body) { return; }
 
   const responseType: Message['type'] = args.type === 'question' ? 'answer' : 'review_response';

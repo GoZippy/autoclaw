@@ -106,6 +106,18 @@ export interface AwaitingYouRow {
   context?: ReviewContext;
   /** Live consensus tally (review_request only). */
   tally?: ConsensusTally;
+  /** Prior messages in this conversation (oldest→newest), for context. */
+  history?: AwaitingHistoryEntry[];
+}
+
+/** One prior message shown above the reply box so you see what you're answering. */
+export interface AwaitingHistoryEntry {
+  from: string;
+  type: string;
+  text: string;
+  ts?: string;
+  /** True when this entry was sent by the current user (renders right-aligned). */
+  mine?: boolean;
 }
 
 /** Detail for the in-process Knowledge Graph chip tooltip. */
@@ -719,6 +731,23 @@ function renderReviewDetail(ctx?: ReviewContext): string {
   return h + '</div>';
 }
 
+/** Render prior conversation turns (compact) above the reply box. */
+function renderAwaitingHistory(history?: readonly AwaitingHistoryEntry[]): string {
+  if (!history || history.length === 0) { return ''; }
+  const shown = history.slice(-6); // last 6 turns keep the sidebar usable
+  let h = '<div class="awaiting-history" aria-label="Conversation history">';
+  if (history.length > shown.length) {
+    h += '<div class="awaiting-history-more">+' + (history.length - shown.length) + ' earlier</div>';
+  }
+  for (const e of shown) {
+    h += '<div class="awaiting-history-row' + (e.mine ? ' mine' : '') + '">';
+    h += '<span class="ah-from">' + esc(e.from) + '</span>';
+    h += '<span class="ah-text" title="' + esc(e.text) + '">' + esc(e.text) + '</span>';
+    h += '</div>';
+  }
+  return h + '</div>';
+}
+
 /** Render the Awaiting You section body. */
 export function renderAwaitingYou(rows: readonly AwaitingYouRow[]): string {
   if (rows.length === 0) {
@@ -743,11 +772,14 @@ export function renderAwaitingYou(rows: readonly AwaitingYouRow[]): string {
     // One-line summary, always visible.
     h += '<div class="awaiting-body awaiting-preview">' + esc(r.excerpt) + '</div>';
 
+    // Conversation history (prior turns), so you see what you're answering.
+    h += renderAwaitingHistory(r.history);
+
     // Consensus tally + drill-down (review_request only).
     if (isReview && r.tally) { h += renderTally(r.tally); }
     if (isReview) { h += renderReviewDetail(r.context); }
 
-    // Actions: a real decision for reviews, free-text reply otherwise.
+    // Actions: a real decision for reviews, inline free-text reply otherwise.
     h += '<div class="awaiting-actions">';
     if (isReview && taskId) {
       const my = r.tally?.myVote ?? null;
@@ -758,7 +790,13 @@ export function renderAwaitingYou(rows: readonly AwaitingYouRow[]): string {
       h += voteButton('reject', 'Reject', taskId, m, my);
       h += '</div>';
     } else {
+      // Inline reply: type + send right here (the host still falls back to a
+      // modal prompt if the box is left empty).
+      h += '<div class="reply-row">';
+      h += '<input class="reply-input" type="text" placeholder="Type your reply…" aria-label="Reply"'
+        + ' data-message-id="' + esc(m.id) + '" data-from="' + esc(m.from) + '" data-type="' + esc(m.type) + '" />';
       h += '<button class="reply-btn" type="button" data-message-id="' + esc(m.id) + '" data-from="' + esc(m.from) + '" data-type="' + esc(m.type) + '">Reply</button>';
+      h += '</div>';
     }
     h += '</div>';
 
