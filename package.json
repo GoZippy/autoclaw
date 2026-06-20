@@ -2,7 +2,7 @@
   "name": "autoclaw",
   "displayName": "AutoClaw — Autonomous AI Agents",
   "description": "Background agents, parallel sprint orchestration, and multi-agent teams. Type @autoclaw in any chat. Works with Claude, Copilot, Kiro, KiloCode, Cline, Cursor, Windsurf, and Continue. Zero setup.",
-  "version": "3.6.0",
+  "version": "3.6.1",
   "publisher": "ZippyTechnologiesLLC",
   "engines": {
     "vscode": "^1.95.0"
@@ -763,10 +763,11 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile && npm run copy-webview",
+    "vscode:prepublish": "npm run compile && npm run copy-webview && npm run copy-runtime-deps",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "copy-webview": "node scripts/copy-webview.js",
+    "copy-runtime-deps": "node scripts/copy-runtime-deps.js",
     "adapters:compile": "tsc -p scripts/tsconfig.json",
     "adapters:build": "npm run adapters:compile && node out/scripts/build-adapters.js",
     "adapters:check": "npm run adapters:compile && node out/scripts/check-adapters.js",
