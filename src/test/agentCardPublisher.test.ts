@@ -4,7 +4,7 @@
 
 import * as assert from 'assert';
 
-import { publishAgentCards, WELL_KNOWN_DIR } from '../fabric/agentCardPublisher';
+import { publishAgentCards, WELL_KNOWN_DIR, A2A_CARD_FILENAME } from '../fabric/agentCardPublisher';
 import type { AgentRegistry } from '../comms';
 import type { AgentCard } from '../agent-card';
 
@@ -52,6 +52,22 @@ suite('Agent Card publisher', () => {
     assert.strictEqual(kiroCard.url, 'http://127.0.0.1:9876/a2a/kiro');
     assert.deepStrictEqual(kiroCard['x-autoclaw']?.capabilities, ['orchestrate', 'code']);
     assert.strictEqual(kiroCard['x-autoclaw']?.trust_level, 'high');
+  });
+
+  test('publishes the A2A-canonical agent.json alias alongside agent-card.json', async () => {
+    const written = new Map<string, AgentCard>();
+    await publishAgentCards({
+      registry,
+      baseUrl: 'http://127.0.0.1:9876/a2a',
+      version: '3.4.0',
+      writeCard: async (relPath, card) => { written.set(relPath, card); },
+    });
+    // Alias present for every agent + the orchestrator, identical to the primary card.
+    for (const id of ['kiro', 'kilocode', 'orchestrator']) {
+      const alias = written.get(`${WELL_KNOWN_DIR}/${id}/${A2A_CARD_FILENAME}`);
+      assert.ok(alias, `missing ${A2A_CARD_FILENAME} alias for ${id}`);
+      assert.deepStrictEqual(alias, written.get(`${WELL_KNOWN_DIR}/${id}/agent-card.json`));
+    }
   });
 
   test('orchestrator card advertises routing capabilities', async () => {

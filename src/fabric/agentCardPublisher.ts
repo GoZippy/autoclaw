@@ -18,6 +18,16 @@ import { agentTypeProfile } from './agentTypes';
 /** A2A convention: the card lives at `<root>/.well-known/agent-card.json`. */
 export const WELL_KNOWN_DIR = '.well-known';
 
+/** AutoClaw's historical card filename (kept for back-compat). */
+export const CARD_FILENAME = 'agent-card.json';
+
+/**
+ * A2A-canonical card filename. The spec's well-known path is
+ * `/.well-known/agent.json`; strict-A2A peers fetch that exact name. We publish
+ * it as an alias next to `agent-card.json` (acp/1 §2.1) so both resolve.
+ */
+export const A2A_CARD_FILENAME = 'agent.json';
+
 export interface PublishOptions {
   /** The fleet registry to publish cards for. */
   registry: AgentRegistry;
@@ -73,7 +83,7 @@ export async function publishAgentCards(opts: PublishOptions): Promise<PublishRe
 
   for (const agent of opts.registry.agents) {
     const url = `${opts.baseUrl.replace(/\/$/, '')}/${agent.id}`;
-    const relPath = `${WELL_KNOWN_DIR}/${agent.id}/agent-card.json`;
+    const relPath = `${WELL_KNOWN_DIR}/${agent.id}/${CARD_FILENAME}`;
     const type = agent.agent_type ?? 'coder';
     const card = buildAgentCard({
       name: agent.name,
@@ -83,13 +93,15 @@ export async function publishAgentCards(opts: PublishOptions): Promise<PublishRe
       autoclaw: autoclawFieldsFor(agent),
     });
     await opts.writeCard(relPath, card);
+    // A2A-canonical alias so strict peers resolve `/.well-known/agent.json`.
+    await opts.writeCard(`${WELL_KNOWN_DIR}/${agent.id}/${A2A_CARD_FILENAME}`, card);
     published.push({ agent_id: agent.id, path: relPath, url });
     agents.push({ ...agent, agent_card_path: relPath });
   }
 
   // Fleet orchestrator card — the supervisor entry point a peer talks to.
   const orchUrl = `${opts.baseUrl.replace(/\/$/, '')}/orchestrator`;
-  const orchRel = `${WELL_KNOWN_DIR}/orchestrator/agent-card.json`;
+  const orchRel = `${WELL_KNOWN_DIR}/orchestrator/${CARD_FILENAME}`;
   const orchCard = buildAgentCard({
     name: 'AutoClaw Orchestrator',
     description: 'Fleet orchestrator — routes capability-matched work, runs consensus gates, recovers stalled agents.',
@@ -102,6 +114,7 @@ export async function publishAgentCards(opts: PublishOptions): Promise<PublishRe
     },
   });
   await opts.writeCard(orchRel, orchCard);
+  await opts.writeCard(`${WELL_KNOWN_DIR}/orchestrator/${A2A_CARD_FILENAME}`, orchCard);
   published.push({ agent_id: 'orchestrator', path: orchRel, url: orchUrl });
 
   return {
