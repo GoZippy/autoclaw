@@ -221,13 +221,34 @@
         section.classList.add('open');
       }
     }
-    // Wire Reply buttons (question / generic items)
+    // Wire Reply buttons (question / generic items). Reads the inline reply box
+    // so the reply is sent right here; an empty box lets the host fall back to a
+    // modal prompt.
+    const sendReply = (btn) => {
+      const row = btn.closest('.awaiting-row');
+      const input = row && row.querySelector('.reply-input');
+      const body = input ? input.value : '';
+      vscode.postMessage({
+        command: 'replyAwaiting',
+        messageId: btn.getAttribute('data-message-id'),
+        from: btn.getAttribute('data-from'),
+        type: btn.getAttribute('data-type'),
+        body,
+      });
+      if (input) { input.value = ''; }
+    };
     el.querySelectorAll('.reply-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const messageId = btn.getAttribute('data-message-id');
-        const from = btn.getAttribute('data-from');
-        const type = btn.getAttribute('data-type');
-        vscode.postMessage({ command: 'replyAwaiting', messageId, from, type });
+      btn.addEventListener('click', () => sendReply(btn));
+    });
+    // Enter-to-send from the inline reply input.
+    el.querySelectorAll('.reply-input').forEach(input => {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const row = input.closest('.awaiting-row');
+          const btn = row && row.querySelector('.reply-btn');
+          if (btn) { sendReply(btn); }
+        }
       });
     });
 

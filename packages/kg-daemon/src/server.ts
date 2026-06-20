@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { mkdirSync } from "node:fs";
 import express from "express";
 import type { Express, NextFunction, Request, Response } from "express";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { openDb, type DbHandle } from "./db.js";
 import { SqliteKnowledgeGraph } from "./kg.js";
 import { pingZippyMesh } from "./embed.js";
@@ -39,37 +39,87 @@ export interface DaemonHandle {
 const DEFAULT_PORT = 9877;
 const DEFAULT_HOST = "127.0.0.1";
 
+/** Fallback ports tried after the configured port when it is busy (EADDRINUSE).
+ *  Mirrors the AutoClaw bridge (BRIDGE_PORT_FALLBACK_COUNT) so opening the same
+ *  project in two IDEs (e.g. VS Code + Kiro) doesn't crash the daemon on a port
+ *  collision — it falls back to the next free port and reports the bound one. */
+export const KG_PORT_FALLBACK_COUNT = 4;
+
 function defaultDbPath(): string {
   const dir = joinPath(homedir(), ".autoclaw", "kg");
   mkdirSync(dir, { recursive: true });
   return joinPath(dir, "kg.db");
 }
 
+/** Bind a server on (host, port); resolve on `listening`, reject on first `error`. */
+function tryListen(server: Server, host: string, port: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (e: NodeJS.ErrnoException): void => {
+      server.removeListener("listening", onListening);
+      reject(e);
+    };
+    const onListening = (): void => {
+      server.removeListener("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
+}
+
 export async function startDaemon(opts: DaemonOpts = {}): Promise<DaemonHandle> {
   const dbPath = opts.dbPath ?? process.env.KG_DB_PATH ?? defaultDbPath();
   const host = opts.host ?? process.env.KG_HOST ?? DEFAULT_HOST;
-  const port = opts.port ?? Number(process.env.KG_PORT) ?? DEFAULT_PORT;
+  // NB: Number(undefined) === NaN and `NaN ?? x === NaN`, so guard explicitly —
+  // an unset KG_PORT must fall through to DEFAULT_PORT, not bind a random port.
+  const envPort = Number(process.env.KG_PORT);
+  const startPort = opts.port ?? (Number.isFinite(envPort) ? envPort : DEFAULT_PORT);
 
   const dbHandle = openDb(dbPath);
   const kg = new SqliteKnowledgeGraph(dbHandle);
   const app = buildApp(kg, dbHandle);
 
-  const server: Server = await new Promise((resolve, reject) => {
-    const s = app.listen(port, host, () => resolve(s));
-    s.once("error", reject);
-  });
+  // Try the configured port, then up to KG_PORT_FALLBACK_COUNT successors, so a
+  // busy port (another IDE on the same project) falls back instead of crashing.
+  // port:0 (OS-assigned, used by tests) binds on the single first attempt.
+  const maxPort = startPort === 0 ? 0 : startPort + KG_PORT_FALLBACK_COUNT;
+  let lastErr: NodeJS.ErrnoException | undefined;
+  let server: Server | undefined;
+  for (let port = startPort; port <= maxPort; port++) {
+    const s = createServer(app);
+    try {
+      await tryListen(s, host, port);
+      server = s;
+      break;
+    } catch (e) {
+      lastErr = e as NodeJS.ErrnoException;
+      try { s.close(); } catch { /* never bound */ }
+      if (lastErr.code !== "EADDRINUSE") {
+        dbHandle.close();
+        throw lastErr;
+      }
+    }
+  }
+  if (!server) {
+    dbHandle.close();
+    throw lastErr ?? new Error(
+      `kg-daemon could not bind to any port in range ${startPort}-${maxPort}`,
+    );
+  }
+  const boundServer = server;
 
-  const addr = server.address();
-  const boundPort = typeof addr === "object" && addr ? addr.port : port;
+  const addr = boundServer.address();
+  const boundPort = typeof addr === "object" && addr ? addr.port : startPort;
 
   return {
     app,
-    server,
+    server: boundServer,
     kg,
     dbHandle,
     port: boundPort,
     close: () => new Promise<void>((resolve) => {
-      server.close(() => {
+      boundServer.close(() => {
         dbHandle.close();
         resolve();
       });

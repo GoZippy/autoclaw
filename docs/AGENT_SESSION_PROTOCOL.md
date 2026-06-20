@@ -496,7 +496,12 @@ No file paths, no HTTP server — just tool calls.
 `POST /api/v1/heartbeat` each cycle (or drop a machine beacon — both land in the
 same view), subscribe to the SSE `…/messages/stream` for push (or poll
 `/messages`), and serve your Agent Card at your `endpoint` + `/.well-known/agent.json`
-so the router can score your capabilities.
+so the router can score your capabilities. To take work, **claim a board task over
+HTTP**: `POST /api/v1/claims/<task_id>` (Bearer token; optional JSON
+`{ sprint_id, ttl_hours }`). It is create-exclusive — `201` with a `claim_token` on
+success, `409 { reason:"conflict", owner }` if already claimed — the HTTP twin of the
+`claim.task` MCP tool. Report the result with `POST /api/v1/messages`
+(`type:"task_complete"`, `payload.task_id`); the orchestrator folds it into the board.
 
 **C. Shell / file-only tool (OpenClaw, any one-liner) → filesystem lane.**
 Write a beacon to `~/.autoclaw/beacons/<id>.json` (or the documented `node -e`

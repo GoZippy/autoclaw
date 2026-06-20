@@ -428,6 +428,51 @@ export function createBridgeServer(
           await appendCommsLog(config.commsDir, { timestamp: new Date().toISOString(), type: 'consensus_vote', from: token.agent_id, task_id: taskId, message: `${token.agent_id} voted on ${taskId}` });
           return json(res, 201, { ok: true, task_id: taskId });
         }
+        // Task claim over HTTP — mirrors the claim.task MCP tool so HTTP-only
+        // peers (Hermes, OpenClaw REST) can claim a board task. Create-exclusive
+        // write to claims/<taskId>.json; 409 with the current owner on conflict.
+        const claimMatch = p.match(/^\/api\/v1\/claims\/([^/]+)$/);
+        if (claimMatch && method === 'POST') {
+          const taskId = decodeURIComponent(claimMatch[1]).trim();
+          // The id becomes a filename — reject separators / traversal.
+          if (!taskId || /[\\/]/.test(taskId) || taskId.includes('..')) {
+            return err(res, 400, 'Invalid task_id (no path separators or "..")');
+          }
+          let body: Record<string, unknown> = {};
+          const raw = await readBody(req);
+          if (raw) { try { body = JSON.parse(raw); } catch { return err(res, 400, 'Invalid JSON'); } }
+          const ttlHours = typeof body.ttl_hours === 'number' && body.ttl_hours > 0 ? body.ttl_hours : 2;
+          const sprintId = typeof body.sprint_id === 'string' ? body.sprint_id.trim() : '';
+          const claimsDir = path.join(config.commsDir, 'claims');
+          const claimFile = path.join(claimsDir, `${taskId}.json`);
+          const now = new Date();
+          const claimToken = crypto.randomUUID();
+          const claim = {
+            task_id: taskId,
+            ...(sprintId ? { sprint_id: sprintId } : {}),
+            claimed_by: token.agent_id,
+            claim_token: claimToken,
+            claimed_at: now.toISOString(),
+            expires_at: new Date(now.getTime() + ttlHours * 3_600_000).toISOString(),
+          };
+          try {
+            await fsPromises.mkdir(claimsDir, { recursive: true });
+            // 'wx' = O_CREAT | O_EXCL — fails with EEXIST if already claimed.
+            await fsPromises.writeFile(claimFile, JSON.stringify(claim, null, 2) + '\n', { encoding: 'utf8', flag: 'wx' });
+          } catch (e) {
+            if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
+              let owner = 'unknown';
+              try {
+                const prior = JSON.parse((await fsPromises.readFile(claimFile, 'utf8')).replace(/^﻿/, '')) as { claimed_by?: string };
+                owner = prior.claimed_by ?? 'unknown';
+              } catch { /* ignore */ }
+              return json(res, 409, { ok: false, reason: 'conflict', task_id: taskId, owner });
+            }
+            return err(res, 500, (e as Error).message);
+          }
+          await appendCommsLog(config.commsDir, { timestamp: now.toISOString(), type: 'task_claim', from: token.agent_id, task_id: taskId, message: `${token.agent_id} claimed ${taskId} via bridge` });
+          return json(res, 201, { ok: true, task_id: taskId, claim_token: claimToken, expires_at: claim.expires_at });
+        }
         // Idempotent consensus evaluation. Reads votes from
         // consensus/active/{tid}-*.json, runs evaluateConsensus, returns
         // the ConsensusResult. Does NOT move any vote files.

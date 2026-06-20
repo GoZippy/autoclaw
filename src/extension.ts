@@ -74,6 +74,9 @@ import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
 import { registerLicensing } from './licensing/licensing';
+import { GateService } from './licensing/gateService';
+import type { FeatureId } from './licensing/features';
+import { createPremiumApi } from './premium';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -99,6 +102,7 @@ import {
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
   readExtensionVersionFromDisk, readGitBranchFromDisk,
   type FabricHealth, type InboxSummary, type AwaitingYouRow, type AgentWithLive,
+  type AwaitingHistoryEntry,
 } from './webview-render';
 import {
   renderBoard, renderMessageFeed, buildThreads, boardTaskCount, inferRoleFromActivity,
@@ -261,6 +265,28 @@ export type { ParsedTask, AdapterHealth, TodoItem, CodeChurnMetrics, Productivit
 let kdreamView: vscode.WebviewView | undefined = undefined;
 let stateWatcher: vscode.FileSystemWatcher | undefined = undefined;
 let refreshIntervalId: NodeJS.Timeout | undefined = undefined;
+
+/**
+ * Run a paid-feature command behind the licensing gate. First meaningful use
+ * starts the 7-day Pro trial; during trial or with a license `runPaid` runs;
+ * otherwise `gate.require` shows ONE polite upgrade prompt and `runFallback`
+ * (if any) runs. Never throws/blocks — local-first, graceful degradation.
+ */
+async function withGate(
+  context: vscode.ExtensionContext,
+  feature: FeatureId,
+  reason: string,
+  runPaid: () => Promise<void> | void,
+  runFallback?: () => Promise<void> | void,
+): Promise<void> {
+  const gate = new GateService(context);
+  const result = await gate.require(feature, { startTrial: true, reason });
+  if (result.allowed) {
+    await runPaid();
+  } else if (runFallback) {
+    await runFallback();
+  }
+}
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('AutoClaw activated — skills ready');
@@ -490,9 +516,10 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.autobuild.runNow', async () => {
-      await autobuildRunNowCommand();
-    })
+    // Gated (Pro): scheduled/automated AutoBuild. First use starts the trial.
+    vscode.commands.registerCommand('autoclaw.autobuild.runNow', () =>
+      withGate(context, 'pro.autobuild.schedule', 'Scheduled AutoBuild', autobuildRunNowCommand),
+    )
   );
 
   context.subscriptions.push(
@@ -503,9 +530,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Orchestrate commands
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.orchestrate.plan', async () => {
-      await orchestratePlanCommand();
-    })
+    // Gated (Pro): advanced multi-agent orchestration planning. First use starts
+    // the trial. TODO: gate the rest of the pro/team commands from the refactor
+    // spec Step 11 (orchestrate.assign/review/merge, autobuild.tail, fleet.metrics,
+    // voidspec.sync, program.*, cloud.*, bridge.*) using this same withGate helper.
+    vscode.commands.registerCommand('autoclaw.orchestrate.plan', () =>
+      withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestratePlanCommand),
+    )
   );
 
   context.subscriptions.push(
@@ -514,22 +545,26 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // Gated (Pro): the orchestrate *action* commands, consistent with plan. NOTE:
+  // orchestrate.status (read-only) stays free, and core-coordination commands
+  // (bridge.*, cloud.*, program.*) are deliberately NOT gated — gating those
+  // would break cross-agent coordination for non-Team users.
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.orchestrate.assign', async () => {
-      await orchestrateAssignNextCommand();
-    })
+    vscode.commands.registerCommand('autoclaw.orchestrate.assign', () =>
+      withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateAssignNextCommand),
+    )
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.orchestrate.review', async () => {
-      await orchestrateReviewCommand();
-    })
+    vscode.commands.registerCommand('autoclaw.orchestrate.review', () =>
+      withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateReviewCommand),
+    )
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('autoclaw.orchestrate.merge', async () => {
-      await orchestrateMergeCommand();
-    })
+    vscode.commands.registerCommand('autoclaw.orchestrate.merge', () =>
+      withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateMergeCommand),
+    )
   );
 
   // Bridge commands
@@ -932,9 +967,42 @@ export function activate(context: vscode.ExtensionContext) {
   // today's activity, and (deferred) show a non-invasive milestone prompt.
   registerSupport(context);
 
-  // Commercial licensing + BYO-key. Registers commands only; gates nothing
-  // local. Hosted features opt in via requireHosted() from licensing.ts.
+  // Commercial licensing + BYO-key + 7-day Pro trial + status bar. Registers
+  // commands only; local features degrade gracefully. Hosted features opt in via
+  // requireHosted(); tiered local features gate via GateService.
   registerLicensing(context);
+
+  // PR Evidence Report — the worked example of the gate + trial + premium stack.
+  // During trial/license it runs the (premium) engine; otherwise it generates a
+  // basic free fallback report and offers an upgrade. Never blocks.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.reports.prEvidence', async () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        vscode.window.showWarningMessage('Open a workspace folder before generating a report.');
+        return;
+      }
+      const gate = new GateService(context);
+      const access = await gate.require('pro.reports.prEvidence', {
+        startTrial: true,
+        reason: 'PR Evidence Report',
+        silent: true, // we surface our own tailored upgrade prompt below
+      });
+      const premium = createPremiumApi({ extensionPath: context.extensionPath });
+      const report = await premium.generatePrEvidenceReport({ workspaceRoot });
+      const doc = await vscode.workspace.openTextDocument({ content: report.markdown, language: 'markdown' });
+      await vscode.window.showTextDocument(doc);
+      if (!access.allowed) {
+        void vscode.window.showInformationMessage(
+          'Generated a basic free report. Unlock Pro for full evidence reports with tests, risks, changed files, agent history, and reviewer verdicts.',
+          'Compare Plans', 'Enter License',
+        ).then(choice => {
+          if (choice === 'Compare Plans') { void vscode.commands.executeCommand('autoclaw.license.comparePlans'); }
+          if (choice === 'Enter License') { void vscode.commands.executeCommand('autoclaw.license.enter'); }
+        });
+      }
+    }),
+  );
 }
 
 async function installAdapters(
@@ -1820,6 +1888,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
             messageId: message.messageId,
             from: message.from,
             type: message.type,
+            body: message.body,
           });
           break;
         }
@@ -3903,6 +3972,7 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
       const rows: AwaitingYouRow[] = awaiting.map(m => ({
         message: m,
         excerpt: payloadExcerpt(m.payload as Record<string, unknown>),
+        history: buildAwaitingHistory(m, messages, me),
       }));
       view.webview.postMessage({
         command: 'updateAwaitingYou',
@@ -4377,9 +4447,33 @@ function httpGetJson(url: string, timeoutMs: number): Promise<Record<string, unk
 /** Handle a Reply click from the Awaiting You panel: prompt user for body
  *  text, write a `review_response` or `answer` message back to the sender's
  *  inbox, and mark the original message replied. */
+/**
+ * Build a compact prior-turn history for an awaiting message so the user sees the
+ * context they're replying to: earlier inbox messages in the same task/thread or
+ * from the same sender, oldest→newest, last 5. (One-sided for now — received
+ * turns only; including the user's own sent replies is a future enhancement.)
+ */
+function buildAwaitingHistory(m: Message, inbox: readonly Message[], me: string): AwaitingHistoryEntry[] {
+  const mTime = new Date(m.timestamp).getTime();
+  const prior = inbox
+    .filter(x =>
+      x.id !== m.id
+      && ((m.task_id && x.task_id === m.task_id) || x.from === m.from)
+      && new Date(x.timestamp).getTime() <= mTime,
+    )
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  return prior.slice(-5).map(x => ({
+    from: x.from,
+    type: x.type,
+    text: payloadExcerpt(x.payload as Record<string, unknown>),
+    ts: x.timestamp,
+    mine: x.from === me,
+  }));
+}
+
 async function handleReplyAwaiting(
   view: vscode.WebviewView,
-  args: { messageId?: string; from?: string; type?: string }
+  args: { messageId?: string; from?: string; type?: string; body?: string }
 ): Promise<void> {
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wr || !args.messageId || !args.from) { return; }
@@ -4387,11 +4481,15 @@ async function handleReplyAwaiting(
   const me = activeHostAgentId();
   if (!me) { return; }
 
-  const body = await vscode.window.showInputBox({
-    prompt: `Reply to ${args.from} (${args.type ?? 'message'})`,
-    placeHolder: 'Type your reply…',
-    ignoreFocusOut: true,
-  });
+  // Prefer the inline reply box; fall back to a modal prompt only if it's empty.
+  let body = (args.body ?? '').trim();
+  if (!body) {
+    body = (await vscode.window.showInputBox({
+      prompt: `Reply to ${args.from} (${args.type ?? 'message'})`,
+      placeHolder: 'Type your reply…',
+      ignoreFocusOut: true,
+    }))?.trim() ?? '';
+  }
   if (!body) { return; }
 
   const responseType: Message['type'] = args.type === 'question' ? 'answer' : 'review_response';

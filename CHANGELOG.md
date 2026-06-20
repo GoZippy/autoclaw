@@ -1,5 +1,45 @@
 # Changelog
 
+## [3.6.3] - 2026-06-20
+
+_Reliability + coordination + the licensing engine (gates ship **dormant**), plus
+public-repo hardening that keeps paid/secret code out of the source-available repo._
+
+### Added
+
+- **Inline "Awaiting You" reply** — reply to a teammate/agent right in the panel
+  (Enter or the Reply button; an empty box still falls back to the modal), with a
+  compact **conversation-history** strip showing the prior turns you're answering.
+- **HTTP task-claim endpoint** — `POST /api/v1/claims/<task_id>` on the bridge: the
+  HTTP twin of the `claim.task` MCP tool, so HTTP-only peers (Hermes, OpenClaw REST)
+  can take board work. Create-exclusive (`409` with the current owner on conflict).
+- **Licensing / trial / feature-gate engine** — a 7-day Pro trial (starts on first
+  meaningful use, no account/card, no reinstall-restart), tiered feature registry +
+  entitlement + gate services, a license status-bar indicator, and the
+  `PremiumApi` seam with a free fallback. New commands: **Compare Plans**,
+  **Trial Status**, **Start Pro Trial**, **Generate PR Evidence Report**. License
+  keys gain `solo` tier + one-time perpetual-major semantics (back-compatible).
+  **Feature gates are OFF by default** (`autoclaw.licensing.enforceGates`) — they
+  are built but dormant, so nothing is ever blocked with no way to buy; enable
+  enforcement only once a purchase path exists.
+- **Public-repo guard** — `scripts/check-no-secrets.js` (CI step + opt-in
+  pre-commit hook) blocks secrets and private/paid code from entering the
+  source-available repo; `.gitignore` now also excludes keys/certs and the private
+  premium paths.
+
+### Fixed
+
+- **kg-daemon port fallback** — the Knowledge-Graph daemon now retries the next
+  port on `EADDRINUSE` (the cause of `127.0.0.1:19880` collisions when the same
+  project is open in two IDEs) and no longer binds a random port when `KG_PORT`
+  is unset.
+
+### Changed
+
+- `npm run package` uses `vsce package --no-dependencies` (lean packaging; unbreaks
+  `publish:all`). Build edition marker (`src/edition.ts`) + licensing/editions/
+  commercial docs added. `COMPONENTS.md` marks the premium seam Restricted.
+
 ## [3.6.2] - 2026-06-20
 
 _Fleet-oversight + coordination release: a full-screen Manager Surface, clickable

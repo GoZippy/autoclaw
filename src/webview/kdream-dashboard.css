@@ -512,6 +512,34 @@ th {
 }
 .reply-btn:hover { background: var(--vscode-button-hoverBackground); }
 
+/* Inline reply row (input + send) */
+.reply-row { display: flex; gap: 5px; align-items: center; }
+.reply-row .reply-btn { align-self: auto; flex: none; }
+.reply-input {
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  font-size: 0.8em;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 2px;
+}
+
+/* Conversation history above the reply box */
+.awaiting-history {
+  display: flex; flex-direction: column; gap: 2px;
+  margin: 2px 0; padding: 4px 6px;
+  border-left: 2px solid var(--vscode-panel-border);
+  background: rgba(127, 127, 127, 0.06);
+  border-radius: 2px;
+}
+.awaiting-history-more { font-size: 0.72em; color: var(--vscode-descriptionForeground); }
+.awaiting-history-row { display: flex; gap: 6px; font-size: 0.78em; align-items: baseline; }
+.awaiting-history-row.mine { flex-direction: row-reverse; text-align: right; }
+.ah-from { color: var(--vscode-descriptionForeground); flex: none; font-family: var(--vscode-editor-font-family, monospace); }
+.ah-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+
 /* Clickable header / drill-down caret */
 .awaiting-head { cursor: pointer; user-select: none; }
 .awaiting-head:hover { color: var(--vscode-textLink-activeForeground); }

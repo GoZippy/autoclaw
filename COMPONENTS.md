@@ -55,7 +55,15 @@ logic that differentiates AutoClaw:
 | `src/memory/**`, `src/program/**`, `src/voidspec/**`, `src/evidence/**`, `src/budget/**` | Memory consolidation, program/spec management, cost ledger. |
 | `src/daemon/**`, `src/keepalive/**`, `src/runners/**`, `src/personas/**`, `src/mcp/**`, `src/cli/**` | Background daemon, runner execution, persona engine, MCP tooling, CLI. |
 | `src/extension.ts`, `src/views/**`, `src/panel/**`, `src/webview/**`, `src/statusbar/**` | Extension host wiring and the UI that renders restricted subsystems. |
+| `src/premium/**`, `src/edition.ts` | The paid/premium seam. The public repo ships ONLY the `PremiumApi` interface + a free fallback; the real premium implementation lives in the **private** repo (`@autoclaw/premium`) and is never committed here (guarded by `scripts/check-no-secrets.js`). |
 | any path not listed under **Open Materials** | Restricted by default (License §1.5). |
+
+> **Note (licensing client is Open, premium engine is private):** `src/licensing/**`
+> is Open — it only *verifies* offline-signed keys and runs the trial/gate client;
+> it contains no secret. The **signing private key** is held by Zippy Technologies
+> and never committed (only `src/licensing/publicKey.ts`, the public verify key,
+> ships). The paid **premium engine** lives in a separate private repo and is
+> pulled in only for paid/enterprise builds (see `docs/build-editions.md`).
 
 ---
 
@@ -66,5 +74,10 @@ logic that differentiates AutoClaw:
 - **Personal and educational use of the entire Product is free** (License §4).
 - **Commercial use requires a paid license** — see [PRICING.md](PRICING.md) and
   License §5.
+- Secrets and private/paid code are kept out of this public repo by
+  `scripts/check-no-secrets.js` (run in CI and as an opt-in pre-commit hook —
+  `git config core.hooksPath .githooks`). A history rewrite is **not** used to
+  protect code: once published, content cannot be recalled (forks/caches/archives
+  retain it), so prevention — not after-the-fact purging — is the policy.
 - This manifest is kept current with each release. Last reviewed against the
-  tree at the time of the v3.4.x series.
+  tree at the time of the v3.6.x series (licensing/trial/premium-seam added).

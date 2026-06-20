@@ -336,6 +336,37 @@ suite('webview-render — Awaiting You filter', () => {
     assert.doesNotMatch(html, /data-vote="approve"/);
   });
 
+  test('non-review items render an INLINE reply input (not just a button)', () => {
+    const html = renderAwaitingYou([{
+      message: makeMessage({ id: 'q-1', type: 'question', payload: { question: 'Which DB?' } }),
+      excerpt: 'Which DB?',
+    }]);
+    assert.match(html, /class="reply-row"/);
+    assert.match(html, /class="reply-input"/);
+    assert.match(html, /placeholder="Type your reply/);
+    // The input carries the routing attributes too (Enter-to-send / clear).
+    assert.match(html, /class="reply-input"[^>]*data-message-id="q-1"/);
+  });
+
+  test('awaiting rows render conversation history when present, marking own turns', () => {
+    const html = renderAwaitingYou([{
+      message: makeMessage({ id: 'q-2', type: 'question' }),
+      excerpt: 'latest',
+      history: [
+        { from: 'kilocode', type: 'question', text: 'earlier ask' },
+        { from: 'claude-code', type: 'answer', text: 'my prior reply', mine: true },
+      ],
+    }]);
+    assert.match(html, /class="awaiting-history"/);
+    assert.match(html, /earlier ask/);
+    assert.match(html, /awaiting-history-row mine/);
+  });
+
+  test('no history → no history block', () => {
+    const html = renderAwaitingYou([{ message: makeMessage({ type: 'question' }), excerpt: 'x' }]);
+    assert.doesNotMatch(html, /awaiting-history/);
+  });
+
   test('renderAwaitingYou renders the consensus tally and "needs you" hint', () => {
     const rows: AwaitingYouRow[] = [{
       message: makeMessage({ task_id: 'T-9' }),

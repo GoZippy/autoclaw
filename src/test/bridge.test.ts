@@ -440,6 +440,46 @@ suite('Bridge — QLT-0b acceptance gate', () => {
   });
 });
 
+suite('Bridge — HTTP task claim (POST /api/v1/claims/:taskId)', () => {
+  test('claims (201), is create-exclusive (409 with owner), needs a token (401), rejects bad ids (400)', async () => {
+    const state = await bring();
+    try {
+      const a1 = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+      const a2 = await createRemoteAgentToken(state.config.tokensPath, 'a2');
+      const auth = (t: string): Record<string, string> =>
+        ({ 'Content-Type': 'application/json', Authorization: `Bearer ${t}` });
+
+      // No token → 401.
+      const noTok = await request(state, 'POST', '/api/v1/claims/AB-1', { 'Content-Type': 'application/json' });
+      assert.strictEqual(noTok.status, 401);
+
+      // a1 claims AB-1 → 201; claim file written with claimed_by=a1 + sprint.
+      const ok = await request(state, 'POST', '/api/v1/claims/AB-1', auth(a1.token), JSON.stringify({ sprint_id: 's1' }));
+      assert.strictEqual(ok.status, 201);
+      const okBody = JSON.parse(ok.body) as { ok: boolean; task_id: string; claim_token: string };
+      assert.strictEqual(okBody.ok, true);
+      assert.strictEqual(okBody.task_id, 'AB-1');
+      assert.ok(typeof okBody.claim_token === 'string' && okBody.claim_token.length > 0);
+      const written = JSON.parse(fs.readFileSync(path.join(state.config.commsDir, 'claims', 'AB-1.json'), 'utf8')) as { claimed_by: string; sprint_id?: string };
+      assert.strictEqual(written.claimed_by, 'a1');
+      assert.strictEqual(written.sprint_id, 's1');
+
+      // a2 claims the SAME task → 409 conflict, owner surfaced as a1.
+      const conflict = await request(state, 'POST', '/api/v1/claims/AB-1', auth(a2.token));
+      assert.strictEqual(conflict.status, 409);
+      const cBody = JSON.parse(conflict.body) as { reason: string; owner: string };
+      assert.strictEqual(cBody.reason, 'conflict');
+      assert.strictEqual(cBody.owner, 'a1');
+
+      // A separator in the id (the id becomes a filename) → 400.
+      const bad = await request(state, 'POST', '/api/v1/claims/a%5Cb', auth(a1.token));
+      assert.strictEqual(bad.status, 400);
+    } finally {
+      await stopBridge(state);
+    }
+  });
+});
+
 suite('Bridge — port fallback on EADDRINUSE', () => {
   let blocker: http.Server | undefined;
   let bridge: BridgeState | undefined;

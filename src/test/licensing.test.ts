@@ -9,6 +9,10 @@ import {
   verifyLicenseKey,
   parseLicenseKey,
   isPaid,
+  isCommercialTier,
+  hasTierAtLeast,
+  tierRank,
+  getCurrentMajorVersion,
   LicensePayload,
 } from '../licensing/license';
 
@@ -89,5 +93,63 @@ suite('licensing: rejection', () => {
     assert.strictEqual(verifyLicenseKey('not-a-key', PUB, NOW).valid, false);
     assert.strictEqual(verifyLicenseKey('AUTOCLAW-only-one-part', PUB, NOW).valid, false);
     assert.strictEqual(parseLicenseKey('AUTOCLAW-.'), null);
+  });
+});
+
+suite('licensing: extended schema (solo / perpetual-major / product / updates)', () => {
+  test('solo tier verifies as paid + commercial', () => {
+    const key = signLicenseKey(payload({ tier: 'solo' }), PRIV);
+    const ent = verifyLicenseKey(key, PUB, NOW);
+    assert.strictEqual(ent.valid, true);
+    assert.strictEqual(ent.tier, 'solo');
+    assert.strictEqual(isPaid(ent), true);
+    assert.strictEqual(ent.commercialUseAllowed, true);
+  });
+
+  test('perpetual-major (exp:null) carries licenseKind + majorVersion', () => {
+    const key = signLicenseKey(payload({ exp: null, licenseKind: 'perpetual-major', majorVersion: 3 }), PRIV);
+    const ent = verifyLicenseKey(key, PUB, NOW + 86400 * 9999);
+    assert.strictEqual(ent.valid, true);
+    assert.strictEqual(ent.licenseKind, 'perpetual-major');
+    assert.strictEqual(ent.majorVersion, 3);
+    assert.strictEqual(ent.expiresAt, null);
+  });
+
+  test('wrong product is rejected; explicit autoclaw + legacy (absent) are accepted', () => {
+    const wrong = verifyLicenseKey(signLicenseKey(payload({ product: 'other' as 'autoclaw' }), PRIV), PUB, NOW);
+    assert.strictEqual(wrong.valid, false);
+    assert.match(wrong.reason, /not for AutoClaw/i);
+    assert.strictEqual(verifyLicenseKey(signLicenseKey(payload({ product: 'autoclaw' }), PRIV), PUB, NOW).valid, true);
+    // Legacy keys (no product field) still verify.
+    assert.strictEqual(verifyLicenseKey(signLicenseKey(payload(), PRIV), PUB, NOW).valid, true);
+  });
+
+  test('updatesUntil does not invalidate use; only flips updatesActive', () => {
+    // Update window closed, but the perpetual license is still usable.
+    const key = signLicenseKey(payload({ exp: null, updatesUntil: NOW - 10 }), PRIV);
+    const ent = verifyLicenseKey(key, PUB, NOW);
+    assert.strictEqual(ent.valid, true);
+    assert.strictEqual(ent.updatesActive, false);
+    // Window open → updatesActive true.
+    const key2 = signLicenseKey(payload({ exp: null, updatesUntil: NOW + 86400 }), PRIV);
+    assert.strictEqual(verifyLicenseKey(key2, PUB, NOW).updatesActive, true);
+  });
+
+  test('tier helpers rank + gate correctly', () => {
+    assert.ok(tierRank('enterprise') > tierRank('teams'));
+    assert.ok(tierRank('teams') > tierRank('pro'));
+    assert.ok(tierRank('pro') > tierRank('solo'));
+    assert.ok(tierRank('solo') > tierRank('free'));
+    const proEnt = verifyLicenseKey(signLicenseKey(payload({ tier: 'pro' }), PRIV), PUB, NOW);
+    assert.strictEqual(hasTierAtLeast(proEnt, 'solo'), true);
+    assert.strictEqual(hasTierAtLeast(proEnt, 'pro'), true);
+    assert.strictEqual(hasTierAtLeast(proEnt, 'teams'), false);
+    assert.strictEqual(isCommercialTier(proEnt), true);
+  });
+
+  test('getCurrentMajorVersion parses extension version', () => {
+    assert.strictEqual(getCurrentMajorVersion('3.6.2'), 3);
+    assert.strictEqual(getCurrentMajorVersion('12.0.0'), 12);
+    assert.strictEqual(getCurrentMajorVersion('garbage'), 1);
   });
 });

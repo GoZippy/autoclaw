@@ -1,12 +1,15 @@
 // ZIPPY OPEN MATERIAL
 //
-// VS Code glue for commercial licensing + BYO-key.
+// VS Code glue for commercial licensing + BYO-key + the 7-day Pro trial.
 //
-// Design principle (non-abusive): NOTHING that runs locally is ever gated. The
-// only gate, `requireHosted`, guards features that cost *us* money to run
-// (hosted model oracle, cross-machine routing, cloud memory/fleet sync). A user
-// can satisfy that gate two ways — hold a paid license, OR bring their own API
-// key (BYO) and pay the provider directly. Free local use is unconditional.
+// Design principle (non-abusive): local features degrade gracefully, never hard
+// lock. Two distinct gates:
+//   - `requireHosted` guards features that cost *us* money (hosted oracle,
+//     cross-machine routing, cloud sync). Satisfied by ANY paid license OR a BYO
+//     key — NOT by the trial (a trial must not run up our hosted bill). Behavior
+//     preserved from the original.
+//   - `GateService` (see gateService.ts) guards tiered *local* paid features and
+//     is what command wrappers use; the trial unlocks those.
 
 import * as vscode from 'vscode';
 import {
@@ -16,42 +19,41 @@ import {
   verifyLicenseKey,
 } from './license';
 import { LICENSE_PUBLIC_KEY_PEM } from './publicKey';
+import { LicenseStore } from './licenseStore';
+import { EntitlementService } from './entitlementService';
+import { TrialService } from './trialService';
+import { LicenseStatusBar } from './statusBar';
 import { getSupportLinks, isPlaceholder } from '../support/supportConfig';
-
-const LICENSE_SECRET = 'autoclaw.license.key';
-const BYO_KEY_SECRET = 'autoclaw.byok.apiKey';
 
 /** Current entitlement from the stored license key (free if none/invalid). */
 export async function getEntitlement(context: vscode.ExtensionContext): Promise<Entitlement> {
-  const key = await context.secrets.get(LICENSE_SECRET);
-  if (!key) return FREE_ENTITLEMENT;
+  const key = await new LicenseStore(context).getLicenseKey();
+  if (!key) { return FREE_ENTITLEMENT; }
   return verifyLicenseKey(key, LICENSE_PUBLIC_KEY_PEM);
 }
 
 /** True when the user has stored their own provider API key. */
 export async function hasByoKey(context: vscode.ExtensionContext): Promise<boolean> {
-  const k = await context.secrets.get(BYO_KEY_SECRET);
-  return !!(k && k.trim());
+  return new LicenseStore(context).hasByoKey();
 }
 
 export async function getByoKey(context: vscode.ExtensionContext): Promise<string | undefined> {
-  const k = await context.secrets.get(BYO_KEY_SECRET);
-  return k && k.trim() ? k.trim() : undefined;
+  return new LicenseStore(context).getByoKey();
 }
 
 /**
  * Gate for a HOSTED feature (one that costs us money). Returns true if the user
  * may proceed: they hold a paid license OR have a BYO key. Otherwise shows a
  * non-blocking upgrade/BYO choice and returns false. Never call this for local
- * features.
+ * features. The trial does NOT satisfy this gate.
  */
 export async function requireHosted(
   context: vscode.ExtensionContext,
   featureLabel: string,
 ): Promise<boolean> {
   const ent = await getEntitlement(context);
-  if (isPaid(ent)) return true;
-  if (await hasByoKey(context)) return true;
+  if (isPaid(ent)) { return true; }
+  if (await hasByoKey(context)) { return true; }
 
   const UPGRADE = 'Get a license';
   const BYO = 'Use my own API key';
@@ -79,7 +81,7 @@ async function openProOrPanel(context: vscode.ExtensionContext): Promise<void> {
 }
 
 function describe(ent: Entitlement): string {
-  if (!ent.valid && ent.tier === 'free') return ent.reason;
+  if (!ent.valid && ent.tier === 'free') { return ent.reason; }
   const exp =
     ent.expiresAt === null || ent.expiresAt === undefined
       ? 'perpetual'
@@ -88,34 +90,58 @@ function describe(ent: Entitlement): string {
   return `${ent.tier.toUpperCase()} — ${status} (${exp}${ent.seats ? `, ${ent.seats} seat${ent.seats > 1 ? 's' : ''}` : ''})`;
 }
 
+/** Build the rich effective-status line (license + trial + BYO). */
+async function describeEffective(context: vscode.ExtensionContext): Promise<string> {
+  const svc = new EntitlementService(context);
+  const eff = await svc.getEffectiveEntitlement();
+  const byo = eff.hasByoKey ? ' • BYO API key set' : '';
+  if (eff.reason === 'trial') {
+    const days = eff.trialEndsAt
+      ? Math.max(0, Math.ceil((eff.trialEndsAt - Date.now()) / 86_400_000))
+      : 0;
+    return `Pro TRIAL — ${days} day${days === 1 ? '' : 's'} left (local Pro features unlocked; commercial use needs a license)${byo}`;
+  }
+  if (eff.reason === 'licensed') {
+    return `${describe(eff.base)}${byo}`;
+  }
+  // free or expired-license
+  const tail = eff.reason === 'expired-license' ? ` (last license: ${describe(eff.base)})` : '';
+  return `Free Community mode${tail}${byo}`;
+}
+
 export function registerLicensing(context: vscode.ExtensionContext): void {
+  const store = new LicenseStore(context);
+  const trial = new TrialService(context);
+  const statusBar = new LicenseStatusBar(context);
+  const refresh = (): void => { void statusBar.refresh(); };
+  context.subscriptions.push({ dispose: () => statusBar.dispose() });
+
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.license.enter', async () => {
       const key = await vscode.window.showInputBox({
         title: 'Enter AutoClaw license key',
         prompt: 'Paste the AUTOCLAW-… key from your purchase email.',
         ignoreFocusOut: true,
-        password: false,
         placeHolder: 'AUTOCLAW-…',
       });
-      if (!key) return;
+      if (!key) { return; }
       const ent = verifyLicenseKey(key.trim(), LICENSE_PUBLIC_KEY_PEM);
       if (!ent.valid) {
         vscode.window.showErrorMessage(`License not accepted: ${ent.reason}`);
         return;
       }
-      await context.secrets.store(LICENSE_SECRET, key.trim());
+      await store.setLicenseKey(key.trim());
+      refresh();
       vscode.window.showInformationMessage(`AutoClaw license activated: ${describe(ent)}. Thank you!`);
     }),
 
     vscode.commands.registerCommand('autoclaw.license.status', async () => {
-      const ent = await getEntitlement(context);
-      const byo = (await hasByoKey(context)) ? ' • BYO API key set' : '';
-      vscode.window.showInformationMessage(`AutoClaw: ${describe(ent)}${byo}`);
+      vscode.window.showInformationMessage(`AutoClaw: ${await describeEffective(context)}`);
     }),
 
     vscode.commands.registerCommand('autoclaw.license.clear', async () => {
-      await context.secrets.delete(LICENSE_SECRET);
+      await store.clearLicenseKey();
+      refresh();
       vscode.window.showInformationMessage('AutoClaw license key removed. Back to free local use.');
     }),
 
@@ -127,14 +153,47 @@ export function registerLicensing(context: vscode.ExtensionContext): void {
         password: true,
         placeHolder: 'sk-… (leave blank and confirm to clear)',
       });
-      if (key === undefined) return;
+      if (key === undefined) { return; }
       if (!key.trim()) {
-        await context.secrets.delete(BYO_KEY_SECRET);
+        await store.clearByoKey();
+        refresh();
         vscode.window.showInformationMessage('BYO API key cleared.');
         return;
       }
-      await context.secrets.store(BYO_KEY_SECRET, key.trim());
+      await store.setByoKey(key.trim());
+      refresh();
       vscode.window.showInformationMessage('BYO API key saved. Hosted features unlocked using your key.');
     }),
+
+    vscode.commands.registerCommand('autoclaw.license.comparePlans', async () => {
+      await openProOrPanel(context);
+    }),
+
+    vscode.commands.registerCommand('autoclaw.trial.status', async () => {
+      const s = trial.getStatus();
+      if (!s.started) {
+        vscode.window.showInformationMessage('AutoClaw Pro trial not started yet — it begins on first meaningful use (7 days, no account).');
+      } else if (s.active) {
+        vscode.window.showInformationMessage(`AutoClaw Pro trial: ${s.daysRemaining} day${s.daysRemaining === 1 ? '' : 's'} remaining.`);
+      } else {
+        vscode.window.showInformationMessage('AutoClaw Pro trial has ended. Free Community mode remains active.');
+      }
+    }),
+
+    vscode.commands.registerCommand('autoclaw.trial.start', async () => {
+      const before = trial.getStatus();
+      await trial.startIfNeeded('manual start');
+      refresh();
+      const after = trial.getStatus();
+      if (!before.started && after.started) {
+        // startIfNeeded already toasted the start.
+      } else if (after.consumed && !after.active) {
+        vscode.window.showInformationMessage('AutoClaw Pro trial was already used. Enter a license for commercial features.');
+      } else if (after.active) {
+        vscode.window.showInformationMessage(`AutoClaw Pro trial already active — ${after.daysRemaining} day${after.daysRemaining === 1 ? '' : 's'} left.`);
+      }
+    }),
   );
+
+  refresh();
 }

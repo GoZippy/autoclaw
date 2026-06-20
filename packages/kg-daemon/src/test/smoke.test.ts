@@ -154,3 +154,29 @@ describe("kg-daemon smoke", () => {
     expect(body.error?.code).toBe(404);
   });
 });
+
+describe("kg-daemon port fallback (EADDRINUSE)", () => {
+  it("falls back to the next port when the configured one is busy", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kg-daemon-port-"));
+    process.env.ZIPPYMESH_URL = "http://127.0.0.1:1";
+    // A fixed, unprivileged port unlikely to collide with other tests/services.
+    const fixed = 19900 + Math.floor(Math.random() * 80);
+    let h1: DaemonHandle | undefined;
+    let h2: DaemonHandle | undefined;
+    try {
+      h1 = await startDaemon({ dbPath: join(dir, "a.db"), host: "127.0.0.1", port: fixed });
+      expect(h1.port).toBe(fixed);
+      // Second daemon on the SAME port must fall back, not crash.
+      h2 = await startDaemon({ dbPath: join(dir, "b.db"), host: "127.0.0.1", port: fixed });
+      expect(h2.port).toBeGreaterThan(fixed);
+      expect(h2.port).toBeLessThanOrEqual(fixed + 4);
+      // Both are independently reachable.
+      const r2 = await fetch(`http://127.0.0.1:${h2.port}/api/v1/health`);
+      expect(r2.status).toBe(200);
+    } finally {
+      if (h1) await h1.close();
+      if (h2) await h2.close();
+      try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+  });
+});
