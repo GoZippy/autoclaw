@@ -71,6 +71,7 @@ import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistry
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
+import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
 import { registerLicensing } from './licensing/licensing';
 import {
@@ -893,6 +894,10 @@ export function activate(context: vscode.ExtensionContext) {
   // Intelligence metrics dashboard (webview view + refresh command + metrics
   // file watcher). Registration only — no I/O until the view is opened.
   registerIntelligenceDashboard(context);
+
+  // Full-tab Manager Surface (autoclaw.manager.open) — roomy single pane for
+  // overseeing the fleet. Command registration only; no I/O until opened.
+  registerManagerPanel(context);
 
   // First-run welcome with IDE-specific guidance
   showWelcomeIfNeeded(context);

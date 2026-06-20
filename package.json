@@ -102,6 +102,10 @@
         "title": "AutoClaw: Enable All Autonomous Features"
       },
       {
+        "command": "autoclaw.manager.open",
+        "title": "AutoClaw: Open Manager Surface"
+      },
+      {
         "command": "autoclaw.support.open",
         "title": "AutoClaw: Support / Donate"
       },
