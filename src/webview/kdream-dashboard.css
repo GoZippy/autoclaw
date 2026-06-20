@@ -1108,6 +1108,17 @@ th {
   border-radius: 4px;
   background: rgba(127, 127, 127, 0.16);
 }
+.session-ctx, .session-budget {
+  flex: none;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.12);
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+.session-budget { color: var(--vscode-charts-blue, #75beff); }
 .session-task { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
 .session-seen { margin-left: auto; color: var(--vscode-descriptionForeground); white-space: nowrap; }
 .session-open {

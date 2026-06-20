@@ -47,6 +47,8 @@ import {
   deriveHealthFromHeartbeats,
   readAgentProfiles,
   readClaims,
+  readCostLedger,
+  appendCostLedgerEntry,
 } from '../panel/fleetData';
 
 // ---------------------------------------------------------------------------
@@ -609,6 +611,40 @@ suite('Fleet panel — fleetData read layer', () => {
     const old = out.find(h => h.agentId === 'old')!;
     assert.strictEqual(fresh.state, 'alive');
     assert.strictEqual(old.state, 'dead');
+  });
+
+  test('appendCostLedgerEntry round-trips through readCostLedger', async () => {
+    const ws = makeWorkspace();
+    try {
+      await appendCostLedgerEntry(ws, {
+        agentId: 'claude-code', tokens: 1500, wallMs: 4200,
+        because: 'implemented session-tracking', taskId: 'B2', sprint: 2,
+        timestamp: iso(0),
+      });
+      await appendCostLedgerEntry(ws, {
+        agentId: 'kilocode', tokens: 800, wallMs: 1100, because: 'review', timestamp: iso(1),
+      });
+      const rows = await readCostLedger(ws);
+      assert.strictEqual(rows.length, 2);
+      const cc = rows.find(r => r.agentId === 'claude-code')!;
+      assert.strictEqual(cc.tokens, 1500);
+      assert.strictEqual(cc.taskId, 'B2');
+      assert.strictEqual(cc.sprint, 2);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('appendCostLedgerEntry is best-effort: a bad entry is dropped, not thrown', async () => {
+    const ws = makeWorkspace();
+    try {
+      // No agentId → normalizeCostEntry returns null → nothing written, no throw.
+      await appendCostLedgerEntry(ws, { agentId: '', tokens: 5, wallMs: 1, because: '', timestamp: iso(0) });
+      const rows = await readCostLedger(ws);
+      assert.strictEqual(rows.length, 0);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
   });
 
   test('readAgentProfiles reads the comms registry', async () => {

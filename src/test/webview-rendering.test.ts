@@ -814,6 +814,20 @@ suite('webview-render — session list', () => {
     assert.doesNotMatch(html, /session-open/);
   });
 
+  test('renders a context-window chip from the model catalog', () => {
+    const html = renderSessionList([mkHb('ctx1', 1, 'claude-opus-4-8')]);
+    assert.match(html, /session-ctx/);
+    assert.match(html, /ctx 1M/);                       // 1M context window
+  });
+
+  test('renders a remaining-budget chip when the heartbeat reports one', () => {
+    const hb: Heartbeat = { ...mkHb('bud1', 1, 'claude-sonnet-4-6'), token_budget_remaining: 45_000 };
+    const html = renderSessionList([hb]);
+    assert.match(html, /session-budget/);
+    assert.match(html, /45k left/);
+    assert.match(html, /ctx 200k/);                     // sonnet-4-6 = 200k
+  });
+
   test('empty → empty string', () => {
     assert.strictEqual(renderSessionList([]), '');
     assert.strictEqual(renderSessionList(undefined), '');

@@ -387,6 +387,29 @@ function normalizeCostEntry(
   };
 }
 
+/**
+ * Append one entry to the orchestrator per-agent cost ledger
+ * (`.autoclaw/orchestrator/cost-ledger.jsonl`). This is the integration seam any
+ * in-process dispatcher that has both a token count and a workspace handle can
+ * call to feed the panel's per-agent rollup ({@link readCostLedger} →
+ * `buildCostLedger`). Best-effort: a write failure never throws, so persisting
+ * cost can never break a dispatch.
+ */
+export async function appendCostLedgerEntry(
+  workspaceRoot: string,
+  entry: CostLedgerEntry,
+): Promise<void> {
+  try {
+    const norm = normalizeCostEntry(entry as Partial<CostLedgerEntry> & Record<string, unknown>);
+    if (!norm) { return; }
+    const base = orchestratorDir(workspaceRoot);
+    await fsp.mkdir(base, { recursive: true });
+    await fsp.appendFile(path.join(base, 'cost-ledger.jsonl'), JSON.stringify(norm) + '\n', 'utf8');
+  } catch {
+    /* best-effort — never break a dispatch because cost couldn't be persisted */
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Health snapshot
 // ---------------------------------------------------------------------------
