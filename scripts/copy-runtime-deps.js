@@ -70,11 +70,58 @@ function vendor(name) {
   }
 }
 
+/**
+ * Vendor the PRIVATE @autoclaw/premium package (compiled dist ONLY) into the
+ * licensed build — and ONLY then. Guarded by an explicit opt-in so a maintainer
+ * who happens to have @autoclaw/premium installed locally can NEVER leak it into
+ * the public marketplace .vsix: it ships only when AUTOCLAW_EDITION=enterprise or
+ * AUTOCLAW_INCLUDE_PREMIUM is truthy. Source is never copied — compiled only.
+ */
+function vendorPremiumIfLicensed() {
+  const inc = (process.env.AUTOCLAW_INCLUDE_PREMIUM || '').toLowerCase();
+  const wantPremium =
+    process.env.AUTOCLAW_EDITION === 'enterprise' ||
+    (inc !== '' && inc !== '0' && inc !== 'false' && inc !== 'no');
+  if (!wantPremium) {
+    console.log(
+      'copy-runtime-deps: @autoclaw/premium NOT vendored (public/community build). ' +
+      'For a licensed build set AUTOCLAW_EDITION=enterprise or AUTOCLAW_INCLUDE_PREMIUM=1.',
+    );
+    return;
+  }
+  const from = path.join(NM, '@autoclaw', 'premium');
+  if (!fs.existsSync(path.join(from, 'package.json'))) {
+    console.warn(
+      'copy-runtime-deps: licensed build requested but @autoclaw/premium is NOT installed — ' +
+      'run `npm install @autoclaw/premium` (or the private checkout) first. ' +
+      'Building with the FREE fallback for now.',
+    );
+    return;
+  }
+  const to = path.join(OUT_NM, '@autoclaw', 'premium');
+  fs.rmSync(to, { recursive: true, force: true });
+  fs.mkdirSync(to, { recursive: true });
+  // Ship the manifest + COMPILED dist only — never src.
+  fs.copyFileSync(path.join(from, 'package.json'), path.join(to, 'package.json'));
+  const distFrom = path.join(from, 'dist');
+  if (fs.existsSync(distFrom)) {
+    fs.cpSync(distFrom, path.join(to, 'dist'), { recursive: true, dereference: true });
+  } else {
+    console.warn('copy-runtime-deps: @autoclaw/premium has no dist/ — run its `npm run build` first.');
+  }
+  // Vendor any runtime deps premium declares (currently none).
+  let deps = {};
+  try { deps = JSON.parse(fs.readFileSync(path.join(from, 'package.json'), 'utf8')).dependencies || {}; } catch { /* none */ }
+  for (const dep of Object.keys(deps)) { vendor(dep); }
+  console.log('copy-runtime-deps: vendored @autoclaw/premium (LICENSED build) -> out/node_modules/@autoclaw/premium (compiled dist only).');
+}
+
 fs.rmSync(OUT_NM, { recursive: true, force: true });
 for (const root of ROOTS) {
   vendor(root);
 }
+vendorPremiumIfLicensed();
 console.log(
-  `copy-runtime-deps: vendored ${done.size} package(s) -> out/node_modules: ` +
+  `copy-runtime-deps: vendored ${done.size} pure-JS package(s) -> out/node_modules: ` +
     `${[...done].sort().join(', ')}`,
 );
