@@ -230,6 +230,13 @@ export {
   startIntelligenceRefreshService,
 } from './refreshService';
 
+// kg-record: populate the Knowledge Graph from coordination outcomes
+export {
+  RecordCoordinationDeps,
+  RecordCoordinationResult,
+  recordCoordinationToKg,
+} from './kgRecord';
+
 // metrics-dashboard: metrics store + cost-ledger bridge
 export {
   LearningRunStats,
