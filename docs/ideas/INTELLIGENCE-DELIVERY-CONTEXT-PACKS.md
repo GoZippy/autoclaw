@@ -1,6 +1,6 @@
 # Intelligence Layer — Delivery & Context Packs
 
-_Status: Channels A + B + D + the orchestrator auto-hook shipped. Channel C proposed._
+_Status: Channels A + B + C + D + the orchestrator auto-hook shipped._
 _Created 2026-06-21 on `feat/intel-context-packs`._
 
 ## The problem this solves
@@ -103,21 +103,38 @@ HTTP-only peers (Hermes, OpenClaw REST) can pull a grounded pack. Query params:
 Returns `{ markdown, summary, used_code, code_hits, learning_hits, kg_hits,
 degraded, notes }`. Degrade-safe. Test in `src/test/bridge.test.ts`.
 
-## Channel C — per-host project digest (proposed, deferred)
+## Channel C — per-host project digest (shipped)
 
-Write a project-level intel digest (durable learnings + style + memory + KG
-facts, light code) into each detected host dir so file-only runners get *ambient*
-project context even outside an orchestrated task.
+Writes a project-level intel digest (durable learnings + style + memory + KG
+facts + light code) into each **detected** host rules dir so file-only runners
+(Cursor, Windsurf, Continue, Cline/KiloCode, Antigravity) get *ambient* project
+context even outside an orchestrated task. `src/intelligence/hostContext.ts`:
 
-**Open tradeoff (why deferred):** to be auto-loaded, the digest needs each host's
-loadable format — Cursor `.mdc` (frontmatter), Continue `.prompt` (wrapper),
-Kiro/Windsurf/Antigravity/Cline `.md` (some with frontmatter). That duplicates
-the per-host formatting the adapter pipeline (`scripts/adapters/*`) already does
-for static skills, now for dynamic content. Marginal value is narrow given A
-(orchestrated task packs as files), B (MCP pull), and D (HTTP pull) already
-cover every runner in the common paths. Recommend building only if ambient
-out-of-task project context proves needed — and by reusing the adapter
-formatters rather than re-implementing them.
+- `resolveHostContextTargets(workspaceRoot)` — returns only hosts whose dir
+  already exists (`.cursor/rules`, `.kiro/steering`, `.windsurf/rules`,
+  `.continue/prompts`, `.clinerules`, `.agent/rules`). Never creates a host tree.
+- `formatForHost(format, body)` — wraps the digest in each host's auto-load
+  format, mirroring `scripts/adapters/*` (Cursor `.mdc` frontmatter, Kiro
+  `inclusion: auto`, Windsurf `trigger: model_decision`, Continue `<s>` wrapper,
+  plain markdown for Cline/Antigravity). Kept as a self-contained `src/` module
+  (runtime must not import build-tooling under `scripts/`); a future refactor
+  could hoist a single shared formatter used by both.
+- `writeHostContextFiles(workspaceRoot, opts)` — builds the digest once and
+  writes it into every detected host. Degrade-safe; per-file failures collected,
+  never thrown.
+- Command `AutoClaw: Intelligence — Write Per-Host Project Context`
+  (`autoclaw.intelligence.hostContext`). Tests:
+  `src/test/intelligence-hostcontext.test.ts`.
+
+Cross-platform: dirs via `path.join`, detection via `fs.statSync`, files written
+with `\n` (Node writes verbatim on every OS; all targets accept LF).
+
+**Excluded by design:** Claude Code (global `~/.claude/skills` is wrong for
+*project* context — it's already served live by Channel B's MCP tool). MCP and
+HTTP hosts pull on demand via B/D.
+
+**Follow-up:** auto-refresh on a tick is KDream-daemon territory (not shipped);
+run the command after `/index-code` + `/learn`, or wire it into a future daemon.
 
 ## Notes / gotchas
 

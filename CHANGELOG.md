@@ -22,6 +22,13 @@
   - **HTTP endpoint** `GET /api/v1/intelligence/context` on the bridge
     (bearer-gated) — the HTTP twin of the MCP tool, so cross-machine / HTTP-only
     peers (Hermes, OpenClaw REST) can pull a pack.
+  - **Per-host project context** — command
+    `AutoClaw: Intelligence — Write Per-Host Project Context`
+    (`autoclaw.intelligence.hostContext`) writes an ambient project digest into
+    each detected host rules dir (`.cursor/rules`, `.kiro/steering`,
+    `.windsurf/rules`, `.continue/prompts`, `.clinerules`, `.agent/rules`) in
+    that host's auto-load format, so file-only runners get current intel even
+    outside an orchestrated task.
   - Design: `docs/ideas/INTELLIGENCE-DELIVERY-CONTEXT-PACKS.md`.
 
 ## [3.6.3] - 2026-06-20

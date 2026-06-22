@@ -70,6 +70,7 @@ import {
   pendingConsentSources,
   generateRAGPrompt,
   buildContextPack,
+  writeHostContextFiles,
   buildScaffold,
   getDashboardData,
   getEffectiveness,
@@ -797,6 +798,46 @@ async function runContextPack(workspaceRoot: string): Promise<void> {
     const doc = await vscode.workspace.openTextDocument(outPath);
     await vscode.window.showTextDocument(doc);
   }
+}
+
+/**
+ * Channel C — write an ambient project-context digest into every detected host
+ * rules dir (Cursor/Kiro/Windsurf/Continue/Cline/KiloCode/Antigravity) in that
+ * host's auto-load format, so file-only runners get current project intel even
+ * outside an orchestrated task. Backs `autoclaw.intelligence.hostContext`.
+ */
+async function runHostContext(workspaceRoot: string): Promise<void> {
+  const log: LogFn = logLine;
+  getChannel().show(true);
+  logLine('host-context: writing per-host project digest');
+
+  const config = await resolveEmbeddingForCommand(workspaceRoot, log);
+  const result = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'AutoClaw Intelligence: writing per-host project context…',
+      cancellable: false,
+    },
+    () => writeHostContextFiles(workspaceRoot, { config, log }),
+  );
+
+  if (result.targetsDetected === 0) {
+    void vscode.window.showInformationMessage(
+      'Intelligence: no file-based host rules dirs found (.cursor/rules, .kiro/steering, ' +
+        '.windsurf/rules, .continue/prompts, .clinerules, .agent/rules). Nothing to write.',
+    );
+    return;
+  }
+  for (const w of result.written) {
+    logLine(`host-context: wrote ${w.id} → ${w.path}`);
+  }
+  for (const f of result.failed) {
+    logLine(`host-context: FAILED ${f.id} — ${f.error}`);
+  }
+  void vscode.window.showInformationMessage(
+    `Intelligence: project context written for ${result.written.map((w) => w.id).join(', ') || 'no hosts'}` +
+      `${result.degraded ? ' (degraded — code retrieval unavailable)' : ''}.`,
+  );
 }
 
 async function runScaffold(workspaceRoot: string): Promise<void> {
@@ -1632,6 +1673,10 @@ export function registerIntelligenceCommands(
     vscode.commands.registerCommand(
       'autoclaw.intelligence.contextPack',
       withWorkspace(getWorkspaceRoot, runContextPack),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.hostContext',
+      withWorkspace(getWorkspaceRoot, runHostContext),
     ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.scaffold',

@@ -211,6 +211,16 @@ export {
   renderContextPackMarkdown,
 } from './contextPack';
 
+// host-context: per-host ambient project digest (Channel C delivery)
+export {
+  HostContextTarget,
+  WriteHostContextResult,
+  WriteHostContextOptions,
+  resolveHostContextTargets,
+  formatForHost,
+  writeHostContextFiles,
+} from './hostContext';
+
 // metrics-dashboard: metrics store + cost-ledger bridge
 export {
   LearningRunStats,
