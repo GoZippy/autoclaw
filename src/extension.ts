@@ -70,6 +70,7 @@ import {
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
+import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
@@ -177,6 +178,7 @@ let autobuildOutputChannel: vscode.OutputChannel | undefined;
 let autobuildIntervalId: NodeJS.Timeout | undefined;
 let kgOutputChannel: vscode.OutputChannel | undefined;
 let activeKg: KgState | null = null;
+let activeRefreshService: RefreshServiceHandle | null = null;
 /**
  * Module-level FabricBus handle. Created during activate() based on
  * autoclaw.fabric.busDriver and closed in deactivate(). Best-effort: an
@@ -237,6 +239,38 @@ async function maybeStartKgDaemon(extensionPath: string): Promise<void> {
   } else {
     channel.appendLine(`[kg] ${result.message}`);
     console.log(`AutoClaw KG: ${result.message}`);
+  }
+}
+
+/**
+ * Start the standalone per-host context refresh service when
+ * `autoclaw.intelligence.autoRefresh.enabled` is true. Best-effort — never
+ * throws. Idempotent: a running service is left in place. The service only
+ * rewrites digests that already exist, so enabling it can never create files.
+ */
+function maybeStartRefreshService(): void {
+  const cfg = vscode.workspace.getConfiguration('autoclaw.intelligence.autoRefresh');
+  if (!cfg.get<boolean>('enabled', false)) { return; }
+  if (activeRefreshService?.running) { return; }
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { return; }
+  const minutes = cfg.get<number>('intervalMinutes', 30);
+  try {
+    activeRefreshService = startIntelligenceRefreshService({
+      workspaceRoot,
+      intervalMs: Math.max(1, minutes) * 60_000,
+      log: (m) => console.log(`AutoClaw intelligence: ${m}`),
+    });
+  } catch (e) {
+    console.error('AutoClaw intelligence refresh service failed to start:', e);
+  }
+}
+
+/** Stop the refresh service if running. Best-effort. */
+function stopRefreshService(): void {
+  if (activeRefreshService) {
+    try { activeRefreshService.stop(); } catch { /* ignore */ }
+    activeRefreshService = null;
   }
 }
 
@@ -859,6 +893,55 @@ export function activate(context: vscode.ExtensionContext) {
       console.error('kg-daemon auto-start failed:', e);
     });
   }
+
+  // Intelligence refresh service: standalone tick that keeps opted-in per-host
+  // context digests current (gated on autoclaw.intelligence.autoRefresh.enabled).
+  maybeStartRefreshService();
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.intelligence.startRefreshService', () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        void vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.');
+        return;
+      }
+      if (activeRefreshService?.running) {
+        void vscode.window.showInformationMessage('AutoClaw: intelligence refresh service is already running.');
+        return;
+      }
+      const minutes = vscode.workspace
+        .getConfiguration('autoclaw.intelligence.autoRefresh')
+        .get<number>('intervalMinutes', 30);
+      activeRefreshService = startIntelligenceRefreshService({
+        workspaceRoot,
+        intervalMs: Math.max(1, minutes) * 60_000,
+        log: (m) => console.log(`AutoClaw intelligence: ${m}`),
+      });
+      void vscode.window.showInformationMessage(
+        `AutoClaw: intelligence refresh service started (every ${Math.max(1, minutes)} min). It refreshes only host digests you've already created.`,
+      );
+    }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.intelligence.stopRefreshService', () => {
+      if (!activeRefreshService?.running) {
+        void vscode.window.showInformationMessage('AutoClaw: intelligence refresh service is not running.');
+        return;
+      }
+      stopRefreshService();
+      void vscode.window.showInformationMessage('AutoClaw: intelligence refresh service stopped.');
+    }),
+  );
+  // Honor live toggling of the setting without a reload.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('autoclaw.intelligence.autoRefresh.enabled')) {
+        const enabled = vscode.workspace
+          .getConfiguration('autoclaw.intelligence.autoRefresh')
+          .get<boolean>('enabled', false);
+        if (enabled) { maybeStartRefreshService(); } else { stopRefreshService(); }
+      }
+    }),
+  );
 
   // AutoBuild scheduler: single setInterval in the extension host.
   startAutobuildScheduler(context);
@@ -4827,6 +4910,7 @@ export function deactivate() {
     stopBridge(activeBridge).catch(() => {});
     activeBridge = null;
   }
+  stopRefreshService();
   unregisterWorker(process.pid, currentIde);
   if (currentWorkspace) {
     releasePorts(currentIde, currentWorkspace);

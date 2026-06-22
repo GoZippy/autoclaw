@@ -221,6 +221,15 @@ export {
   writeHostContextFiles,
 } from './hostContext';
 
+// refresh-service: standalone tick-based digest refresh (Channel C)
+export {
+  RefreshServiceOptions,
+  RefreshServiceHandle,
+  DEFAULT_REFRESH_INTERVAL_MS,
+  MIN_REFRESH_INTERVAL_MS,
+  startIntelligenceRefreshService,
+} from './refreshService';
+
 // metrics-dashboard: metrics store + cost-ledger bridge
 export {
   LearningRunStats,
