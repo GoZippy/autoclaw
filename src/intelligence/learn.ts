@@ -587,6 +587,18 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
     log(`learn: collecting coordination signals failed (${(err as Error).message})`);
   }
 
+  // (KG) Record coordination outcomes as durable, queryable knowledge-graph
+  // facts so context packs + kg.search surface real team decisions instead of an
+  // empty graph. Best-effort, deduped by deterministic id, never blocks /learn.
+  if (coordination) {
+    try {
+      const { recordCoordinationToKg } = await import('./kgRecord');
+      await recordCoordinationToKg(workspaceRoot, coordination, { log });
+    } catch (err) {
+      log(`learn: KG coordination recording failed (${(err as Error).message})`);
+    }
+  }
+
   // (R5.3) Aggregate with sensible defaults so output is never empty.
   const agg = aggregate(sessions, coordination);
   const iso = new Date().toISOString();
