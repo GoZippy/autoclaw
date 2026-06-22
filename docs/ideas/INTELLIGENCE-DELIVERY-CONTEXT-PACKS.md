@@ -1,6 +1,6 @@
 # Intelligence Layer — Delivery & Context Packs
 
-_Status: Channels A + B + the orchestrator auto-hook shipped. Channels C–D proposed._
+_Status: Channels A + B + D + the orchestrator auto-hook shipped. Channel C proposed._
 _Created 2026-06-21 on `feat/intel-context-packs`._
 
 ## The problem this solves
@@ -94,13 +94,30 @@ agent:
   `pkg.contextPackPath`. Failures are journaled (`context_pack_failed`), never
   block dispatch. `runTick` enables this on the production loop.
 
-## Proposed next channels
+## Channel D — HTTP bridge endpoint (shipped)
 
-- **Channel C — per-host `CONTEXT.md`.** Generate a refreshed context file into
-  each host's adapter dir (like `scripts/build-adapters.ts`) so file-only
-  runners get *current* project intel even outside an orchestrated task.
-- **Channel D — HTTP bridge `/a2a/context`.** Serve the pack to remote /
-  cross-machine agents; advertise in the Agent Card extension fields.
+`GET /api/v1/intelligence/context` on the bridge (`src/bridge.ts`) — the
+bearer-gated twin of the `intelligence.contextPack` MCP tool, so cross-machine /
+HTTP-only peers (Hermes, OpenClaw REST) can pull a grounded pack. Query params:
+`task` (required) + optional `agent`, `sprint`, `role`, `task_ids`, `max_*`.
+Returns `{ markdown, summary, used_code, code_hits, learning_hits, kg_hits,
+degraded, notes }`. Degrade-safe. Test in `src/test/bridge.test.ts`.
+
+## Channel C — per-host project digest (proposed, deferred)
+
+Write a project-level intel digest (durable learnings + style + memory + KG
+facts, light code) into each detected host dir so file-only runners get *ambient*
+project context even outside an orchestrated task.
+
+**Open tradeoff (why deferred):** to be auto-loaded, the digest needs each host's
+loadable format — Cursor `.mdc` (frontmatter), Continue `.prompt` (wrapper),
+Kiro/Windsurf/Antigravity/Cline `.md` (some with frontmatter). That duplicates
+the per-host formatting the adapter pipeline (`scripts/adapters/*`) already does
+for static skills, now for dynamic content. Marginal value is narrow given A
+(orchestrated task packs as files), B (MCP pull), and D (HTTP pull) already
+cover every runner in the common paths. Recommend building only if ambient
+out-of-task project context proves needed — and by reusing the adapter
+formatters rather than re-implementing them.
 
 ## Notes / gotchas
 

@@ -19,6 +19,9 @@
     dispatcher reference (and best-effort generate) a per-agent pack, so packs
     are delivered as task directives. File-based, so **every** runner can read
     them without MCP.
+  - **HTTP endpoint** `GET /api/v1/intelligence/context` on the bridge
+    (bearer-gated) — the HTTP twin of the MCP tool, so cross-machine / HTTP-only
+    peers (Hermes, OpenClaw REST) can pull a pack.
   - Design: `docs/ideas/INTELLIGENCE-DELIVERY-CONTEXT-PACKS.md`.
 
 ## [3.6.3] - 2026-06-20
