@@ -2,8 +2,19 @@
 
 ## [Unreleased]
 
+## [3.6.4] - 2026-06-22
+
 ### Added
 
+- **AutoBuild step conditions** — gate a workflow step on prior steps' results
+  via `{{stepId.field}}` placeholders (`exit_code`, `success`, `skipped`,
+  `timed_out`) and comparison operators (`==` `!=` `>` `>=` `<` `<=`; bare
+  expression = truthiness). A conditioned step runs whenever its condition is
+  true — even after an earlier failure (e.g. notify-on-failure) — and is skipped
+  (without aborting the run) when false. Steps without a condition keep the
+  default skip-after-failure behaviour.
+- **Agent Scorecards** report — `AutoClaw: Reports — Agent Scorecards`
+  (`autoclaw.reports.agentScorecard`), gated with a free fallback.
 - **Intelligence context packs — universal intel delivery.** The intelligence
   layer can now hand a newly-assigned agent a grounded "context pack" (relevant
   code retrieved from this repo + the team's proven patterns/learnings + the
