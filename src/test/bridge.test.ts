@@ -438,6 +438,30 @@ suite('Bridge — QLT-0b acceptance gate', () => {
       await stopBridge(state);
     }
   });
+
+  test('GET /api/v1/intelligence/context returns a degrade-safe pack (Channel D)', async () => {
+    const wsRoot = tmpDir(); // empty workspace ⇒ buildContextPack degrades deterministically
+    const state = await bringWithRoot(wsRoot);
+    try {
+      const t = await createRemoteAgentToken(state.config.tokensPath, 'a1');
+      // needs a token
+      const unauth = await request(state, 'GET', '/api/v1/intelligence/context?task=add%20pagination', {});
+      assert.strictEqual(unauth.status, 401);
+      // task is required
+      const noTask = await request(state, 'GET', '/api/v1/intelligence/context',
+        { Authorization: `Bearer ${t.token}` });
+      assert.strictEqual(noTask.status, 400);
+      // valid pull
+      const ok = await request(state, 'GET', '/api/v1/intelligence/context?task=add%20pagination&agent=a1',
+        { Authorization: `Bearer ${t.token}` });
+      assert.strictEqual(ok.status, 200);
+      const body = JSON.parse(ok.body);
+      assert.ok(typeof body.markdown === 'string' && body.markdown.includes('AutoClaw Context Pack'), 'returns pack markdown');
+      assert.ok(body.summary && body.summary.task === 'add pagination', 'summary echoes the task');
+    } finally {
+      await stopBridge(state);
+    }
+  });
 });
 
 suite('Bridge — HTTP task claim (POST /api/v1/claims/:taskId)', () => {

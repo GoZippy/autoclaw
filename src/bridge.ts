@@ -23,6 +23,7 @@ import { emitHookEvent } from './hooks/hookBus';
 import { verifyBiscuitToken } from './biscuit';
 import { verifySvid } from './svid';
 import { getKnowledgeGraph } from './intelligence/kg/service';
+import { buildContextPack } from './intelligence';
 
 const fsPromises = fs.promises;
 
@@ -415,6 +416,46 @@ export function createBridgeServer(
           const statuses = await getAgentStatuses(config.commsDir);
           const registry = await readRegistry(config.commsDir);
           return json(res, 200, { agents: statuses, registry });
+        }
+        // Intelligence context pack over HTTP (Channel D) — the bearer-gated twin
+        // of the `intelligence.contextPack` MCP tool, so cross-machine / HTTP-only
+        // peers (Hermes, OpenClaw REST) can pull a grounded pack. Read-only;
+        // degrades to a learnings/style/memory pack when the backend is down.
+        if (p === '/api/v1/intelligence/context' && method === 'GET') {
+          const task = (url.searchParams.get('task') ?? '').trim();
+          if (task === '') { return err(res, 400, "query param 'task' required"); }
+          const capped = (name: string): number | undefined => {
+            const v = url.searchParams.get(name); if (v === null) { return undefined; }
+            const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 20) : undefined;
+          };
+          const sprintRaw = url.searchParams.get('sprint');
+          const sprintN = sprintRaw !== null && /^\d+$/.test(sprintRaw) ? Number(sprintRaw) : undefined;
+          const idsRaw = url.searchParams.get('task_ids');
+          const pack = await buildContextPack(
+            {
+              task,
+              agentId: url.searchParams.get('agent') ?? token.agent_id,
+              sprint: sprintN,
+              role: url.searchParams.get('role') ?? undefined,
+              taskIds: idsRaw ? idsRaw.split(',').map(s => s.trim()).filter(Boolean) : undefined,
+            },
+            {
+              workspaceRoot: config.workspaceRoot ?? process.cwd(),
+              maxCodeChunks: capped('max_code_chunks'),
+              maxLearnings: capped('max_learnings'),
+              maxKgFacts: capped('max_kg_facts'),
+            },
+          );
+          return json(res, 200, {
+            markdown: pack.markdown,
+            summary: pack.summary,
+            used_code: pack.usedCode,
+            code_hits: pack.codeHits,
+            learning_hits: pack.learningHits,
+            kg_hits: pack.kgHits,
+            degraded: pack.degraded,
+            notes: pack.notes,
+          });
         }
         if (p === '/api/v1/consensus/vote' && method === 'POST') {
           const body = await readBody(req);

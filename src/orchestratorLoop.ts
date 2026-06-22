@@ -134,6 +134,12 @@ export interface WorkPackage {
   assignToVendor: VendorKind;
   priority: 'high' | 'medium' | 'low';
   timeBudgetMs: number;
+  /**
+   * Workspace-relative path to a generated intelligence context pack for this
+   * task (Channel A). Set by {@link dispatchWork} when context-pack generation
+   * is enabled; surfaced in the work-loop prompt so the agent reads it first.
+   */
+  contextPackPath?: string;
 }
 
 export interface DispatchContext {
@@ -271,6 +277,23 @@ export function buildWorkLoopPrompt(pkg: WorkPackage): string {
   }
   lines.push('### Success Criteria');
   for (const i in pkg.successCriteria) lines.push(`${Number(i) + 1}. ${pkg.successCriteria[i]}`);
+  lines.push('');
+  lines.push('### Grounding — Context Pack');
+  if (pkg.contextPackPath) {
+    lines.push(
+      `Read \`${pkg.contextPackPath}\` FIRST — a grounded pack the orchestrator ` +
+        `assembled for this task: relevant code from this repo, the team's proven ` +
+        `patterns, the learned style guide, recent memory, and durable facts.`,
+    );
+  } else {
+    lines.push(
+      'Before coding, pull your grounding pack: call the `intelligence.contextPack` ' +
+        'MCP tool with this task, or run ' +
+        '`node scripts/context-pack.js --task "<this task>"`. It returns relevant ' +
+        'code, proven patterns, the style guide, memory, and durable facts.',
+    );
+  }
+  lines.push('Treat it as retrieved hints, not authority — verify against the current code.');
   lines.push('');
   lines.push('### Nested Loop Lifecycle');
   lines.push('1. Make required changes.');
@@ -534,7 +557,8 @@ export async function discoverWork(
 export async function dispatchWork(
   workspaceRoot: string,
   pkg: WorkPackage,
-  controlLevel: ControlLevel = 'individual'
+  controlLevel: ControlLevel = 'individual',
+  opts: { generateContextPack?: boolean } = {}
 ): Promise<string | null> {
   // Fleet HALT kill switch (HKS-3, agent-trigger-hooks spec): when the
   // operator has engaged `.autoclaw/orchestrator/HALT`, NOTHING dispatches —
@@ -591,6 +615,36 @@ export async function dispatchWork(
     return null;
   }
 
+  // Auto-hook (Channel A): best-effort generate a context pack for this task and
+  // reference it in the prompt. Degrade-safe and never blocks dispatch — any
+  // failure (no backend, slow embed) is journaled and the prompt falls back to
+  // pull-on-demand instructions.
+  if (opts.generateContextPack) {
+    try {
+      const { buildContextPack } = await import('./intelligence');
+      const task = `${pkg.taskName}: ${pkg.description}`.trim().replace(/:\s*$/, '');
+      const pack = await buildContextPack(
+        { task, sprint: pkg.sprint, agentId: pkg.assignToVendor, taskIds: [pkg.taskId] },
+        { workspaceRoot },
+      );
+      const sprintsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'sprints');
+      await fsPromises.mkdir(sprintsDir, { recursive: true });
+      const packFile = path.join(sprintsDir, `${pkg.taskId}.context.md`);
+      await fsPromises.writeFile(packFile, pack.markdown, 'utf8');
+      pkg.contextPackPath = path.relative(workspaceRoot, packFile).split(path.sep).join('/');
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: 0, phase: 'dispatch',
+        action: 'context_pack_written',
+        detail: { taskId: pkg.taskId, file: pkg.contextPackPath, degraded: pack.degraded, codeHits: pack.codeHits, kgHits: pack.kgHits },
+      });
+    } catch (err) {
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: 0, phase: 'dispatch',
+        action: 'context_pack_failed', detail: { taskId: pkg.taskId, error: String(err) },
+      });
+    }
+  }
+
   const record = {
     at: new Date().toISOString(),
     type: 'work_package' as const,
@@ -602,6 +656,7 @@ export async function dispatchWork(
     successCriteria: pkg.successCriteria,
     priority: pkg.priority,
     timeBudgetMs: pkg.timeBudgetMs,
+    contextPackPath: pkg.contextPackPath,
     prompt: buildWorkLoopPrompt(pkg),
   };
 
@@ -709,7 +764,7 @@ export async function runTick(
   if (work.length > 0) {
     for (const w of work.slice(0, 2)) {
       try {
-        const sidecar = await dispatchWork(workspaceRoot, w.item);
+        const sidecar = await dispatchWork(workspaceRoot, w.item, 'individual', { generateContextPack: true });
         if (sidecar) { dispatched++; state.totalDispatches++; }
       } catch (e: any) { tickErrors++; state.totalErrors++; }
     }

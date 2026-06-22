@@ -64,4 +64,22 @@ suite('intelligence — tool scaffold + MCP retrieve tool', () => {
       assert.strictEqual(res.reason, 'invalid_params');
     });
   });
+
+  suite('intelligence.contextPack MCP tool', () => {
+    test('is registered read-only with a required task input', () => {
+      const tool = READ_ONLY_TOOLS.find((t) => t.definition.name === 'intelligence.contextPack');
+      assert.ok(tool, 'intelligence.contextPack must be in READ_ONLY_TOOLS');
+      const schema = tool!.definition.inputSchema as { properties?: Record<string, unknown>; required?: string[] };
+      assert.ok(schema.properties && 'task' in schema.properties, 'has a task input');
+      assert.deepStrictEqual(schema.required, ['task']);
+    });
+
+    test('rejects an empty task without touching the backend', async () => {
+      const tool = READ_ONLY_TOOLS.find((t) => t.definition.name === 'intelligence.contextPack')!;
+      const ctx = { workspaceRoot: 'K:/nope', autoclawDir: 'K:/nope/.autoclaw', scope: 'workspace', host: 'test' } as never;
+      const res = await tool.run(ctx, { task: '   ' });
+      assert.strictEqual(res.ok, false);
+      assert.strictEqual(res.reason, 'invalid_params');
+    });
+  });
 });

@@ -199,6 +199,28 @@ export {
   buildScaffold,
 } from './ragPrompt';
 
+// context-pack: orchestrator "context pack" producer (Channel A delivery)
+export {
+  ContextPackScope,
+  ContextPackDeps,
+  ContextPackOptions,
+  ContextPackResult,
+  ContextPackSummary,
+  KgFact,
+  buildContextPack,
+  renderContextPackMarkdown,
+} from './contextPack';
+
+// host-context: per-host ambient project digest (Channel C delivery)
+export {
+  HostContextTarget,
+  WriteHostContextResult,
+  WriteHostContextOptions,
+  resolveHostContextTargets,
+  formatForHost,
+  writeHostContextFiles,
+} from './hostContext';
+
 // metrics-dashboard: metrics store + cost-ledger bridge
 export {
   LearningRunStats,

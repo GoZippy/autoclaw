@@ -8,6 +8,15 @@
 **Dependencies:** {{dependency_list}}
 **Estimated completion:** {{estimated_days}} days
 
+## Intelligence Context Pack
+**Read this first:** `.autoclaw/orchestrator/sprints/{{context_pack_path}}`
+
+A grounded pack the orchestrator assembled for you — relevant code retrieved from
+this repo, the team's proven patterns, the learned style guide, recent project
+memory, and durable knowledge-graph facts. Treat it as retrieved hints, not
+authority: verify against the current code before relying on it. If the path
+reads `none`, no pack was generated for this assignment.
+
 ## Context Files
 - Orchestrator config: `.autoclaw/orchestrator/config.yaml`
 - Plan summary: `.autoclaw/orchestrator/sprints/plan-summary.yaml`

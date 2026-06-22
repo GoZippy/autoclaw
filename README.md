@@ -550,6 +550,39 @@ REST endpoints: `POST /api/v1/messages`, `GET /api/v1/messages`, `POST /api/v1/h
 
 ---
 
+## Intelligence — Context Packs (cross-runner delivery)
+
+AutoClaw's intelligence layer learns from your past sessions, indexes your code, and keeps a knowledge graph. A **context pack** is how that intel reaches an agent: one grounded bundle — relevant code retrieved from your repo, the team's proven patterns/learnings, the learned style guide, recent project memory, and durable knowledge-graph facts — that a newly-assigned agent reads before starting.
+
+Packs are **degrade-safe**: with no embeddings backend reachable, a pack still builds from learnings + style + memory (and the knowledge graph falls back to full-text search). Nothing is sent to the cloud.
+
+### Five ways an agent gets a pack
+
+| Path | Who it's for | How |
+|---|---|---|
+| **Command** | You, in any VS Code-based host | `AutoClaw: Intelligence — Build Context Pack` writes `.autoclaw/orchestrator/sprints/sprint-<N>-<agent>.context.md` |
+| **CLI** | Headless / CI / any runner with a shell | `node scripts/context-pack.js --task "<task>" --agent <id> --sprint <N>` (writes the file, prints a JSON summary) |
+| **MCP tool** | MCP hosts (Claude Code, Kiro, Cursor, Claude Desktop) | call the read-only `intelligence.contextPack` tool with a `task` |
+| **HTTP** | Cross-machine / HTTP-only peers (Hermes, OpenClaw) | `GET /api/v1/intelligence/context?task=...` on the bridge (bearer-gated) |
+| **Per-host digest** | File-only runners (Cursor, Windsurf, Continue, Cline/KiloCode, Antigravity) | `AutoClaw: Intelligence — Write Per-Host Project Context` drops an ambient project digest into each detected host rules dir in that host's auto-load format |
+
+### Orchestrator integration
+
+When the orchestrator dispatches work, it best-effort generates a per-task pack and the work-loop prompt tells the agent to **read its context pack first** (falling back to "pull one via the MCP tool / CLI" when none was written). So intel arrives as a task directive, automatically — across every runner.
+
+### Context pack contents
+
+```
+# AutoClaw Context Pack — Sprint 2 — claude-code
+## Grounded Context (RAG-retrieved)   ← relevant code chunks from your repo
+## Your Previously Successful Patterns ← git-validated learnings
+## Your Learned Agent Style Guide      ← agent-style.md
+## Project Memory Summary (recent)     ← KDream MEMORY.md
+## Durable Knowledge-Graph Facts       ← bi-temporal KG recall
+```
+
+---
+
 ## Doctor — Health Check
 
 The Doctor command (`Ctrl+Alt+D`) runs a read-only health audit and renders a structured report in the `AutoClaw Doctor` Output Channel.
@@ -644,6 +677,8 @@ All AutoClaw state lives under `.autoclaw/` — no hidden global state:
 | **AutoClaw: Orchestrate — Show Sprint Status** | — | Show current orchestration state |
 | **AutoClaw: Orchestrate — Assign Next Sprint** | — | Detect agents, write registry, assign sprint |
 | **AutoClaw: Orchestrate — Run Consensus Review** | — | Read votes, evaluate consensus, report verdict |
+| **AutoClaw: Intelligence — Build Context Pack** | — | Build a grounded pack for an assigned agent → `sprint-<N>-<agent>.context.md` |
+| **AutoClaw: Intelligence — Write Per-Host Project Context** | — | Drop an ambient project digest into each detected host rules dir (Cursor/Kiro/Windsurf/Continue/Cline/Antigravity) |
 | **AutoClaw: Start OpenClaw Bridge Server** | — | Start HTTP bridge for remote agents |
 | **AutoClaw: Stop OpenClaw Bridge Server** | — | Stop bridge |
 | **AutoClaw: Register Remote Agent (Generate Token)** | — | Generate auth token for a remote agent |
