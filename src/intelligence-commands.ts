@@ -69,6 +69,7 @@ import {
   setSourceEnabled,
   pendingConsentSources,
   generateRAGPrompt,
+  buildContextPack,
   buildScaffold,
   getDashboardData,
   getEffectiveness,
@@ -724,6 +725,78 @@ async function runRagGenerate(workspaceRoot: string): Promise<void> {
   void vscode.window.showInformationMessage(
     `Intelligence: RAG prompt copied to clipboard${result.usedCode ? '' : ' (code retrieval unavailable)'}.`,
   );
+}
+
+/**
+ * Orchestrator "context pack" — builds a grounded pack (RAG + learnings + style
+ * + memory + durable KG facts) for an assigned agent and writes it to
+ * `.autoclaw/orchestrator/sprints/sprint-<N>-<agent>.context.md` so EVERY runner
+ * can read it. Backs the `autoclaw.intelligence.contextPack` command; the same
+ * producer is available headless via `scripts/context-pack.js`.
+ */
+async function runContextPack(workspaceRoot: string): Promise<void> {
+  const task = await vscode.window.showInputBox({
+    prompt: 'Describe the task/sprint to build a context pack for',
+    placeHolder: 'e.g. Sprint 2 — runner contract + MCP server (B1, B2)',
+  });
+  if (!task) {
+    return;
+  }
+  const agent = (
+    await vscode.window.showInputBox({
+      prompt: 'Agent id this pack is for (optional)',
+      placeHolder: 'e.g. claude-code',
+    })
+  )?.trim();
+  const sprintRaw = (
+    await vscode.window.showInputBox({
+      prompt: 'Sprint number (optional)',
+      placeHolder: 'e.g. 2',
+    })
+  )?.trim();
+  const sprint = sprintRaw && /^\d+$/.test(sprintRaw) ? Number(sprintRaw) : undefined;
+
+  const log: LogFn = logLine;
+  getChannel().show(true);
+  logLine(`context-pack: "${task}"${agent ? ` for ${agent}` : ''}${sprint != null ? ` (sprint ${sprint})` : ''}`);
+
+  const config = await resolveEmbeddingForCommand(workspaceRoot, log);
+  const pack = await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'AutoClaw Intelligence: building context pack…',
+      cancellable: false,
+    },
+    () => buildContextPack({ task, agentId: agent, sprint }, { workspaceRoot, config, log }),
+  );
+
+  const sprintPart = sprint != null ? `sprint-${sprint}` : 'pack';
+  const agentPart = agent ? `-${agent.toLowerCase().replace(/[^a-z0-9._-]+/g, '-')}` : '';
+  const outPath = path.join(
+    intelligencePaths(workspaceRoot).root,
+    'orchestrator',
+    'sprints',
+    `${sprintPart}${agentPart}.context.md`,
+  );
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, pack.markdown, 'utf8');
+
+  logLine(
+    `context-pack: wrote ${outPath} — ${pack.usedCode ? `${pack.codeHits} code chunk(s)` : 'no code (degraded/empty)'}, ` +
+      `${pack.learningHits} learning(s), ${pack.kgHits} KG fact(s)${pack.degraded ? ' [degraded]' : ''}`,
+  );
+  for (const note of pack.notes) {
+    logLine(`context-pack: note — ${note}`);
+  }
+
+  const open = await vscode.window.showInformationMessage(
+    `Intelligence: context pack written to ${path.basename(outPath)}.`,
+    'Open',
+  );
+  if (open === 'Open') {
+    const doc = await vscode.workspace.openTextDocument(outPath);
+    await vscode.window.showTextDocument(doc);
+  }
 }
 
 async function runScaffold(workspaceRoot: string): Promise<void> {
@@ -1555,6 +1628,10 @@ export function registerIntelligenceCommands(
     vscode.commands.registerCommand(
       'autoclaw.intelligence.ragGenerate',
       withWorkspace(getWorkspaceRoot, runRagGenerate),
+    ),
+    vscode.commands.registerCommand(
+      'autoclaw.intelligence.contextPack',
+      withWorkspace(getWorkspaceRoot, runContextPack),
     ),
     vscode.commands.registerCommand(
       'autoclaw.intelligence.scaffold',

@@ -170,6 +170,10 @@
         "title": "AutoClaw: Intelligence — Generate RAG Prompt"
       },
       {
+        "command": "autoclaw.intelligence.contextPack",
+        "title": "AutoClaw: Intelligence — Build Context Pack (for an assigned agent)"
+      },
+      {
         "command": "autoclaw.intelligence.scaffold",
         "title": "AutoClaw: Intelligence — Scaffold Agent Style"
       },
