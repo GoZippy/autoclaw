@@ -196,6 +196,29 @@ async function runLearn(workspaceRoot: string): Promise<void> {
     lastLearnedAt: new Date().toISOString(),
   });
   promoteLatestInsightToSystem(workspaceRoot);
+  await refreshHostContext(workspaceRoot, config, log, 'learn');
+}
+
+/**
+ * Channel C auto-refresh: after an intel-mutating command, refresh any per-host
+ * project digests that ALREADY exist (opted-in hosts) so they stay current.
+ * `onlyExisting` means we never create a digest as a surprise side effect.
+ * Best-effort — never throws, so it can't break `/learn` or `/index-code`.
+ */
+async function refreshHostContext(
+  workspaceRoot: string,
+  config: Awaited<ReturnType<typeof resolveEmbeddingForCommand>>,
+  log: LogFn,
+  trigger: string,
+): Promise<void> {
+  try {
+    const res = await writeHostContextFiles(workspaceRoot, { onlyExisting: true, config, log });
+    if (res.written.length > 0) {
+      logLine(`host-context: refreshed ${res.written.map((w) => w.id).join(', ')} after ${trigger}`);
+    }
+  } catch (err) {
+    logLine(`host-context: auto-refresh skipped — ${(err as Error).message}`);
+  }
 }
 
 async function runIndexCode(workspaceRoot: string): Promise<void> {
@@ -270,6 +293,7 @@ async function runIndexCode(workspaceRoot: string): Promise<void> {
     indexChunks: result.chunksIndexed,
     lastIndexedAt: new Date().toISOString(),
   });
+  await refreshHostContext(workspaceRoot, config, log, 'index');
 }
 
 /**

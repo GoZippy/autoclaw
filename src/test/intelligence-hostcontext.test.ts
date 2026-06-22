@@ -144,6 +144,37 @@ suite('intelligence-hostcontext', function () {
     }
   });
 
+  test('onlyExisting refreshes existing digests and never creates new ones', async () => {
+    const root = mkTmp();
+    try {
+      fs.mkdirSync(path.join(root, '.cursor', 'rules'), { recursive: true });
+      fs.mkdirSync(path.join(root, '.kiro', 'steering'), { recursive: true });
+      // Pre-seed ONLY the cursor digest (simulates a prior opt-in run).
+      const cursorFile = path.join(root, '.cursor', 'rules', 'autoclaw-project-context.mdc');
+      fs.writeFileSync(cursorFile, 'stale\n', 'utf8');
+
+      const res = await writeHostContextFiles(root, { pack: fakePack(), onlyExisting: true });
+      assert.deepStrictEqual(res.written.map((w) => w.id), ['cursor'], 'only the pre-existing digest is refreshed');
+      assert.ok(fs.readFileSync(cursorFile, 'utf8').includes('AutoClaw Context Pack'), 'cursor digest refreshed');
+      // Kiro had a dir but no digest file ⇒ not created.
+      assert.ok(!fs.existsSync(path.join(root, '.kiro', 'steering', 'autoclaw-project-context.md')), 'no new digest created');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('onlyExisting with no existing digests writes nothing', async () => {
+    const root = mkTmp();
+    try {
+      fs.mkdirSync(path.join(root, '.windsurf', 'rules'), { recursive: true });
+      const res = await writeHostContextFiles(root, { pack: fakePack(), onlyExisting: true });
+      assert.strictEqual(res.written.length, 0);
+      assert.strictEqual(res.targetsDetected, 0, 'no opted-in hosts ⇒ zero targets');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('degraded pack flag propagates', async () => {
     const root = mkTmp();
     try {

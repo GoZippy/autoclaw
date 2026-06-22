@@ -133,8 +133,13 @@ with `\n` (Node writes verbatim on every OS; all targets accept LF).
 *project* context — it's already served live by Channel B's MCP tool). MCP and
 HTTP hosts pull on demand via B/D.
 
-**Follow-up:** auto-refresh on a tick is KDream-daemon territory (not shipped);
-run the command after `/index-code` + `/learn`, or wire it into a future daemon.
+**Auto-refresh (shipped):** after an intel-mutating command (`/learn`,
+`/index-code`) the opted-in digests are refreshed automatically via
+`writeHostContextFiles(.., { onlyExisting: true })` — it rewrites only hosts that
+already have a digest (the user opted in by running the command once), so it
+never creates files as a surprise side effect. Best-effort; never breaks the
+triggering command. A standalone always-on daemon refresh remains KDream
+territory (not shipped).
 
 ## Notes / gotchas
 
