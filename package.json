@@ -146,6 +146,10 @@
         "title": "AutoClaw: Reports — Generate PR Evidence Report"
       },
       {
+        "command": "autoclaw.reports.agentScorecard",
+        "title": "AutoClaw: Reports — Agent Scorecards"
+      },
+      {
         "command": "autoclaw.intelligence.learn",
         "title": "AutoClaw: Intelligence — Learn from Sessions"
       },

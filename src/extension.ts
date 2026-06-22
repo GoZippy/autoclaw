@@ -1003,6 +1003,37 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
   );
+
+  // Agent Scorecards — second premium engine, same gate+trial+fallback pattern.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.reports.agentScorecard', async () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        vscode.window.showWarningMessage('Open a workspace folder before generating scorecards.');
+        return;
+      }
+      const gate = new GateService(context);
+      const access = await gate.require('pro.agentScorecards', {
+        startTrial: true,
+        reason: 'Agent Scorecards',
+        silent: true,
+      });
+      const premium = createPremiumApi({ extensionPath: context.extensionPath });
+      const result = (await premium.generateAgentScorecard?.({ workspaceRoot })) as { markdown?: string } | undefined;
+      const markdown = result?.markdown ?? '# Agent Scorecards\n\nNo scorecard available.';
+      const doc = await vscode.workspace.openTextDocument({ content: markdown, language: 'markdown' });
+      await vscode.window.showTextDocument(doc);
+      if (!access.allowed) {
+        void vscode.window.showInformationMessage(
+          'Generated a basic scorecard. Unlock Pro for full per-agent scorecards (actions, tokens, wall time, token share, last active).',
+          'Compare Plans', 'Enter License',
+        ).then(choice => {
+          if (choice === 'Compare Plans') { void vscode.commands.executeCommand('autoclaw.license.comparePlans'); }
+          if (choice === 'Enter License') { void vscode.commands.executeCommand('autoclaw.license.enter'); }
+        });
+      }
+    }),
+  );
 }
 
 async function installAdapters(
