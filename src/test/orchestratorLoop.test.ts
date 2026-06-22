@@ -295,6 +295,21 @@ suite('buildWorkLoopPrompt', () => {
     assert.ok(prompt.includes('Nested Loop Lifecycle'));
     assert.ok(prompt.includes('task_complete'));
   });
+
+  test('grounding section points to a context pack file when set', () => {
+    const pkg = { ...makePkg(), contextPackPath: '.autoclaw/orchestrator/sprints/T1.context.md' };
+    const prompt = buildWorkLoopPrompt(pkg);
+    assert.ok(prompt.includes('### Grounding — Context Pack'));
+    assert.ok(prompt.includes('T1.context.md'), 'references the pack path');
+    assert.ok(prompt.includes('Read `'), 'instructs the agent to read it first');
+  });
+
+  test('grounding section falls back to pull-on-demand when no pack path', () => {
+    const prompt = buildWorkLoopPrompt(makePkg());
+    assert.ok(prompt.includes('### Grounding — Context Pack'));
+    assert.ok(prompt.includes('intelligence.contextPack'), 'mentions the MCP pull tool');
+    assert.ok(prompt.includes('context-pack.js'), 'mentions the CLI fallback');
+  });
 });
 
 // ---------------------------------------------------------------------------

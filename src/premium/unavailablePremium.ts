@@ -26,5 +26,19 @@ export function createUnavailablePremiumApi(_ctx: PremiumApiFactoryContext): Pre
 
       return { markdown, createdAt: new Date().toISOString(), featureTier: 'pro' as const };
     },
+
+    async generateAgentScorecard(_input: unknown) {
+      const markdown = [
+        '# AutoClaw Agent Scorecards (Basic)',
+        '',
+        'Detailed per-agent scorecards — actions, tokens, wall time, token share, and',
+        'last-active — are an **AutoClaw Pro** feature.',
+        '',
+        `Created: ${new Date().toISOString()}`,
+        '',
+        '- Upgrade to Pro for the full agent-scorecard engine.',
+      ].join('\n');
+      return { markdown, createdAt: new Date().toISOString() };
+    },
   };
 }

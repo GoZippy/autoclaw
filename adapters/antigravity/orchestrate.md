@@ -143,10 +143,24 @@ Confirm: "Generated {N} sprints for {M} tasks across {A} agents. Critical path: 
 1. Read the sprint YAML from `sprints/sprint-{N}.yaml`.
 2. Verify all dependency sprints are in `merged` status. If not, report which sprints are blocking.
 3. For each agent assignment in the sprint:
-   - Render the sprint assignment from `templates/sprint-assignment.md` with the agent's tasks, scope, branch name, and migration range.
+   - **Build the agent's context pack** (grounds the agent in real code, proven
+     patterns, learned style, recent memory, and durable KG facts — so it starts
+     informed instead of cold). Use whichever is available:
+     - In-editor: run the command `AutoClaw: Intelligence — Build Context Pack`
+       (`autoclaw.intelligence.contextPack`).
+     - Headless / any runner: `node <autoclaw>/scripts/context-pack.js --task
+       "<sprint goal + task names>" --agent {agent} --sprint {N} --tasks {ids}`.
+     Either writes `.autoclaw/orchestrator/sprints/sprint-{N}-{agent}.context.md`
+     and prints a JSON summary. The pack is **degrade-safe** — if no embeddings
+     backend is reachable it still produces learnings/style/memory. Skipping this
+     step is allowed (the assignment still works), but note it in the confirm.
+   - Render the sprint assignment from `templates/sprint-assignment.md` with the agent's tasks, scope, branch name, and migration range. Fill the `{{context_pack_path}}` token with `sprint-{N}-{agent}.context.md` (or `none` if you skipped the pack).
    - Write the rendered assignment to `.autoclaw/orchestrator/sprints/sprint-{N}-{agent}.md`.
 4. Update sprint status to `assigned`.
-5. Confirm: "Sprint {N} assigned to {agents}. Assignment files written. Each agent should read their assignment and begin work."
+5. When broadcasting the `task_assign` message, attach the pack summary under
+   `payload.intelligence` (the JSON the generator printed, including
+   `context_file`) so MCP-aware runners can pull it without re-reading the brief.
+6. Confirm: "Sprint {N} assigned to {agents}. Assignment + context packs written. Each agent should read their assignment (and its context pack) and begin work."
 
 **Stalled-agent handling.** If any WA-N slot is mapped to an agent whose last heartbeat is older than `autoclaw.orchestrate.heartbeatStallSeconds` (default `300`), the assign step skips that slot's task and emits a `sprint-{N}-stalled.json` sidecar next to the sprint YAML listing the excluded slots. Surface this to the user verbatim and suggest re-running `/orchestrate assign {N}` once the stalled agent recovers.
 

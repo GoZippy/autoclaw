@@ -550,6 +550,74 @@ REST endpoints: `POST /api/v1/messages`, `GET /api/v1/messages`, `POST /api/v1/h
 
 ---
 
+## Intelligence Layer — Local Learning & RAG
+
+AutoClaw's intelligence layer is a **local-first** "second brain": it learns from your past AI coding sessions, indexes your codebase for retrieval, and keeps a knowledge graph — so your agents get smarter and cheaper over time without your code leaving your machine. It is **consent-gated** (third-party session sources are opt-in), **redacted** (secrets/PII are stripped before anything is stored), and **never forced onto C:** — you choose where data lives.
+
+Run these from the Command Palette or as `@autoclaw /…` in chat:
+
+| Command | What it does |
+|---|---|
+| `/learn` | Reads your past sessions (Claude Code, Claude Desktop, Kiro, Gemini, Cline, Continue, Cursor, AutoClaw's own logs), cross-checks against git to see which suggestions actually survived into your code, and distills durable patterns + a style guide. |
+| `/index-code` | Chunks and embeds your codebase into the local vector store (incremental by default; full re-index with `--force`). |
+| `/retrieve "<query>"` | Semantic code search over the index — returns the most relevant chunks. |
+| `/search "<query>"` | Plain-English search across your distilled learnings. |
+| `/rag-generate "<task>"` | Assembles a ready-to-paste, grounded prompt (relevant code + learnings + style + memory). |
+| `/scaffold` | Emits a learned `agent-style.md` to prepend to new agent tasks. |
+| `/metrics` · effectiveness matrix | Learning-run stats, "kept rate" (how much AI output survived), real-vs-estimated tokens, and which tools are most effective per project. |
+| `/sources` | List / enable / disable session sources (third-party sources are off until you opt in). |
+
+### Storage & where it lives
+
+Everything lives under your project's `.autoclaw/` by default — `vector/` (the SQLite vector store + config), `learnings/` (human-readable insight files), `metrics/`, and `kg/` (the knowledge graph). An **optional system tier** (`autoclaw.intelligence.systemDir`, any drive, never silently created) holds cross-project knowledge that many repos share.
+
+### Pluggable, ABI-proof backends
+
+- **Vector backend:** `sqlite-vec` (local, default) or Postgres + pgvector. Built on Node's core `node:sqlite` so it survives VS Code/Electron upgrades. Install via **AutoClaw: Intelligence — Install Vector Backend**.
+- **Embeddings:** auto-detecting ladder — ZippyMesh router → Ollama → in-process `@xenova/transformers` → a zero-dependency `none` fallback that always works. Pick one with **Set Embedding Provider** / install with **Install Embeddings Provider**.
+- **Diagnostics:** **AutoClaw: Intelligence — Status** (locations/sizes/stats) and **— Diagnostics** (debug install/paths/version) when a native piece needs attention.
+
+> The delivery side — getting this intel into your agents on every runner — is the **Context Packs** section below.
+
+---
+
+## Intelligence — Context Packs (cross-runner delivery)
+
+AutoClaw's intelligence layer learns from your past sessions, indexes your code, and keeps a knowledge graph. A **context pack** is how that intel reaches an agent: one grounded bundle — relevant code retrieved from your repo, the team's proven patterns/learnings, the learned style guide, recent project memory, and durable knowledge-graph facts — that a newly-assigned agent reads before starting.
+
+Packs are **degrade-safe**: with no embeddings backend reachable, a pack still builds from learnings + style + memory (and the knowledge graph falls back to full-text search). Nothing is sent to the cloud.
+
+### Five ways an agent gets a pack
+
+| Path | Who it's for | How |
+|---|---|---|
+| **Command** | You, in any VS Code-based host | `AutoClaw: Intelligence — Build Context Pack` writes `.autoclaw/orchestrator/sprints/sprint-<N>-<agent>.context.md` |
+| **CLI** | Headless / CI / any runner with a shell | `node scripts/context-pack.js --task "<task>" --agent <id> --sprint <N>` (writes the file, prints a JSON summary) |
+| **MCP tool** | MCP hosts (Claude Code, Kiro, Cursor, Claude Desktop) | call the read-only `intelligence.contextPack` tool with a `task` |
+| **HTTP** | Cross-machine / HTTP-only peers (Hermes, OpenClaw) | `GET /api/v1/intelligence/context?task=...` on the bridge (bearer-gated) |
+| **Per-host digest** | File-only runners (Cursor, Windsurf, Continue, Cline/KiloCode, Antigravity) | `AutoClaw: Intelligence — Write Per-Host Project Context` drops an ambient project digest into each detected host rules dir in that host's auto-load format |
+
+### Keeping per-host digests fresh
+
+Once you've created a per-host digest, it's refreshed automatically whenever your intel changes — after `/learn` and `/index-code`. For drift that happens *without* a command (KDream updating memory, new commits changing what code retrieval surfaces), enable the **standalone refresh service**: set `autoclaw.intelligence.autoRefresh.enabled` (interval via `autoclaw.intelligence.autoRefresh.intervalMinutes`, default 30), or run `AutoClaw: Intelligence — Start Per-Host Context Refresh Service`. It only rewrites digests that **already exist** — it never creates files as a surprise — and is bounded + best-effort. Off by default.
+
+### Orchestrator integration
+
+When the orchestrator dispatches work, it best-effort generates a per-task pack and the work-loop prompt tells the agent to **read its context pack first** (falling back to "pull one via the MCP tool / CLI" when none was written). So intel arrives as a task directive, automatically — across every runner.
+
+### Context pack contents
+
+```
+# AutoClaw Context Pack — Sprint 2 — claude-code
+## Grounded Context (RAG-retrieved)   ← relevant code chunks from your repo
+## Your Previously Successful Patterns ← git-validated learnings
+## Your Learned Agent Style Guide      ← agent-style.md
+## Project Memory Summary (recent)     ← KDream MEMORY.md
+## Durable Knowledge-Graph Facts       ← bi-temporal KG recall
+```
+
+---
+
 ## Doctor — Health Check
 
 The Doctor command (`Ctrl+Alt+D`) runs a read-only health audit and renders a structured report in the `AutoClaw Doctor` Output Channel.
@@ -644,6 +712,17 @@ All AutoClaw state lives under `.autoclaw/` — no hidden global state:
 | **AutoClaw: Orchestrate — Show Sprint Status** | — | Show current orchestration state |
 | **AutoClaw: Orchestrate — Assign Next Sprint** | — | Detect agents, write registry, assign sprint |
 | **AutoClaw: Orchestrate — Run Consensus Review** | — | Read votes, evaluate consensus, report verdict |
+| **AutoClaw: Intelligence — Learn from Sessions** | — | Distill durable patterns + style from past sessions (git-validated) |
+| **AutoClaw: Intelligence — Index Codebase** | — | Chunk + embed the codebase into the local vector store |
+| **AutoClaw: Intelligence — Retrieve Code** | — | Semantic code search over the index |
+| **AutoClaw: Intelligence — Search Knowledge** | — | Plain-English search over distilled learnings |
+| **AutoClaw: Intelligence — Generate RAG Prompt** | — | Assemble a grounded prompt (code + learnings + style + memory) |
+| **AutoClaw: Intelligence — Scaffold Agent Style** | — | Emit a learned `agent-style.md` |
+| **AutoClaw: Intelligence — Show Metrics / Effectiveness Matrix** | — | Learning runs, kept-rate, token usage, tool×project effectiveness |
+| **AutoClaw: Intelligence — Sources / Install Backend / Install Embeddings / Set Provider / Status / Diagnostics** | — | Manage session sources, native backends, embedding provider, and health |
+| **AutoClaw: Intelligence — Build Context Pack** | — | Build a grounded pack for an assigned agent → `sprint-<N>-<agent>.context.md` |
+| **AutoClaw: Intelligence — Write Per-Host Project Context** | — | Drop an ambient project digest into each detected host rules dir (Cursor/Kiro/Windsurf/Continue/Cline/Antigravity) |
+| **AutoClaw: Intelligence — Start/Stop Per-Host Context Refresh Service** | — | Background tick that keeps existing per-host digests current (opt-in; default off) |
 | **AutoClaw: Start OpenClaw Bridge Server** | — | Start HTTP bridge for remote agents |
 | **AutoClaw: Stop OpenClaw Bridge Server** | — | Stop bridge |
 | **AutoClaw: Register Remote Agent (Generate Token)** | — | Generate auth token for a remote agent |
@@ -668,16 +747,15 @@ When running MAteam or long KDream sessions, you may hit rate limits from free-t
 
 ## What's Next / Roadmap
 
+AutoClaw is live on the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=ZippyTechnologiesLLC.autoclaw) and [Open VSX](https://open-vsx.org/extension/ZippyTechnologiesLLC/autoclaw). The orchestrator, the intelligence layer (learning + RAG + knowledge graph + cross-runner context-pack delivery), the fleet/program plane, the OpenClaw HTTP bridge, and the Manager Surface all ship today — see the [CHANGELOG](https://github.com/GoZippy/autoclaw/blob/master/CHANGELOG.md) for what's landed.
+
+On the near-term list:
+
 | Feature | Description |
 |---|---|
-| **Publish v2.1.0** | Release to VS Code Marketplace and Open VSX |
-| **ZippyPanel integration** | Use Orchestrate to drive ZippyPanel's 9-sprint parallel development plan |
-| **Orchestrate Dashboard panel** | Live sidebar view of sprint progress, agent statuses, and comms timeline |
-| **OpenClaw client SDK** | Client library for remote agents using the HTTP bridge |
-| **Agent ID ↔ platform mapping** | Configurable in `config.yaml` rather than auto-detected at assign time |
-| **evaluateConsensus in review flow** | Wire TypeScript consensus engine into `/orchestrate review` SKILL.md |
-| **AutoBuild YAML IntelliSense** | JSON Schema for workflow files — autocomplete in the editor |
-| **Status bar item** | KDream running/stopped indicator in the VS Code status bar |
+| **OpenClaw client SDK** | A client library for remote agents joining over the HTTP bridge |
+| **AutoBuild YAML IntelliSense** | JSON Schema for workflow files — autocomplete + validation in the editor |
+| **Intelligence watch service** | An always-on file watcher that re-learns / re-indexes as you work (today's `/learn` + `/index-code` + per-host refresh service are command- and tick-driven) |
 | **VS Code walkthrough** | Guided first-run walkthrough in the Welcome tab |
 | **Real-time collaboration** | Shared task boards, team memory sync, multi-user notifications |
 

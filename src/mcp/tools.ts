@@ -28,7 +28,7 @@ import type {
 import { getKnowledgeGraph } from '../intelligence/kg/service';
 import type { SearchStrategy } from '../intelligence/kg/types';
 import { readAllBeacons } from '../fleet/beacons';
-import { retrieveCode } from '../intelligence';
+import { retrieveCode, buildContextPack } from '../intelligence';
 
 const fsPromises = fs.promises;
 
@@ -916,6 +916,86 @@ const intelligenceRetrieveTool: ToolHandler = {
   },
 };
 
+/**
+ * `intelligence.contextPack` — build a grounded "context pack" for a task on
+ * demand (Channel B delivery). Returns the assembled markdown plus a compact
+ * summary, combining RAG-retrieved code, the team's proven patterns/learnings,
+ * the learned style guide, recent memory, and durable knowledge-graph facts.
+ *
+ * Read-only: it computes and returns the pack but writes nothing to disk (the
+ * orchestrator / CLI / command own writing `sprint-<N>-<agent>.context.md`).
+ * Degrade-safe — with no embeddings backend it still returns a learnings/style/
+ * memory pack; never throws.
+ */
+const intelligenceContextPackTool: ToolHandler = {
+  definition: {
+    name: 'intelligence.contextPack',
+    description:
+      'Build a grounded context pack for a task: RAG-retrieved code from this ' +
+      'project, proven patterns/learnings, the learned style guide, recent ' +
+      'memory, and durable knowledge-graph facts. Returns ready-to-read markdown ' +
+      'plus a compact summary. Read-only (writes nothing); degrades to a ' +
+      'learnings/style/memory pack when the vector backend is unavailable.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'What the agent will work on (drives retrieval + header).' },
+        agent: { type: 'string', description: 'Agent id this pack is for (optional).' },
+        sprint: { type: 'number', description: 'Sprint number (optional).' },
+        role: { type: 'string', description: 'Work-lane / role label (optional).' },
+        task_ids: { type: 'array', items: { type: 'string' }, description: 'Task ids covered (optional).' },
+        max_code_chunks: { type: 'number', description: 'Max code chunks (default 5, capped at 20).' },
+        max_learnings: { type: 'number', description: 'Max learnings (default 4, capped at 20).' },
+        max_kg_facts: { type: 'number', description: 'Max KG facts (default 6, capped at 20).' },
+      },
+      required: ['task'],
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const task = typeof args.task === 'string' ? args.task.trim() : '';
+    if (task === '') {
+      return { ok: false, reason: 'invalid_params', detail: 'task is required' };
+    }
+    const cap = (v: unknown): number | undefined =>
+      typeof v === 'number' && v > 0 ? Math.min(Math.floor(v), 20) : undefined;
+    const taskIds = Array.isArray(args.task_ids)
+      ? args.task_ids.filter((x): x is string => typeof x === 'string')
+      : undefined;
+    try {
+      const pack = await buildContextPack(
+        {
+          task,
+          agentId: typeof args.agent === 'string' ? args.agent : undefined,
+          sprint: typeof args.sprint === 'number' ? args.sprint : undefined,
+          role: typeof args.role === 'string' ? args.role : undefined,
+          taskIds: taskIds && taskIds.length > 0 ? taskIds : undefined,
+        },
+        {
+          workspaceRoot: ctx.workspaceRoot,
+          maxCodeChunks: cap(args.max_code_chunks),
+          maxLearnings: cap(args.max_learnings),
+          maxKgFacts: cap(args.max_kg_facts),
+        },
+      );
+      return {
+        ok: true,
+        data: {
+          markdown: pack.markdown,
+          summary: pack.summary,
+          used_code: pack.usedCode,
+          code_hits: pack.codeHits,
+          learning_hits: pack.learningHits,
+          kg_hits: pack.kgHits,
+          degraded: pack.degraded,
+          notes: pack.notes,
+        },
+      };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: (err as Error).message };
+    }
+  },
+};
+
 export const READ_ONLY_TOOLS: ToolHandler[] = [
   recallQueryTool,
   fleetStatusTool,
@@ -928,6 +1008,7 @@ export const READ_ONLY_TOOLS: ToolHandler[] = [
   kgSearchTool,
   kgTraverseTool,
   intelligenceRetrieveTool,
+  intelligenceContextPackTool,
 ];
 
 /** Build a name → handler map for O(1) `tools/call` dispatch. */

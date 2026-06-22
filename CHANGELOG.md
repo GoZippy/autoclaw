@@ -1,5 +1,55 @@
 # Changelog
 
+## [Unreleased]
+
+## [3.6.4] - 2026-06-22
+
+### Added
+
+- **AutoBuild step conditions** — gate a workflow step on prior steps' results
+  via `{{stepId.field}}` placeholders (`exit_code`, `success`, `skipped`,
+  `timed_out`) and comparison operators (`==` `!=` `>` `>=` `<` `<=`; bare
+  expression = truthiness). A conditioned step runs whenever its condition is
+  true — even after an earlier failure (e.g. notify-on-failure) — and is skipped
+  (without aborting the run) when false. Steps without a condition keep the
+  default skip-after-failure behaviour.
+- **Agent Scorecards** report — `AutoClaw: Reports — Agent Scorecards`
+  (`autoclaw.reports.agentScorecard`), gated with a free fallback.
+- **Intelligence context packs — universal intel delivery.** The intelligence
+  layer can now hand a newly-assigned agent a grounded "context pack" (relevant
+  code retrieved from this repo + the team's proven patterns/learnings + the
+  learned style guide + recent memory + durable knowledge-graph facts), regardless
+  of which runner picks up the work.
+  - **Command** `AutoClaw: Intelligence — Build Context Pack`
+    (`autoclaw.intelligence.contextPack`) and headless CLI
+    `scripts/context-pack.js` write `sprint-<N>-<agent>.context.md`.
+  - **MCP tool** `intelligence.contextPack` — any MCP host (Claude Code, Kiro,
+    Cursor, …) can pull a pack on demand. Read-only; degrades to a
+    learnings/style/memory pack when the vector backend is unavailable.
+  - **Orchestrator wiring** — the `orchestrate assign` flow + the work-loop
+    dispatcher reference (and best-effort generate) a per-agent pack, so packs
+    are delivered as task directives. File-based, so **every** runner can read
+    them without MCP.
+  - **HTTP endpoint** `GET /api/v1/intelligence/context` on the bridge
+    (bearer-gated) — the HTTP twin of the MCP tool, so cross-machine / HTTP-only
+    peers (Hermes, OpenClaw REST) can pull a pack.
+  - **Per-host project context** — command
+    `AutoClaw: Intelligence — Write Per-Host Project Context`
+    (`autoclaw.intelligence.hostContext`) writes an ambient project digest into
+    each detected host rules dir (`.cursor/rules`, `.kiro/steering`,
+    `.windsurf/rules`, `.continue/prompts`, `.clinerules`, `.agent/rules`) in
+    that host's auto-load format, so file-only runners get current intel even
+    outside an orchestrated task. `/learn` and `/index-code` **auto-refresh**
+    any per-host digests that already exist (opt-in safe — never creates new
+    files as a side effect).
+  - **Standalone refresh service** — opt-in background tick
+    (`autoclaw.intelligence.autoRefresh.enabled`, default off; interval via
+    `…autoRefresh.intervalMinutes`, default 30) keeps existing per-host digests
+    current even when intel drifts without a command. Commands
+    `Start/Stop Per-Host Context Refresh Service`; refreshes only digests that
+    already exist; bounded, overlap-skipping, best-effort.
+  - Design: `docs/ideas/INTELLIGENCE-DELIVERY-CONTEXT-PACKS.md`.
+
 ## [3.6.3] - 2026-06-20
 
 _Reliability + coordination + the licensing engine (gates ship **dormant**), plus

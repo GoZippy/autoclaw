@@ -199,6 +199,37 @@ export {
   buildScaffold,
 } from './ragPrompt';
 
+// context-pack: orchestrator "context pack" producer (Channel A delivery)
+export {
+  ContextPackScope,
+  ContextPackDeps,
+  ContextPackOptions,
+  ContextPackResult,
+  ContextPackSummary,
+  KgFact,
+  buildContextPack,
+  renderContextPackMarkdown,
+} from './contextPack';
+
+// host-context: per-host ambient project digest (Channel C delivery)
+export {
+  HostContextTarget,
+  WriteHostContextResult,
+  WriteHostContextOptions,
+  resolveHostContextTargets,
+  formatForHost,
+  writeHostContextFiles,
+} from './hostContext';
+
+// refresh-service: standalone tick-based digest refresh (Channel C)
+export {
+  RefreshServiceOptions,
+  RefreshServiceHandle,
+  DEFAULT_REFRESH_INTERVAL_MS,
+  MIN_REFRESH_INTERVAL_MS,
+  startIntelligenceRefreshService,
+} from './refreshService';
+
 // metrics-dashboard: metrics store + cost-ledger bridge
 export {
   LearningRunStats,
