@@ -28,7 +28,9 @@
     each detected host rules dir (`.cursor/rules`, `.kiro/steering`,
     `.windsurf/rules`, `.continue/prompts`, `.clinerules`, `.agent/rules`) in
     that host's auto-load format, so file-only runners get current intel even
-    outside an orchestrated task.
+    outside an orchestrated task. `/learn` and `/index-code` **auto-refresh**
+    any per-host digests that already exist (opt-in safe — never creates new
+    files as a side effect).
   - Design: `docs/ideas/INTELLIGENCE-DELIVERY-CONTEXT-PACKS.md`.
 
 ## [3.6.3] - 2026-06-20

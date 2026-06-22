@@ -79,6 +79,13 @@ export interface WriteHostContextOptions {
   targets?: HostContextTarget[];
   /** Use a pre-built pack instead of building one (tests). */
   pack?: ContextPackResult;
+  /**
+   * Refresh-only mode: write a digest ONLY where one already exists (the user
+   * previously opted in by running the command). Auto-refresh triggers
+   * (`/learn`, `/index-code`) pass this so they keep existing digests current
+   * without ever creating files as a surprise side effect.
+   */
+  onlyExisting?: boolean;
 }
 
 function noop(): void {
@@ -163,7 +170,17 @@ export async function writeHostContextFiles(
   opts: WriteHostContextOptions = {},
 ): Promise<WriteHostContextResult> {
   const log = opts.log ?? noop;
-  const targets = opts.targets ?? resolveHostContextTargets(workspaceRoot);
+  let targets = opts.targets ?? resolveHostContextTargets(workspaceRoot);
+  // Refresh-only: keep just the hosts that already have a digest on disk.
+  if (opts.onlyExisting) {
+    targets = targets.filter((t) => {
+      try {
+        return fs.statSync(t.file).isFile();
+      } catch {
+        return false;
+      }
+    });
+  }
   const written: Array<{ id: string; path: string }> = [];
   const failed: Array<{ id: string; error: string }> = [];
 
