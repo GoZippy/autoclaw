@@ -78,6 +78,7 @@ import { registerLicensing } from './licensing/licensing';
 import { GateService } from './licensing/gateService';
 import type { FeatureId } from './licensing/features';
 import { createPremiumApi } from './premium';
+import { buildAdvancedInput } from './premium/advancedInput';
 import {
   readCommsLog, getAgentStatuses, readRegistry, writeRegistry, writeHeartbeat, readHeartbeat,
   cleanupOldMessages, sendMessage, getInboxSummary, readInbox, readMessageState,
@@ -1109,6 +1110,71 @@ export function activate(context: vscode.ExtensionContext) {
       if (!access.allowed) {
         void vscode.window.showInformationMessage(
           'Generated a basic scorecard. Unlock Pro for full per-agent scorecards (actions, tokens, wall time, token share, last active).',
+          'Compare Plans', 'Enter License',
+        ).then(choice => {
+          if (choice === 'Compare Plans') { void vscode.commands.executeCommand('autoclaw.license.comparePlans'); }
+          if (choice === 'Enter License') { void vscode.commands.executeCommand('autoclaw.license.enter'); }
+        });
+      }
+    }),
+  );
+
+  // Advanced Orchestration — third premium engine. Same gate+trial+fallback
+  // pattern. Reads a dependency-free `advanced-input.json` ({objective?, tasks[],
+  // agents[]}); agents fall back to the orchestrator registry. Writes/opens an
+  // optimised plan (critical path, weighted assignment, scope-conflict-free).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.orchestrate.advancedPlan', async () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        vscode.window.showWarningMessage('Open a workspace folder before planning.');
+        return;
+      }
+      const orchDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator');
+      const inputPath = path.join(orchDir, 'advanced-input.json');
+      const registryPath = path.join(orchDir, 'comms', 'registry.json');
+      const readIf = (p: string): string | undefined => { try { return fs.readFileSync(p, 'utf8'); } catch { return undefined; } };
+
+      const built = buildAdvancedInput({
+        workspaceRoot,
+        inputJson: readIf(inputPath),
+        registryJson: readIf(registryPath),
+      });
+      if (!built.ok) {
+        // Seed a starter descriptor the first time so the command is discoverable.
+        if (built.reason === 'no_input') {
+          fs.mkdirSync(orchDir, { recursive: true });
+          if (!fs.existsSync(inputPath)) { fs.writeFileSync(inputPath, built.template, 'utf8'); }
+          const doc = await vscode.workspace.openTextDocument(inputPath);
+          await vscode.window.showTextDocument(doc);
+          void vscode.window.showInformationMessage(
+            'Created advanced-input.json — fill in tasks (and optionally agents), then run Advanced Orchestration again.',
+          );
+        } else {
+          void vscode.window.showWarningMessage(
+            `Advanced Orchestration: ${built.reason.replace(/_/g, ' ')} in advanced-input.json (need tasks, and agents or a registry).`,
+          );
+        }
+        return;
+      }
+
+      const gate = new GateService(context);
+      const access = await gate.require('pro.orchestrate.advanced', {
+        startTrial: true,
+        reason: 'Advanced Orchestration',
+        silent: true,
+      });
+      const premium = createPremiumApi({ extensionPath: context.extensionPath });
+      const result = await premium.runAdvancedOrchestration?.(built.input);
+      const markdown = result?.markdown ?? '# Advanced Orchestration\n\nNo plan produced.';
+      const outPath = path.join(orchDir, 'advanced-plan.md');
+      fs.mkdirSync(orchDir, { recursive: true });
+      fs.writeFileSync(outPath, markdown, 'utf8');
+      const doc = await vscode.workspace.openTextDocument(outPath);
+      await vscode.window.showTextDocument(doc);
+      if (!access.allowed) {
+        void vscode.window.showInformationMessage(
+          'Generated a basic plan. Unlock Pro for the optimising planner: critical-path analysis, capability/reputation/cost-aware assignment, scope-conflict-free packing, and risk-tiered review hints.',
           'Compare Plans', 'Enter License',
         ).then(choice => {
           if (choice === 'Compare Plans') { void vscode.commands.executeCommand('autoclaw.license.comparePlans'); }
