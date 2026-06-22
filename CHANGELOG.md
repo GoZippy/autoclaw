@@ -31,6 +31,12 @@
     outside an orchestrated task. `/learn` and `/index-code` **auto-refresh**
     any per-host digests that already exist (opt-in safe — never creates new
     files as a side effect).
+  - **Standalone refresh service** — opt-in background tick
+    (`autoclaw.intelligence.autoRefresh.enabled`, default off; interval via
+    `…autoRefresh.intervalMinutes`, default 30) keeps existing per-host digests
+    current even when intel drifts without a command. Commands
+    `Start/Stop Per-Host Context Refresh Service`; refreshes only digests that
+    already exist; bounded, overlap-skipping, best-effort.
   - Design: `docs/ideas/INTELLIGENCE-DELIVERY-CONTEXT-PACKS.md`.
 
 ## [3.6.3] - 2026-06-20

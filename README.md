@@ -566,6 +566,10 @@ Packs are **degrade-safe**: with no embeddings backend reachable, a pack still b
 | **HTTP** | Cross-machine / HTTP-only peers (Hermes, OpenClaw) | `GET /api/v1/intelligence/context?task=...` on the bridge (bearer-gated) |
 | **Per-host digest** | File-only runners (Cursor, Windsurf, Continue, Cline/KiloCode, Antigravity) | `AutoClaw: Intelligence — Write Per-Host Project Context` drops an ambient project digest into each detected host rules dir in that host's auto-load format |
 
+### Keeping per-host digests fresh
+
+Once you've created a per-host digest, it's refreshed automatically whenever your intel changes — after `/learn` and `/index-code`. For drift that happens *without* a command (KDream updating memory, new commits changing what code retrieval surfaces), enable the **standalone refresh service**: set `autoclaw.intelligence.autoRefresh.enabled` (interval via `autoclaw.intelligence.autoRefresh.intervalMinutes`, default 30), or run `AutoClaw: Intelligence — Start Per-Host Context Refresh Service`. It only rewrites digests that **already exist** — it never creates files as a surprise — and is bounded + best-effort. Off by default.
+
 ### Orchestrator integration
 
 When the orchestrator dispatches work, it best-effort generates a per-task pack and the work-loop prompt tells the agent to **read its context pack first** (falling back to "pull one via the MCP tool / CLI" when none was written). So intel arrives as a task directive, automatically — across every runner.
@@ -679,6 +683,7 @@ All AutoClaw state lives under `.autoclaw/` — no hidden global state:
 | **AutoClaw: Orchestrate — Run Consensus Review** | — | Read votes, evaluate consensus, report verdict |
 | **AutoClaw: Intelligence — Build Context Pack** | — | Build a grounded pack for an assigned agent → `sprint-<N>-<agent>.context.md` |
 | **AutoClaw: Intelligence — Write Per-Host Project Context** | — | Drop an ambient project digest into each detected host rules dir (Cursor/Kiro/Windsurf/Continue/Cline/Antigravity) |
+| **AutoClaw: Intelligence — Start/Stop Per-Host Context Refresh Service** | — | Background tick that keeps existing per-host digests current (opt-in; default off) |
 | **AutoClaw: Start OpenClaw Bridge Server** | — | Start HTTP bridge for remote agents |
 | **AutoClaw: Stop OpenClaw Bridge Server** | — | Stop bridge |
 | **AutoClaw: Register Remote Agent (Generate Token)** | — | Generate auth token for a remote agent |

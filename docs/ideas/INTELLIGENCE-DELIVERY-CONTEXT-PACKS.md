@@ -138,8 +138,17 @@ HTTP hosts pull on demand via B/D.
 `writeHostContextFiles(.., { onlyExisting: true })` — it rewrites only hosts that
 already have a digest (the user opted in by running the command once), so it
 never creates files as a surprise side effect. Best-effort; never breaks the
-triggering command. A standalone always-on daemon refresh remains KDream
-territory (not shipped).
+triggering command.
+
+**Standalone refresh service (shipped):** `src/intelligence/refreshService.ts`
+`startIntelligenceRefreshService()` keeps digests current when intel drifts
+*without* a command (KDream updates MEMORY.md, new commits change retrieval). A
+single bounded interval (default 30 min, 1-min floor) calls the same
+`onlyExisting` refresh; overlapping ticks are skipped and every tick is
+best-effort. Host-free with an injectable timer/action (deterministic tests).
+Gated on `autoclaw.intelligence.autoRefresh.enabled` (default **off**); started
+in `activate`, stopped in `deactivate`, toggled live via config, and controllable
+with the `startRefreshService` / `stopRefreshService` commands.
 
 ## Notes / gotchas
 
