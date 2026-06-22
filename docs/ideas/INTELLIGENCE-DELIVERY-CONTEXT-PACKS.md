@@ -1,6 +1,6 @@
 # Intelligence Layer — Delivery & Context Packs
 
-_Status: Channel A shipped (context-pack producer + orchestrate wiring). Channels B–D proposed._
+_Status: Channels A + B + the orchestrator auto-hook shipped. Channels C–D proposed._
 _Created 2026-06-21 on `feat/intel-context-packs`._
 
 ## The problem this solves
@@ -72,19 +72,35 @@ Delivery is **file-based** so every runner can consume it (no MCP required):
   learnings and wrote a clean pack (one H1; embedded `agent-style.md`'s `#`
   heading correctly demoted; code-fence `#` comments preserved).
 
+## Channel B — MCP `intelligence.contextPack` tool (shipped)
+
+On-demand pull for MCP runners (Claude Code, Kiro, Cursor, …). Registered in
+`src/mcp/tools.ts` `READ_ONLY_TOOLS` as a read-only tool: it computes and
+returns `{ markdown, summary, ... }` but writes nothing (file-writing stays with
+Channel A). Degrade-safe. Input: `task` (required) + optional `agent`, `sprint`,
+`role`, `task_ids`, `max_*`. Tests: `src/test/intelligence-toolscaffold.test.ts`
++ the tool-list assertion in `src/test/mcp.test.ts`.
+
+## Orchestrator auto-hook (shipped)
+
+The work-loop dispatcher (`src/orchestratorLoop.ts`) now grounds every dispatched
+agent:
+
+- `buildWorkLoopPrompt` always emits a **"Grounding — Context Pack"** section. If
+  a pack was generated it says *read this file first*; otherwise it tells the
+  agent to pull one via the `intelligence.contextPack` MCP tool or the CLI.
+- `dispatchWork(.., { generateContextPack: true })` best-effort builds + writes
+  `.autoclaw/orchestrator/sprints/<taskId>.context.md` and sets
+  `pkg.contextPackPath`. Failures are journaled (`context_pack_failed`), never
+  block dispatch. `runTick` enables this on the production loop.
+
 ## Proposed next channels
 
-- **Channel B — MCP `intelligence.contextPack` tool.** On-demand pull for
-  MCP runners; thin wrapper over `buildContextPack`. Add to
-  `src/mcp/tools.ts` `READ_ONLY_TOOLS`.
 - **Channel C — per-host `CONTEXT.md`.** Generate a refreshed context file into
   each host's adapter dir (like `scripts/build-adapters.ts`) so file-only
-  runners get *current* intel each tick without MCP.
+  runners get *current* project intel even outside an orchestrated task.
 - **Channel D — HTTP bridge `/a2a/context`.** Serve the pack to remote /
   cross-machine agents; advertise in the Agent Card extension fields.
-- **Extension auto-hook.** Have the extension (not just the skill agent) write
-  packs when a sprint is assigned through its code path, so packs appear even
-  when assignment is driven outside an MCP host.
 
 ## Notes / gotchas
 

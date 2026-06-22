@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Intelligence context packs — universal intel delivery.** The intelligence
+  layer can now hand a newly-assigned agent a grounded "context pack" (relevant
+  code retrieved from this repo + the team's proven patterns/learnings + the
+  learned style guide + recent memory + durable knowledge-graph facts), regardless
+  of which runner picks up the work.
+  - **Command** `AutoClaw: Intelligence — Build Context Pack`
+    (`autoclaw.intelligence.contextPack`) and headless CLI
+    `scripts/context-pack.js` write `sprint-<N>-<agent>.context.md`.
+  - **MCP tool** `intelligence.contextPack` — any MCP host (Claude Code, Kiro,
+    Cursor, …) can pull a pack on demand. Read-only; degrades to a
+    learnings/style/memory pack when the vector backend is unavailable.
+  - **Orchestrator wiring** — the `orchestrate assign` flow + the work-loop
+    dispatcher reference (and best-effort generate) a per-agent pack, so packs
+    are delivered as task directives. File-based, so **every** runner can read
+    them without MCP.
+  - Design: `docs/ideas/INTELLIGENCE-DELIVERY-CONTEXT-PACKS.md`.
+
 ## [3.6.3] - 2026-06-20
 
 _Reliability + coordination + the licensing engine (gates ship **dormant**), plus
