@@ -68,6 +68,7 @@ intel-out.log
 intel-err.log
 .agents/**
 semantic-review/**
+research/**
 reviews/**
 test-run.log
 *-test.log
