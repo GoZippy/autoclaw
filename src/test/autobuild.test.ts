@@ -17,6 +17,7 @@ import {
   parseWorkflowYaml,
   loadWorkflow,
   runWorkflow,
+  evaluateStepCondition,
   tick,
   readRegistry,
   writeRegistry,
@@ -36,7 +37,7 @@ import {
   _resetInFlight,
   _isInFlight
 } from '../autobuild';
-import type { RunResult } from '../autobuild';
+import type { RunResult, StepResult } from '../autobuild';
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -261,6 +262,135 @@ suite('AutoBuild: runWorkflow', function () {
     assert.ok(entry, 'registry entry created');
     assert.strictEqual(entry!.status, 'passed');
     assert.ok(entry!.lastLog && fs.existsSync(entry!.lastLog), 'log path persisted');
+  });
+});
+
+suite('AutoBuild: evaluateStepCondition', function () {
+  function sr(id: string, exitCode: number | null, opts: Partial<StepResult> = {}): StepResult {
+    return {
+      id, exitCode, durationMs: 0, timedOut: false, skipped: false,
+      mode: 'report', files_changed: [], guard_verdict: 'na', ...opts
+    };
+  }
+
+  test('numeric == / != on exit_code', function () {
+    const prior = [sr('test', 0)];
+    assert.strictEqual(evaluateStepCondition('{{test.exit_code}} == 0', prior).met, true);
+    assert.strictEqual(evaluateStepCondition('{{test.exit_code}} != 0', prior).met, false);
+    const failed = [sr('test', 7)];
+    assert.strictEqual(evaluateStepCondition('{{test.exit_code}} == 0', failed).met, false);
+    assert.strictEqual(evaluateStepCondition('{{test.exit_code}} != 0', failed).met, true);
+  });
+
+  test('relational operators require numeric operands', function () {
+    const prior = [sr('test', 3)];
+    assert.strictEqual(evaluateStepCondition('{{test.exit_code}} > 2', prior).met, true);
+    assert.strictEqual(evaluateStepCondition('{{test.exit_code}} <= 2', prior).met, false);
+    // exit_code null renders as "null" → non-numeric relational ⇒ error, not met.
+    const crashed = [sr('test', null)];
+    const v = evaluateStepCondition('{{test.exit_code}} > 0', crashed);
+    assert.strictEqual(v.met, false);
+    assert.ok(v.error, 'non-numeric relational reports an error');
+  });
+
+  test('success / skipped / timed_out fields', function () {
+    assert.strictEqual(evaluateStepCondition('{{a.success}}', [sr('a', 0)]).met, true);
+    assert.strictEqual(evaluateStepCondition('{{a.success}}', [sr('a', 1)]).met, false);
+    assert.strictEqual(evaluateStepCondition('{{a.success}} == false', [sr('a', 1)]).met, true);
+    assert.strictEqual(evaluateStepCondition('{{a.skipped}}', [sr('a', null, { skipped: true })]).met, true);
+    assert.strictEqual(evaluateStepCondition('{{a.timed_out}}', [sr('a', null, { timedOut: true })]).met, true);
+  });
+
+  test('unknown step or field returns an error and is not met', function () {
+    const v1 = evaluateStepCondition('{{nope.exit_code}} == 0', [sr('test', 0)]);
+    assert.strictEqual(v1.met, false);
+    assert.match(v1.error ?? '', /unknown step/);
+    const v2 = evaluateStepCondition('{{test.bogus}} == 0', [sr('test', 0)]);
+    assert.strictEqual(v2.met, false);
+    assert.match(v2.error ?? '', /unknown field/);
+  });
+
+  test('bare truthiness check', function () {
+    assert.strictEqual(evaluateStepCondition('true', []).met, true);
+    assert.strictEqual(evaluateStepCondition('false', []).met, false);
+    assert.strictEqual(evaluateStepCondition('0', []).met, false);
+  });
+});
+
+suite('AutoBuild: runWorkflow with conditions', function () {
+  this.timeout(30000);
+
+  let workspace: string;
+
+  setup(function () {
+    workspace = makeTempDir('autoclaw-ab-cond-');
+    _resetInFlight();
+  });
+
+  teardown(function () {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  test('runs a step whose condition is satisfied, skips one whose is not', async function () {
+    const wfPath = writeWorkflowFile(workspace, 'cond',
+      [
+        'name: cond',
+        'cron: "* * * * *"',
+        'steps:',
+        '  - id: build',
+        '    run: echo built',
+        '  - id: deploy',
+        '    run: echo deployed',
+        '    condition: "{{build.exit_code}} == 0"',
+        '  - id: rollback',
+        '    run: echo rolledback',
+        '    condition: "{{build.exit_code}} != 0"'
+      ].join('\n')
+    );
+
+    const result = await runWorkflow(wfPath, getRunsDir(workspace));
+    assert.strictEqual(result.status, 'passed');
+    assert.strictEqual(result.steps.length, 3);
+    assert.strictEqual(result.steps[1].id, 'deploy');
+    assert.strictEqual(result.steps[1].skipped ?? false, false, 'deploy ran (build passed)');
+    assert.strictEqual(result.steps[2].id, 'rollback');
+    assert.strictEqual(result.steps[2].skipped, true, 'rollback skipped (build passed)');
+
+    const log = fs.readFileSync(result.logPath, 'utf8');
+    assert.match(log, /\[OK deploy\]/);
+    assert.match(log, /\[SKIPPED rollback\] condition not met/);
+  });
+
+  test('a notify-on-failure step runs even after an earlier step fails', async function () {
+    const failCmd = process.platform === 'win32' ? 'exit /b 7' : 'exit 7';
+    const wfPath = writeWorkflowFile(workspace, 'notify',
+      [
+        'name: notify',
+        'cron: "* * * * *"',
+        'steps:',
+        '  - id: build',
+        `    run: ${failCmd}`,
+        '  - id: deploy',
+        '    run: echo deployed',
+        '  - id: alert',
+        '    run: echo alert',
+        '    condition: "{{build.exit_code}} != 0"'
+      ].join('\n')
+    );
+
+    const result = await runWorkflow(wfPath, getRunsDir(workspace));
+    // The run is failed (build failed) but the conditional alert step still ran.
+    assert.strictEqual(result.status, 'failed');
+    assert.strictEqual(result.steps[0].id, 'build');
+    assert.notStrictEqual(result.steps[0].exitCode, 0);
+    assert.strictEqual(result.steps[1].id, 'deploy');
+    assert.strictEqual(result.steps[1].skipped, true, 'unconditional deploy skipped after failure');
+    assert.strictEqual(result.steps[2].id, 'alert');
+    assert.strictEqual(result.steps[2].skipped ?? false, false, 'conditional alert ran despite failure');
+
+    const log = fs.readFileSync(result.logPath, 'utf8');
+    assert.match(log, /\[SKIPPED deploy\] previous step failed/);
+    assert.match(log, /\[OK alert\]/);
   });
 });
 

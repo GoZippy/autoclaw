@@ -16,7 +16,9 @@
  *   steps:
  *     - id:        string
  *       run:       string (single shell command line)
- *       condition: string (optional — currently informational, not evaluated)
+ *       condition: string (optional — gate the step on prior step results; see
+ *                  `evaluateStepCondition`. When omitted, a step is skipped
+ *                  after any earlier step fails.)
  *
  * Cron subset supported by `parseCron`:
  *   - 5 fields: minute hour dom month dow
@@ -735,6 +737,73 @@ export function pruneRunLogs(
   return result;
 }
 
+/**
+ * Evaluate a step `condition` expression against the results of prior steps.
+ *
+ * Placeholders of the form `{{<stepId>.<field>}}` are substituted from earlier
+ * step results, then a single comparison (or bare truthiness check) is run.
+ * Supported fields:
+ *   exit_code  → the step's numeric exit code (`null` when it never started)
+ *   success    → true when the step exited 0 and did not time out or skip
+ *   skipped    → true when the step was skipped
+ *   timed_out  → true when the step hit its timeout
+ * Supported operators: `==` `!=` `>` `>=` `<` `<=`. With no operator the whole
+ * expression is a truthiness check (anything but `false`, `0`, `null`, or empty
+ * is true). Relational operators (`>` `>=` `<` `<=`) require numeric operands.
+ *
+ * Returns `{ met }` normally, or `{ met:false, error }` when the expression
+ * references an unknown step/field or cannot be parsed. Callers SKIP the step on
+ * an error rather than run it on an unverifiable precondition.
+ */
+export function evaluateStepCondition(
+  condition: string,
+  priorResults: StepResult[]
+): { met: boolean; error?: string } {
+  const byId = new Map(priorResults.map(r => [r.id, r]));
+  let error: string | undefined;
+  const interpolated = condition.replace(
+    /\{\{\s*([A-Za-z0-9_-]+)\.([A-Za-z_]+)\s*\}\}/g,
+    (_m, id: string, field: string) => {
+      const r = byId.get(id);
+      if (!r) { error = error ?? `unknown step "${id}"`; return 'null'; }
+      switch (field) {
+        case 'exit_code': return r.exitCode === null ? 'null' : String(r.exitCode);
+        case 'success': return (r.exitCode === 0 && !r.timedOut && !r.skipped) ? 'true' : 'false';
+        case 'skipped': return r.skipped ? 'true' : 'false';
+        case 'timed_out': return r.timedOut ? 'true' : 'false';
+        default: error = error ?? `unknown field "${field}" for step "${id}"`; return 'null';
+      }
+    }
+  );
+  if (error) { return { met: false, error }; }
+  if (/\{\{/.test(interpolated)) {
+    return { met: false, error: `unparseable placeholder in "${condition}"` };
+  }
+
+  const expr = interpolated.trim();
+  const cmp = expr.match(/^(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+  if (cmp) {
+    const lhs = cmp[1].trim();
+    const op = cmp[2];
+    const rhs = cmp[3].trim();
+    const ln = Number(lhs);
+    const rn = Number(rhs);
+    const numeric = lhs !== '' && rhs !== '' && Number.isFinite(ln) && Number.isFinite(rn);
+    switch (op) {
+      case '==': return { met: numeric ? ln === rn : lhs === rhs };
+      case '!=': return { met: numeric ? ln !== rn : lhs !== rhs };
+      case '>': return numeric ? { met: ln > rn } : { met: false, error: `non-numeric comparison "${expr}"` };
+      case '>=': return numeric ? { met: ln >= rn } : { met: false, error: `non-numeric comparison "${expr}"` };
+      case '<': return numeric ? { met: ln < rn } : { met: false, error: `non-numeric comparison "${expr}"` };
+      case '<=': return numeric ? { met: ln <= rn } : { met: false, error: `non-numeric comparison "${expr}"` };
+    }
+  }
+
+  // Bare truthiness (e.g. `{{build.success}}` ⇒ `true`/`false`).
+  const falsey = expr === '' || expr === 'false' || expr === '0' || expr === 'null';
+  return { met: !falsey };
+}
+
 export async function runWorkflow(
   workflowPath: string,
   runsDir: string,
@@ -759,7 +828,21 @@ export async function runWorkflow(
   const results: StepResult[] = [];
   let aborted = false;
   for (const step of wf.steps) {
-    if (aborted) {
+    const cond = typeof step.condition === 'string' ? step.condition.trim() : '';
+    if (cond.length > 0) {
+      // An explicit condition gates the step on prior results. A satisfied
+      // condition runs the step even after an earlier failure (e.g. a
+      // notify-on-failure step); an unsatisfied or unparseable one skips it
+      // without aborting the rest of the run.
+      const verdict = evaluateStepCondition(cond, results);
+      if (!verdict.met) {
+        results.push({ id: step.id, exitCode: null, durationMs: 0, timedOut: false, skipped: true, mode: step.mode ?? 'report', files_changed: [], guard_verdict: 'na' });
+        log.write(verdict.error
+          ? `[SKIPPED ${step.id}] condition error: ${verdict.error} (${cond})\n`
+          : `[SKIPPED ${step.id}] condition not met: ${cond}\n`);
+        continue;
+      }
+    } else if (aborted) {
       results.push({ id: step.id, exitCode: null, durationMs: 0, timedOut: false, skipped: true, mode: step.mode ?? 'report', files_changed: [], guard_verdict: 'na' });
       log.write(`[SKIPPED ${step.id}] previous step failed\n`);
       continue;

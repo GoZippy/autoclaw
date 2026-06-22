@@ -133,6 +133,22 @@ notify: true              # VS Code notification on completion
 timeout: 600              # seconds per step, default 120
 ```
 
+### Step conditions
+
+A step's optional `condition` gates whether it runs, evaluated against earlier
+steps' results. A step **without** a condition keeps the default behaviour: it is
+skipped once any earlier step fails. A step **with** a condition runs whenever the
+condition is true — even after an earlier failure (e.g. a notify-on-failure
+step) — and is skipped (without aborting the rest of the run) when it is false or
+cannot be evaluated.
+
+- Placeholders: `{{<stepId>.<field>}}` where `field` is one of `exit_code`,
+  `success`, `skipped`, `timed_out`.
+- Operators: `==` `!=` `>` `>=` `<` `<=`. Relational operators need numeric
+  operands. With no operator the expression is a truthiness check.
+- Examples: `"{{test.exit_code}} == 0"`, `"{{build.exit_code}} != 0"`,
+  `"{{lint.success}} == false"`.
+
 ---
 
 ## Guarded Fix Mode (AB-2+)
