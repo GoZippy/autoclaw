@@ -15,9 +15,21 @@
  * (see src/test/board-rendering.test.ts). Every interpolated value passes
  * through {@link esc}. No fs / vscode imports.
  */
-import { esc, formatAge, shortModel } from './webview-render';
+import { esc, formatAge, shortModel, openChatButton as openChatButtonFor } from './webview-render';
 import { type CanonicalRole, ROLE_META, resolveAgentRole } from './roles';
 export { type CanonicalRole };
+
+/** A deep-linkable chat session for one agent (Lane A). The extension builds
+ *  this map (agentId → freshest session) from the session heartbeats it already
+ *  collects, so a board card can offer an "Open chat ↗" button for its owner —
+ *  cards know `claimed_by`/`author`/`agent_id` but not that agent's session id. */
+export interface AgentSessionRef {
+  session_id: string;
+  /** Adapter/agent id the host's deep-link ladder keys on (claude-code → resume). */
+  source: string;
+  /** Transcript path for the reveal-rung fallback (tools without a resume URI). */
+  rawRef?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Input shapes — mirror board.json (read from disk by the extension)
@@ -64,6 +76,20 @@ export interface BoardCapsuleItem {
   votes_count?: number;
   evaluated_at?: string;
 }
+/** A completed task sourced from the durable task ledger (task-ledger.jsonl).
+ *  Unlike the other lanes (live snapshots of board.json), Done is reconstructed
+ *  from the append-only ledger so finished work survives claim deletion. */
+export interface BoardDoneItem {
+  task_id: string;
+  /** Agent that completed it. */
+  agent_id: string;
+  title?: string;
+  sprint?: number;
+  /** ISO completion timestamp (drives the age label + most-recent ordering). */
+  completed_at?: string;
+  /** Review outcome at record time, e.g. "approved" / "pending". */
+  review_status?: string;
+}
 export interface BoardSnapshot {
   fleet_size?: number;
   live_count?: number;
@@ -72,6 +98,9 @@ export interface BoardSnapshot {
   awaiting_review?: BoardReviewItem[];
   stuck?: BoardStuckItem[];
   recent_capsules?: BoardCapsuleItem[];
+  /** Completed-work lane, newest-first, sourced from the task ledger. The
+   *  extension attaches this from task-ledger.jsonl; absent ⇒ empty Done lane. */
+  done?: BoardDoneItem[];
 }
 
 /** A single message in a per-task thread (a flattened comms-log entry). */
@@ -94,6 +123,10 @@ export interface BoardRenderContext {
   modelOf?: Record<string, string>;
   /** task_id → messages exchanged about it, oldest first. */
   threads?: Record<string, ThreadMessage[]>;
+  /** Lane A: agentId → freshest deep-linkable chat session, so a card's detail
+   *  can emit an "Open chat ↗" button for its owner/author/agent. Absent for an
+   *  agent ⇒ no button (graceful — mirrors renderSessionList's session guard). */
+  sessionOf?: Record<string, AgentSessionRef>;
   now?: number;
 }
 
@@ -125,6 +158,24 @@ function threadCount(ctx: BoardRenderContext, taskId: string): number {
   return ctx.threads?.[taskId]?.length ?? 0;
 }
 
+/** Emit the shared "Open chat ↗" button for `agentId`, or '' when no session
+ *  is known for that agent. Reuses the canonical button from webview-render so
+ *  the markup + host `openSession` wiring is byte-identical to the session list. */
+function openChatButton(ctx: BoardRenderContext, agentId: string | undefined): string {
+  if (!agentId) { return ''; }
+  const s = ctx.sessionOf?.[agentId];
+  if (!s) { return ''; }
+  return openChatButtonFor({ session_id: s.session_id, source: s.source, rawRef: s.rawRef });
+}
+
+/** One key/value line in a card detail grid — same visual family as the
+ *  Awaiting-You drill-down (.detail-kv). Hidden when value is empty. */
+function detailKV(label: string, value: string): string {
+  if (value === '') { return ''; }
+  return `<div class="detail-kv"><span class="detail-label">${esc(label)}</span>` +
+    `<span class="detail-val">${esc(value)}</span></div>`;
+}
+
 function priorityTag(p?: string): string {
   if (!p) { return ''; }
   return `<span class="prio prio-${esc(p)}" title="${esc(p)} priority">${esc(p)}</span>`;
@@ -150,19 +201,32 @@ function renderThread(ctx: BoardRenderContext, taskId: string): string {
   return h;
 }
 
-/** The shared card chrome: task id/title, a thread toggle, and the body. */
+/** The shared card chrome: task id/title, a thread toggle, and the body.
+ *  When `opts.detail` is supplied (Lane A), a "▸" toggle appears in the card
+ *  top and a collapsed `.card-detail[hidden]` block is appended after the meta
+ *  line — the lane passes pre-rendered detail HTML. With no `detail` the card
+ *  is byte-identical to before (no toggle, no detail block). */
 function card(opts: {
   ctx: BoardRenderContext;
   taskId: string;
   title?: string;
   meta: string;     // pre-rendered meta line (assignee, age, votes…)
   extraClass?: string;
+  detail?: string;  // Lane A: pre-rendered drill-down HTML (collapsed by default)
 }): string {
-  const { ctx, taskId, title, meta } = opts;
+  const { ctx, taskId, title, meta, detail } = opts;
   const count = threadCount(ctx, taskId);
+  const hasDetail = !!(detail && detail.length > 0);
   let h = `<div class="board-card ${opts.extraClass ?? ''}" data-task-id="${esc(taskId)}">`;
   h += '<div class="board-card-top">';
   h += `<span class="task-id">${esc(taskId)}</span>`;
+  // Lane A: detail toggle. Distinct class + uiState map from the thread toggle
+  // so the two coexist (💬 thread + ▸ detail) without colliding.
+  if (hasDetail) {
+    h += `<button type="button" class="card-detail-toggle" data-task-id="${esc(taskId)}" ` +
+      `aria-expanded="false" title="Show task detail">` +
+      `<span class="card-detail-caret" aria-hidden="true">▸</span></button>`;
+  }
   if (count > 0) {
     h += `<button type="button" class="thread-toggle" data-task-id="${esc(taskId)}" ` +
       `aria-expanded="false" title="${count} message${count === 1 ? '' : 's'} about this task">` +
@@ -171,8 +235,35 @@ function card(opts: {
   h += '</div>';
   if (title) { h += `<div class="task-title">${esc(title)}</div>`; }
   h += `<div class="board-card-meta">${meta}</div>`;
+  if (hasDetail) { h += `<div class="card-detail" hidden>${detail}</div>`; }
   h += renderThread(ctx, taskId);
   h += '</div>';
+  return h;
+}
+
+/** Wrap pre-built detail rows + an optional Open-chat button into the shared
+ *  detail body. `gridRows` are .detail-kv lines; `extra` is free-form trailing
+ *  HTML (e.g. a files list, a stuck-reason note). Returns '' when there is
+ *  nothing to show, so card() omits the toggle entirely. */
+function buildDetail(opts: { gridRows: string; extra?: string; openChat?: string }): string {
+  const { gridRows, extra, openChat } = opts;
+  if (!gridRows && !extra && !openChat) { return ''; }
+  let h = '';
+  if (gridRows) { h += `<div class="detail-grid">${gridRows}</div>`; }
+  if (extra) { h += extra; }
+  if (openChat) { h += `<div class="card-detail-actions">${openChat}</div>`; }
+  return h;
+}
+
+/** A bounded files list for a card detail (claimable). Caps at 12 with a
+ *  "+N more" footer so a wide task never blows out the narrow lane. */
+function detailFiles(files: readonly string[] | undefined): string {
+  if (!files || files.length === 0) { return ''; }
+  const shown = files.slice(0, 12);
+  let h = '<div class="detail-files"><span class="detail-label">Files</span><ul>';
+  for (const f of shown) { h += `<li title="${esc(f)}">${esc(f)}</li>`; }
+  if (files.length > shown.length) { h += `<li class="more">+${files.length - shown.length} more</li>`; }
+  h += '</ul></div>';
   return h;
 }
 
@@ -224,17 +315,38 @@ export function renderBoard(board: BoardSnapshot | null, ctx: BoardRenderContext
       (t.files && t.files.length) ? `<span class="meta-files" title="${esc(t.files.join(', '))}">${t.files.length} file${t.files.length === 1 ? '' : 's'}</span>` : '',
     ].filter(Boolean).join(''),
     extraClass: 'is-claimable',
+    detail: buildDetail({
+      gridRows:
+        detailKV('Task', t.task_id) +
+        (t.title ? detailKV('Title', t.title) : '') +
+        (typeof t.sprint === 'number' ? detailKV('Sprint', String(t.sprint)) : '') +
+        (t.priority ? detailKV('Priority', t.priority) : '') +
+        detailKV('Status', 'claimable'),
+      extra: detailFiles(t.files),
+    }),
   }));
 
   // In progress
   const inFlightCards = inFlight.map(t => {
     const model = ctx.modelOf?.[t.claimed_by];
+    const age = typeof t.age_ms === 'number' ? formatAge(new Date(now - t.age_ms).toISOString(), now) : '';
     const meta =
       participant(ctx, t.claimed_by) +
       (model ? `<span class="meta-model" title="${esc(model)}">${esc(shortModel(model))}</span>` : '') +
-      (typeof t.age_ms === 'number' ? `<span class="meta-age">${esc(formatAge(new Date(now - t.age_ms).toISOString(), now))}</span>` : '') +
+      (age ? `<span class="meta-age">${esc(age)}</span>` : '') +
       (t.owner_healthy === false ? `<span class="meta-warn" title="owner heartbeat is stale">owner stalled</span>` : '');
-    return card({ ctx, taskId: t.task_id, title: t.title, meta, extraClass: 'is-inflight' });
+    const detail = buildDetail({
+      gridRows:
+        detailKV('Task', t.task_id) +
+        (t.title ? detailKV('Title', t.title) : '') +
+        detailKV('Owner', displayName(ctx, t.claimed_by)) +
+        (model ? detailKV('Model', shortModel(model)) : '') +
+        (age ? detailKV('Age', age) : '') +
+        detailKV('Status', 'in progress') +
+        (t.owner_healthy === false ? detailKV('Health', 'owner heartbeat stale') : ''),
+      openChat: openChatButton(ctx, t.claimed_by),
+    });
+    return card({ ctx, taskId: t.task_id, title: t.title, meta, extraClass: 'is-inflight', detail });
   });
 
   // Review
@@ -246,23 +358,83 @@ export function renderBoard(board: BoardSnapshot | null, ctx: BoardRenderContext
       `<span class="meta-author">by ${participant(ctx, t.author)}</span>` +
       (reviewers ? `<span class="meta-reviewers"><span class="meta-label">reviewers</span>${reviewers}</span>` : '') +
       `<span class="meta-votes" title="${esc(t.rule ?? 'majority')}">✓${t.approvals ?? 0} ✎${t.request_changes ?? 0} · ${received}/${required}</span>`;
-    return card({ ctx, taskId: t.task_id, meta, extraClass: 'is-review' });
+    // Reviewers row: colored participants (not a plain .detail-kv) so role
+    // coloring carries into the detail. Built as raw HTML appended via `extra`.
+    const reviewersRow = reviewers
+      ? `<div class="detail-reviewers"><span class="detail-label">Reviewers</span>` +
+        `<span class="detail-reviewers-list">${reviewers}</span></div>`
+      : '';
+    const detail = buildDetail({
+      gridRows:
+        detailKV('Task', t.task_id) +
+        detailKV('Author', displayName(ctx, t.author)) +
+        detailKV('Status', 'awaiting review') +
+        detailKV('Approvals', String(t.approvals ?? 0)) +
+        detailKV('Change requests', String(t.request_changes ?? 0)) +
+        detailKV('Votes', `${received}/${required}`) +
+        detailKV('Rule', t.rule ?? 'majority'),
+      extra: reviewersRow,
+      openChat: openChatButton(ctx, t.author),
+    });
+    return card({ ctx, taskId: t.task_id, meta, extraClass: 'is-review', detail });
   });
 
   // Blocked
-  const stuckCards = stuck.map(t => card({
-    ctx, taskId: t.task_id,
-    meta:
-      `<span class="meta-stuck" title="${esc(t.detail ?? '')}">${esc((t.reason ?? 'blocked').replace(/_/g, ' '))}</span>` +
-      (typeof t.age_ms === 'number' ? `<span class="meta-age">${esc(formatAge(new Date(now - t.age_ms).toISOString(), now))}</span>` : ''),
-    extraClass: 'is-stuck',
-  }));
+  const stuckCards = stuck.map(t => {
+    const reason = (t.reason ?? 'blocked').replace(/_/g, ' ');
+    const age = typeof t.age_ms === 'number' ? formatAge(new Date(now - t.age_ms).toISOString(), now) : '';
+    return card({
+      ctx, taskId: t.task_id,
+      meta:
+        `<span class="meta-stuck" title="${esc(t.detail ?? '')}">${esc(reason)}</span>` +
+        (age ? `<span class="meta-age">${esc(age)}</span>` : ''),
+      extraClass: 'is-stuck',
+      detail: buildDetail({
+        gridRows:
+          detailKV('Task', t.task_id) +
+          detailKV('Status', 'blocked') +
+          detailKV('Reason', reason) +
+          (age ? detailKV('Age', age) : ''),
+        extra: t.detail ? `<div class="detail-summary">${esc(t.detail)}</div>` : '',
+      }),
+    });
+  });
+
+  // Done — reconstructed from the durable task ledger (claims/board.json drop
+  // completed work). Newest first; the caller passes them pre-sorted but we
+  // sort defensively so ordering never depends on the producer.
+  const doneSorted = [...(board.done ?? [])].sort((a, b) =>
+    new Date(b.completed_at ?? 0).getTime() - new Date(a.completed_at ?? 0).getTime());
+  const doneCards = doneSorted.map(t => {
+    const status = (t.review_status ?? '').toLowerCase();
+    const statusCls = status === 'approved' ? 'done-approved'
+      : (status === 'rejected' || status === 'needs_changes' || status === 'request_changes') ? 'done-rejected'
+      : status ? 'done-pending' : '';
+    const meta =
+      `<span class="meta-done-by">by ${participant(ctx, t.agent_id)}</span>` +
+      (typeof t.sprint === 'number' ? `<span class="meta-sprint">sprint ${esc(t.sprint)}</span>` : '') +
+      (status ? `<span class="meta-review ${statusCls}" title="review: ${esc(status)}">${esc(status.replace(/_/g, ' '))}</span>` : '') +
+      (t.completed_at ? `<span class="meta-age" title="${esc(t.completed_at)}">${esc(formatAge(t.completed_at, now))}</span>` : '');
+    const detail = buildDetail({
+      gridRows:
+        detailKV('Task', t.task_id) +
+        (t.title ? detailKV('Title', t.title) : '') +
+        detailKV('By', displayName(ctx, t.agent_id)) +
+        (typeof t.sprint === 'number' ? detailKV('Sprint', String(t.sprint)) : '') +
+        detailKV('Status', 'done') +
+        (status ? detailKV('Review', status.replace(/_/g, ' ')) : '') +
+        (t.completed_at ? detailKV('Completed', formatAge(t.completed_at, now)) : ''),
+      openChat: openChatButton(ctx, t.agent_id),
+    });
+    return card({ ctx, taskId: t.task_id, title: t.title, meta, extraClass: 'is-done', detail });
+  });
 
   let h = '<div class="board-kanban" aria-label="Task board">';
   h += renderColumn({ key: 'backlog', label: 'Backlog', glyph: '○', cards: claimableCards, emptyHint: 'Nothing claimable.' });
   h += renderColumn({ key: 'inflight', label: 'In progress', glyph: '◐', cards: inFlightCards, emptyHint: 'No active work.' });
   h += renderColumn({ key: 'review', label: 'Review', glyph: '◔', cards: reviewCards, emptyHint: 'Nothing in review.' });
   h += renderColumn({ key: 'blocked', label: 'Blocked', glyph: '✕', cards: stuckCards, emptyHint: 'Nothing stuck.' });
+  h += renderColumn({ key: 'done', label: 'Done', glyph: '●', cards: doneCards, emptyHint: 'No completed work yet.' });
   h += '</div>';
   h += renderRecentEvidence(board.recent_capsules ?? []);
   return h;

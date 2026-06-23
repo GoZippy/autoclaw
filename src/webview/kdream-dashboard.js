@@ -9,20 +9,23 @@
   // user had open. We keep the user's view state here (source of truth)
   // and re-apply it after each render. vscode.getState/setState persist
   // it across full webview reloads (tab switch, window reload, restart).
-  //   sections: { [sectionId]: bool }  — only user-overridden sections
-  //   agents:   { [agentId]: true }    — open agent cards
-  //   threads:  { [taskId]: true }     — open board message-threads
+  //   sections:    { [sectionId]: bool }  — only user-overridden sections
+  //   agents:      { [agentId]: true }    — open agent cards
+  //   threads:     { [taskId]: true }     — open board message-threads
+  //   cardDetails: { [taskId]: true }     — open board card DETAIL panels (Lane A)
   const _saved = vscode.getState() || {};
   const uiState = {
     sections: (_saved && _saved.sections) || {},
     agents: (_saved && _saved.agents) || {},
     threads: (_saved && _saved.threads) || {},
+    cardDetails: (_saved && _saved.cardDetails) || {},
   };
   function saveUiState() {
     vscode.setState({
       sections: uiState.sections,
       agents: uiState.agents,
       threads: uiState.threads,
+      cardDetails: uiState.cardDetails,
     });
   }
 
@@ -184,6 +187,22 @@
         });
       });
     });
+    // LANE B: per-agent Command & Control buttons (Message/Pause/Resume/
+    // Reassign/Evict). Each posts {command: <data-action>, agentId, sessionId};
+    // the host owns confirmation (Evict opens a REQUIRED modal). stopPropagation
+    // so clicking an action never toggles the enclosing agent card.
+    el.querySelectorAll('.agent-action').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const command = btn.getAttribute('data-action');
+        if (!command) return;
+        vscode.postMessage({
+          command,
+          agentId: btn.getAttribute('data-agent-id'),
+          sessionId: btn.getAttribute('data-session-id') || undefined,
+        });
+      });
+    });
   }
 
   function toggleAgentCard(head) {
@@ -308,28 +327,40 @@
     });
   }
 
-  // ── Pending agents tray (FF-3) ────────────────────────────────────
-  // Wire the "Invite agent…" button (always present in the section header).
+  // ── Agents tray (FF-3) ────────────────────────────────────────────
+  // Wire the section-header buttons (always present so the FIRST agent can be
+  // invited / handed a join prompt even when nobody is pending yet).
   document.getElementById('btn-invite-agent')?.addEventListener('click', (e) => {
     e.stopPropagation();
     vscode.postMessage({ command: 'inviteAgent' });
   });
+  document.getElementById('btn-join-prompt')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    vscode.postMessage({ command: 'generateJoinPrompt' });
+  });
 
-  // Render the pending tray. Shows the section only when there is at least one
-  // agent waiting to be admitted; otherwise it stays hidden.
+  // Board "Open Wide" — pop the cramped sidebar board into the roomy
+  // editor-tab Manager. stopPropagation so the click doesn't also toggle the
+  // section's collapse.
+  document.getElementById('btn-board-open-wide')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    vscode.postMessage({ command: 'openManagerWide' });
+  });
+
+  // Render the pending tray. The section header (with Invite + Join-prompt
+  // buttons) stays visible always; the body shows a hint when nobody is waiting.
   function renderPending(pending) {
     const list = Array.isArray(pending) ? pending : [];
     const section = document.getElementById('pending-section');
     const el = document.getElementById('pending-content');
     if (!el) return;
     setBadge('pending-badge', String(list.length));
+    if (section) { section.style.display = ''; }
     if (!list.length) {
-      el.innerHTML = '';
-      if (section) section.style.display = 'none';
+      el.innerHTML = '<div class="pending-empty">No agents waiting. Use <b>Join prompt…</b> to onboard a tool (Codex, Claude Desktop, OpenClaw, Hermes…) or <b>Invite…</b> for a bare token.</div>';
       return;
     }
     if (section) {
-      section.style.display = '';
       // Auto-open when agents are waiting, unless the user toggled it shut.
       if (!Object.prototype.hasOwnProperty.call(uiState.sections, 'pending-section')) {
         section.classList.add('open');
@@ -417,7 +448,40 @@
         }
       });
     });
-    // Re-apply any threads the user had expanded before this data tick.
+    // Lane A: wire the per-card DETAIL toggle (▸). Distinct class + uiState map
+    // (cardDetails) from the thread toggle so the two coexist without colliding.
+    el.querySelectorAll('.card-detail-toggle').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const card = btn.closest('.board-card');
+        const detail = card && card.querySelector('.card-detail');
+        if (!detail) return;
+        const opening = detail.hasAttribute('hidden');
+        if (opening) detail.removeAttribute('hidden'); else detail.setAttribute('hidden', '');
+        btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+        card.classList.toggle('detail-open', opening);
+        const caret = btn.querySelector('.card-detail-caret');
+        if (caret) caret.textContent = opening ? '▾' : '▸';
+        const tid = card.getAttribute('data-task-id');
+        if (tid) {
+          if (opening) uiState.cardDetails[tid] = true; else delete uiState.cardDetails[tid];
+          saveUiState();
+        }
+      });
+    });
+    // Lane A: wire "Open chat ↗" buttons INSIDE board cards. Same payload as the
+    // session rows; stopPropagation so it never toggles the card's detail/thread.
+    el.querySelectorAll('.session-open').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        vscode.postMessage({
+          command: 'openSession',
+          sessionId: btn.getAttribute('data-session-id'),
+          source: btn.getAttribute('data-source'),
+          rawRef: btn.getAttribute('data-raw-ref'),
+        });
+      });
+    });
+    // Re-apply any threads + detail panels the user had expanded before this tick.
     el.querySelectorAll('.board-card').forEach(card => {
       const tid = card.getAttribute('data-task-id');
       if (tid && uiState.threads[tid]) {
@@ -426,6 +490,17 @@
         if (thread) thread.removeAttribute('hidden');
         if (btn) btn.setAttribute('aria-expanded', 'true');
         card.classList.add('thread-open');
+      }
+      if (tid && uiState.cardDetails[tid]) {
+        const detail = card.querySelector('.card-detail');
+        const btn = card.querySelector('.card-detail-toggle');
+        if (detail) detail.removeAttribute('hidden');
+        if (btn) {
+          btn.setAttribute('aria-expanded', 'true');
+          const caret = btn.querySelector('.card-detail-caret');
+          if (caret) caret.textContent = '▾';
+        }
+        card.classList.add('detail-open');
       }
     });
   }

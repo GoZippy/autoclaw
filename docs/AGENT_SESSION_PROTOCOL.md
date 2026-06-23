@@ -259,6 +259,18 @@ running at the same time. Rules:
   touched a file, raise a `finding_report` instead of racing the push.
 - **Stamp `session_id` on everything** so the orchestrator can attribute
   actions when two sessions share an `agent_id`.
+- **Declare a file-scope lease before you edit (CL-4).** Announce the globs
+  you are about to touch so a peer editing the same files is caught *before*
+  the clobber, not after. Write
+  `comms/leases/<agent>-<session>.json`:
+  `{ agent_id, session_id, globs: ["src/foo.ts","src/bar/**"], branch, created_at, expires_at }`.
+  An overlapping lease held by a different session produces a `scope_violation`
+  finding — stop and coordinate. In-IDE agents have the commands **AutoClaw:
+  Declare File-Scope Lease** / **Release File-Scope Lease** / **File-Scope
+  Leases — Status & Overlaps**; the lease is the machine-readable form of the
+  "who's editing what" question. Release (or let it expire) when done. This is
+  the structural guard against the two-windows-one-file collision — it does not
+  replace branch isolation, it complements it.
 
 ---
 

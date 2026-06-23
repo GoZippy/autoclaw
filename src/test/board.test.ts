@@ -147,6 +147,58 @@ suite('board — buildBoard in-flight bucket', () => {
   });
 });
 
+suite('board — session-aware owner liveness', () => {
+  // Regression for the HEAL stale-claim gap: owner_healthy used to be computed
+  // at AGENT level, so a claim left by a dead session stayed "healthy" forever
+  // as long as the orchestrator kept an agent-level heartbeat fresh — and HEAL
+  // (which only steals claims where owner_healthy === false) never fired.
+  test('claim from a DEAD session is unhealthy even when the agent has a fresh heartbeat under a DIFFERENT session', () => {
+    const board = buildBoard({
+      tasks: [{ id: 'T1', status: 'in_progress' }],
+      claims: [{ task_id: 'T1', claimed_by: 'claude-code', session_id: 'dead-session', claimed_at: new Date(now - 1000).toISOString() }],
+      consensus: [],
+      // Orchestrator keeps an agent-level heartbeat fresh — but under a live
+      // session; the session that made the claim is long gone.
+      heartbeats: [hb({ agent_id: 'claude-code', session_id: 'live-session' })],
+      now,
+    });
+    assert.strictEqual(board.in_flight[0].owner_healthy, false);
+    assert.ok(board.stuck.some(s => s.reason === 'owner_offline' && s.task_id === 'T1'));
+  });
+
+  test('claim whose session still has a fresh heartbeat is healthy', () => {
+    const board = buildBoard({
+      tasks: [{ id: 'T1', status: 'in_progress' }],
+      claims: [{ task_id: 'T1', claimed_by: 'claude-code', session_id: 'sess-A', claimed_at: new Date(now - 1000).toISOString() }],
+      consensus: [],
+      heartbeats: [hb({ agent_id: 'claude-code', session_id: 'sess-A' })],
+      now,
+    });
+    assert.strictEqual(board.in_flight[0].owner_healthy, true);
+    assert.strictEqual(board.stuck.length, 0);
+  });
+
+  test('legacy claim with no session_id falls back to agent-level liveness (fresh → healthy, stale → unhealthy)', () => {
+    const fresh = buildBoard({
+      tasks: [{ id: 'T1', status: 'in_progress' }],
+      claims: [{ task_id: 'T1', claimed_by: 'kilocode', claimed_at: new Date(now - 1000).toISOString() }],
+      consensus: [],
+      heartbeats: [hb({ agent_id: 'kilocode' })],
+      now,
+    });
+    assert.strictEqual(fresh.in_flight[0].owner_healthy, true);
+
+    const stale = buildBoard({
+      tasks: [{ id: 'T1', status: 'in_progress' }],
+      claims: [{ task_id: 'T1', claimed_by: 'kilocode', claimed_at: new Date(now - 1000).toISOString() }],
+      consensus: [],
+      heartbeats: [hb({ agent_id: 'kilocode', timestamp: new Date(now - HEARTBEAT_OFFLINE_MS - 1000).toISOString() })],
+      now,
+    });
+    assert.strictEqual(stale.in_flight[0].owner_healthy, false);
+  });
+});
+
 suite('board — buildBoard awaiting-review bucket', () => {
   test('three reviewers → majority threshold 2', () => {
     const board = buildBoard({

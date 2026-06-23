@@ -41,4 +41,9 @@ export type {
   PremiumApiFactoryContext,
   PrEvidenceReport,
   PrEvidenceReportInput,
+  AdvancedOrchestrationInput,
+  AdvancedOrchestrationResult,
+  AdvancedOrchestrationTask,
+  AdvancedOrchestrationAgent,
+  AdvancedOrchestrationAssignment,
 } from './premiumApi';

@@ -31,6 +31,7 @@ import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
 import { resolvePendingConsensus } from './orchestrator/consensusTally';
 import { writeBoard } from './orchestrator/boardWriter';
 import { runHealPhase } from './orchestrator/heal';
+import { reapDeadClaims } from './orchestrator/claimReaper';
 import { acquireSupervisorRole } from './orchestrator/supervisorLease';
 import { ingestWorkforceSignals } from './fleet/workforceIngest';
 import { runRecallSweep } from './fleet/recallDispatch';
@@ -169,6 +170,40 @@ export interface OrchestratorLoopOptions {
   workspaceRoot?: string;
   tickMs?: number;
   onTick?: (result: TickResult) => void;
+  /**
+   * Opt-in self-healing (Follow-up #3). When TRUE the loop runs the HEAL phase
+   * each tick — bounded, reversible, act-then-report recovery on the fleet
+   * (steal a stale+expired claim, emit a finding_report per action). When FALSE
+   * (the default) the HEAL phase is skipped entirely: detection/reporting still
+   * happens via the reconcile sweep + board write, but the orchestrator never
+   * AUTO-ACTS on the fleet. OFF by default because this mutates shared state.
+   * The boolean is sourced from `autoclaw.selfHealing.enabled` in extension.ts;
+   * the orchestrator modules stay vscode-free.
+   */
+  selfHealingEnabled?: boolean;
+  /**
+   * Opt-in dead-session claim reaper (CL-3). When TRUE the active supervisor, each
+   * tick, releases claims whose owning session is dead AND whose claim is expired
+   * (archives the claim file to `claims/_reaped/`, emits a finding_report, frees
+   * the task). RELEASE-ONLY — never touches live work, dispatches, or git — so it
+   * is the safe subset of self-healing and is gated separately from
+   * {@link selfHealingEnabled}. OFF by default. Sourced from
+   * `autoclaw.selfHealing.reapDeadClaims` in extension.ts.
+   */
+  reapDeadClaims?: boolean;
+}
+
+/** Per-tick options. Additive + defaulted so existing 2-arg callers are unchanged. */
+export interface TickOptions {
+  /**
+   * Run the bounded, reversible, act-then-report HEAL phase this tick. Default
+   * FALSE — when off the HEAL block is skipped and behavior is identical to a
+   * loop that never opted in (no acts, no HEAL finding_reports). See
+   * {@link OrchestratorLoopOptions.selfHealingEnabled}.
+   */
+  selfHealingEnabled?: boolean;
+  /** Run the release-only dead-session claim reaper this tick (default FALSE). */
+  reapDeadClaims?: boolean;
 }
 
 export interface OrchestratorLoopHandle {
@@ -558,7 +593,7 @@ export async function dispatchWork(
   workspaceRoot: string,
   pkg: WorkPackage,
   controlLevel: ControlLevel = 'individual',
-  opts: { generateContextPack?: boolean } = {}
+  opts: { generateContextPack?: boolean; recordToKg?: boolean } = {}
 ): Promise<string | null> {
   // Fleet HALT kill switch (HKS-3, agent-trigger-hooks spec): when the
   // operator has engaged `.autoclaw/orchestrator/HALT`, NOTHING dispatches —
@@ -665,6 +700,22 @@ export async function dispatchWork(
   const sidecarPath = path.join(sidecarDir, filename);
   await fsPromises.writeFile(sidecarPath, JSON.stringify(record, null, 2), 'utf8');
 
+  // Real-time KG: remember this assignment as a durable fact (best-effort).
+  if (opts.recordToKg) {
+    try {
+      const { recordOrchestrationEventsToKg } = await import('./intelligence');
+      await recordOrchestrationEventsToKg(workspaceRoot, [{
+        type: 'dispatch',
+        eventId: filename.replace(/\.json$/, ''),
+        agentId: pkg.assignToVendor,
+        taskId: pkg.taskId,
+        sprint: pkg.sprint,
+        text: `Dispatched ${pkg.taskName || pkg.taskId} (${pkg.taskId}) to ${pkg.assignToVendor}` +
+          (typeof pkg.sprint === 'number' ? ` for sprint ${pkg.sprint}` : '') + '.',
+      }]);
+    } catch { /* best-effort — never block dispatch */ }
+  }
+
   const sharedInbox = path.join(workspaceRoot, SHARED_INBOX_REL);
   const claimMsg: Message = {
     id:          `msg-claim-${pkg.taskId}-${Date.now().toString(36)}`,
@@ -720,8 +771,11 @@ function freshLoopState(): LoopState {
 
 export async function runTick(
   workspaceRoot: string,
-  state: LoopState
+  state: LoopState,
+  opts: TickOptions = {}
 ): Promise<TickResult> {
+  const selfHealingEnabled = opts.selfHealingEnabled ?? false;
+  const reapEnabled = opts.reapDeadClaims ?? false;
   const t0 = Date.now();
   state.tick++;
   state.totalTicks++;
@@ -764,7 +818,7 @@ export async function runTick(
   if (work.length > 0) {
     for (const w of work.slice(0, 2)) {
       try {
-        const sidecar = await dispatchWork(workspaceRoot, w.item, 'individual', { generateContextPack: true });
+        const sidecar = await dispatchWork(workspaceRoot, w.item, 'individual', { generateContextPack: true, recordToKg: true });
         if (sidecar) { dispatched++; state.totalDispatches++; }
       } catch (e: any) { tickErrors++; state.totalErrors++; }
     }
@@ -783,6 +837,20 @@ export async function runTick(
           action: 'peer_reviews_promoted',
           detail: { promoted: promo.promoted, promotions: promo.promotions },
         });
+        // Real-time KG: remember each completion as a durable fact (best-effort).
+        try {
+          const { recordOrchestrationEventsToKg } = await import('./intelligence');
+          await recordOrchestrationEventsToKg(
+            workspaceRoot,
+            promo.promotions.map((p) => ({
+              type: 'completion' as const,
+              eventId: p.sourceMessageId,
+              agentId: p.author,
+              taskId: p.taskId,
+              text: `${p.author} completed ${p.taskId ?? 'a task'} (now in peer review).`,
+            })),
+          );
+        } catch { /* best-effort — never break the tick */ }
       }
     } catch (e: any) {
       tickErrors++; state.totalErrors++;
@@ -855,19 +923,51 @@ export async function runTick(
     // stale holder is taken over by the next ticking loop). Act-then-report:
     // bounded, reversible recovery + a finding_report per action; never master.
     // Skipped while the fleet is HALTed. Fully guarded — never breaks the tick.
+    //
+    // Follow-up #3 GATE: the act-then-report HEAL phase only runs when the
+    // operator OPTS IN (`selfHealingEnabled`, default FALSE). When it is off the
+    // `runHealPhase` call below is skipped entirely — ZERO fleet mutation and
+    // ZERO HEAL finding_reports, identical to a loop that never opted in. The
+    // supervisor lease + recall sweep are NOT gated by it, so non-HEAL
+    // supervisor behavior is unchanged whether or not self-healing is enabled.
     try {
       if (!isFleetHalted(workspaceRoot)) {
         const sup = await acquireSupervisorRole(workspaceRoot, LOOP_INSTANCE_ID);
         if (sup.isSupervisor) {
-          const heal = await runHealPhase(workspaceRoot, { mode: 'act' });
-          if (heal.actions.length > 0 || sup.stole) {
+          if (selfHealingEnabled) {
+            const heal = await runHealPhase(workspaceRoot, { mode: 'act' });
+            if (heal.actions.length > 0 || sup.stole) {
+              await writeLoopJournal(workspaceRoot, {
+                at: new Date().toISOString(), tick: state.tick, phase: 'work',
+                action: 'heal', detail: {
+                  summary: heal.summary, stolen: heal.stolen,
+                  findings: heal.findingsEmitted, took_over: sup.stole,
+                },
+              });
+            }
+          } else if (sup.stole) {
+            // Self-healing disabled: do NOT act/report. Still record the lease
+            // takeover for audit (internal journal only — not a fleet finding).
             await writeLoopJournal(workspaceRoot, {
               at: new Date().toISOString(), tick: state.tick, phase: 'work',
-              action: 'heal', detail: {
-                summary: heal.summary, stolen: heal.stolen,
-                findings: heal.findingsEmitted, took_over: sup.stole,
-              },
+              action: 'heal_disabled', detail: { took_over: sup.stole },
             });
+          }
+          // CL-3: dead-session claim reaper — RELEASE-ONLY and gated SEPARATELY
+          // from self-healing (it never acts on live work, dispatches, or git;
+          // it only frees a task whose owning session is dead AND whose claim is
+          // expired, archiving the claim file for audit). Safe with HEAL off.
+          if (reapEnabled) {
+            const reap = await reapDeadClaims(workspaceRoot, { apply: true });
+            if (reap.reaped.length > 0) {
+              await writeLoopJournal(workspaceRoot, {
+                at: new Date().toISOString(), tick: state.tick, phase: 'work',
+                action: 'reap_claims', detail: {
+                  reaped: reap.reaped.length, scanned: reap.scanned,
+                  tasks: reap.reaped.map(r => r.task_id),
+                },
+              });
+            }
           }
           // HRW-3: supervisor-only roster-gated recall sweep (no-op without
           // .autoclaw/orchestrator/roster.json). Keeps the establishment staffed.
@@ -920,6 +1020,12 @@ export async function runTick(
 export function startOrchestratorLoop(opts: OrchestratorLoopOptions = {}): OrchestratorLoopHandle {
   const workspaceRoot = opts.workspaceRoot ?? '';
   const tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
+  // Follow-up #3: OFF by default — the loop only auto-heals when the operator
+  // opts in (extension.ts reads `autoclaw.selfHealing.enabled` and passes it).
+  const selfHealingEnabled = opts.selfHealingEnabled ?? false;
+  // CL-3: OFF by default — release-only dead-session claim reaping when the
+  // operator opts in (`autoclaw.selfHealing.reapDeadClaims`).
+  const reapDeadClaimsEnabled = opts.reapDeadClaims ?? false;
   let running = true;
   let timerId: NodeJS.Timeout | null = null;
   const state = freshLoopState();
@@ -930,7 +1036,7 @@ export function startOrchestratorLoop(opts: OrchestratorLoopOptions = {}): Orche
   const kick = async (): Promise<TickResult | void> => {
     if (!running) return;
     try {
-      const result = await runTick(workspaceRoot, state);
+      const result = await runTick(workspaceRoot, state, { selfHealingEnabled, reapDeadClaims: reapDeadClaimsEnabled });
       if (workspaceRoot) await writeLoopState(workspaceRoot, state);
       opts.onTick?.(result);
     } catch (e) {

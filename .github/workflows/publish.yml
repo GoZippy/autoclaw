@@ -29,21 +29,37 @@ jobs:
           run: npm test
 
       - name: Package extension
-        run: npx vsce package
+        run: npx vsce package --no-dependencies
 
+      # Fail loudly if scratch/untracked files leaked into the artifact (the
+      # 680 MB `research/` scare) — size cap + known never-ship path prefixes.
+      - name: Guard .vsix size/contents
+        run: node scripts/check-vsix-size.js
+
+      # Publishing is MANUAL by default (scripts/publish-vsce.js + publish-ovsx.js)
+      # so a tag for an already-published version doesn't red the run. To let CI
+      # publish a tag instead, set the repo Actions variable CI_PUBLISH=true (and
+      # do NOT pre-publish that version manually).
       - name: Publish to VS Code Marketplace
-        run: npx vsce publish --pat ${{ secrets.VSCE_PAT }}
+        if: ${{ vars.CI_PUBLISH == 'true' }}
+        run: npx vsce publish --packagePath *.vsix --pat ${{ secrets.VSCE_PAT }}
 
       - name: Publish to Open VSX
+        if: ${{ vars.CI_PUBLISH == 'true' }}
         run: npx ovsx publish *.vsix --token ${{ secrets.OVSX_TOKEN }}
 
+      # Always attach the built .vsix to the workflow run (downloadable proof of
+      # the tagged build), regardless of who publishes.
       - name: Upload .vsix artifact
         uses: actions/upload-artifact@v4
         with:
           name: autoclaw-vsix
           path: '*.vsix'
 
+      # Only CI manages the GitHub Release when CI is the publisher; manual
+      # releases are created by the maintainer with curated notes.
       - name: Create GitHub Release
+        if: ${{ vars.CI_PUBLISH == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           files: '*.vsix'

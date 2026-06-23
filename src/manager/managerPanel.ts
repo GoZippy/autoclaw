@@ -134,9 +134,52 @@ export function openManagerPanel(context: vscode.ExtensionContext): void {
   panel.webview.html = renderHtml(panel.webview, context.extensionUri);
 
   panel.webview.onDidReceiveMessage(
-    (msg: { command?: string }) => {
-      if (msg?.command === 'refresh' || msg?.command === 'ready') {
-        void refresh();
+    (msg: { command?: string; agentId?: string; sessionId?: string }) => {
+      switch (msg?.command) {
+        case 'refresh':
+        case 'ready':
+          void refresh();
+          break;
+        // Command Center P1 — safe fleet actions. Each delegates to an
+        // already-registered command; no fleet logic is reimplemented here.
+        case 'generateJoinPrompt':
+          void vscode.commands.executeCommand('autoclaw.fleet.joinPrompt');
+          break;
+        case 'inviteAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.invite');
+          break;
+        case 'admitAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.admit');
+          break;
+        case 'declineAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.decline');
+          break;
+        // LANE B — per-agent Command & Control. The card-detail buttons post
+        // {command, agentId}; forward straight to the matching fleet command
+        // (which prompts/confirms as needed). evict opens a REQUIRED modal in
+        // its command. Local single-operator only — no relay path.
+        case 'messageAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.messageAgent', { agentId: msg.agentId, sessionId: msg.sessionId });
+          break;
+        case 'pauseAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.pauseAgent', { agentId: msg.agentId, sessionId: msg.sessionId });
+          break;
+        case 'resumeAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.resumeAgent', { agentId: msg.agentId, sessionId: msg.sessionId });
+          break;
+        case 'reassignAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.reassignAgent', { agentId: msg.agentId, sessionId: msg.sessionId });
+          break;
+        case 'evictAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.evict', { agentId: msg.agentId, sessionId: msg.sessionId });
+          break;
+        case 'ping':
+          // The Manager card already had a Ping button; surface it as a message
+          // doorbell so the click does something rather than silently dropping.
+          void vscode.commands.executeCommand('autoclaw.fleet.messageAgent', { agentId: msg.agentId });
+          break;
+        default:
+          break;
       }
     },
     undefined,

@@ -6,7 +6,7 @@ import {
   extractPlatform, payloadExcerpt, filterAwaitingYou, renderAwaitingYou,
   renderFabricHealth, bridgeTooltip, kgTooltip, kgClickCommand,
   agentHost, isRemoteAgent, agentRole, renderRoleChip, renderTeamSummary,
-  renderSessionList, renderSelfIdentity,
+  renderSessionList, renderSelfIdentity, renderProvenanceBadge,
   type AgentWithLive, type InboxSummary, type AwaitingYouRow, type FabricHealth,
 } from '../webview-render';
 import type { Message, RegisteredAgent, Heartbeat } from '../comms';
@@ -267,6 +267,32 @@ suite('webview-render — agent cards', () => {
     assert.ok(!/self-identity/.test(html));
     assert.ok(!/you-pill/.test(html));
     assert.ok(!/is-self/.test(html));
+  });
+
+  test('the self pill reads "your agent", not "you" (a tool can host many sessions)', () => {
+    const html = renderAgentCard(makeFullAgent(), null, Date.now(), 'kiro');
+    assert.match(html, /class="you-pill"[^>]*>your agent</);
+  });
+
+  test('renderProvenanceBadge: sub-agent for parent_id, joined for beacon, none for plain', () => {
+    assert.match(renderProvenanceBadge({ ...makeMinimalAgent(), parent_id: 'claude-code' } as AgentWithLive),
+      /prov-badge prov-sub[^>]*>sub-agent</);
+    assert.match(renderProvenanceBadge({ ...makeMinimalAgent(), origin: 'beacon', host: 'box-2' }),
+      /prov-badge prov-joined[^>]*>joined</);
+    assert.strictEqual(renderProvenanceBadge(makeMinimalAgent()), '');
+    assert.strictEqual(renderProvenanceBadge({ ...makeMinimalAgent(), origin: 'relay' }), '');
+  });
+
+  test('agent card surfaces the provenance badge in the head', () => {
+    const sub = renderAgentCard({ ...makeMinimalAgent(), parent_id: 'claude-code' } as AgentWithLive);
+    assert.match(sub, /prov-sub/);
+    const plain = renderAgentCard(makeMinimalAgent());
+    assert.ok(!/prov-badge/.test(plain), 'a plain team agent carries no provenance badge');
+  });
+
+  test('a present-but-idle agent (no sessions, no session id) says so plainly', () => {
+    const html = renderAgentCard(makeMinimalAgent());
+    assert.match(html, /No active chat sessions/);
   });
 });
 
@@ -871,6 +897,54 @@ suite('webview-render — session list', () => {
     assert.match(html, /session-budget/);
     assert.match(html, /45k left/);
     assert.match(html, /ctx 200k/);                     // sonnet-4-6 = 200k
+  });
+
+  test('per-session state chips: active for live, stale for old', () => {
+    const html = renderSessionList([mkHb('live0001', 1), mkHb('old00001', 30)]);
+    assert.match(html, /session-state sst-active/);
+    assert.match(html, /session-state sst-stale/);
+  });
+
+  test('watch-mode status gets its own state chip', () => {
+    const watch = { ...mkHb('watch001', 1), status: 'watch' } as unknown as Heartbeat;
+    const html = renderSessionList([watch]);
+    assert.match(html, /session-state sst-watch/);
+    assert.match(html, />watch</);
+  });
+
+  test('self agent: freshest non-stale session is flagged "this window" and floated up', () => {
+    const html = renderSessionList(
+      [mkHb('old00001', 30), mkHb('live5678', 1)],
+      Date.now(),
+      { isSelfAgent: true }
+    );
+    assert.match(html, /session-row this-window/);
+    assert.match(html, /session-state sst-window/);
+    assert.match(html, /this window/);
+    assert.strictEqual((html.match(/this-window/g) || []).length, 1, 'exactly one this-window row');
+    assert.ok(html.indexOf('live5678') < html.indexOf('old00001'), 'this-window floated to the top');
+  });
+
+  test('self agent: selfSessionId pins the exact row even when a fresher one exists', () => {
+    const html = renderSessionList(
+      [mkHb('newaaaa1', 1), mkHb('pinbbbb2', 5)],
+      Date.now(),
+      { selfSessionId: 'pinbbbb2', isSelfAgent: true }
+    );
+    assert.strictEqual((html.match(/sst-window/g) || []).length, 1);
+    assert.ok(html.indexOf('pinbbbb2') < html.indexOf('newaaaa1'), 'pinned row floated above the fresher one');
+  });
+
+  test('peer (non-self) agent sessions are never flagged "this window"', () => {
+    const html = renderSessionList([mkHb('aaa11111', 1), mkHb('bbb22222', 2)], Date.now());
+    assert.ok(!/this-window/.test(html));
+    assert.ok(!/sst-window/.test(html));
+  });
+
+  test('self agent with only stale sessions flags nothing (honest)', () => {
+    const html = renderSessionList([mkHb('s1111111', 30), mkHb('s2222222', 45)], Date.now(), { isSelfAgent: true });
+    assert.ok(!/this-window/.test(html), 'all-stale self agent claims no live window');
+    assert.match(html, /sst-stale/);
   });
 
   test('empty → empty string', () => {
