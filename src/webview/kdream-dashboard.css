@@ -1275,6 +1275,15 @@ th {
 .cw-row .cw-status.cw-pending  { color: var(--vscode-charts-orange, #d7935d); }
 .cw-row .cw-age { margin-left: auto; font-size: 0.85em; color: var(--vscode-descriptionForeground); }
 .cw-more { font-size: 0.85em; font-style: italic; color: var(--vscode-descriptionForeground); margin: 4px 0 0; }
+/* Follow-up #4: per-agent cost line (tokens / $ / dispatches) — muted one-liner. */
+.agent-cost {
+  margin-top: 6px; font-size: 0.8em;
+  color: var(--vscode-descriptionForeground);
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+}
+.agent-cost .cost-arrow { opacity: 0.7; }
+.agent-cost .cost-sep { opacity: 0.5; }
+.agent-cost .cost-usd { color: var(--vscode-charts-green, #89d185); }
 .board-card-top { display: flex; align-items: center; gap: 6px; }
 .board-card .task-id {
   font-family: var(--vscode-editor-font-family, monospace);
