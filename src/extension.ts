@@ -4223,14 +4223,16 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     } catch { /* skip */ }
   }
   try {
-    // Pass the active host identity so the card list can mark "you" and render
-    // the persistent identity banner — makes the self-scoped "Awaiting You"
-    // section legible (same data, only the highlight differs per window).
+    // Pass the active host identity AND this window's own session id so the card
+    // list can mark "your agent" + flag the exact session running in this window
+    // (deterministic when the host session id is among the rows; else the card
+    // falls back to the freshest live session). Makes the self-scoped "Awaiting
+    // You" section legible — same data, only the highlight differs per window.
     const selfId = activeHostAgentId();
     view.webview.postMessage({
       command: 'updateAgentCards',
       data: {
-        html: renderAgentList(fleetAgents, summaries, Date.now(), selfId),
+        html: renderAgentList(fleetAgents, summaries, Date.now(), selfId, sessionId),
         count: fleetAgents.length,
       },
     });
