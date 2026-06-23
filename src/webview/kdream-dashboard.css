@@ -1193,15 +1193,18 @@ th {
   container-name: board;
 }
 .board-kanban {
-  display: flex;
-  flex-direction: column;   /* stack by default — a docked sidebar never scrolls sideways */
+  display: grid;
+  /* Auto-fit grid IS the responsive mechanism: ~1 lane below ~330px, then
+     2 / 3 / 4 / 5 lanes as the panel widens — it WRAPS, never scrolls
+     horizontally. No media/container query needed; the grid reflows to its own
+     width whether docked in the sidebar or popped to the editor area. */
+  grid-template-columns: repeat(auto-fit, minmax(165px, 1fr));
   gap: 6px;
-  overflow-x: visible;
+  align-items: start;
   padding-bottom: 4px;
 }
 .board-col {
   min-width: 0;
-  width: 100%;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--vscode-panel-border);
@@ -1471,24 +1474,7 @@ th {
   background: rgba(127, 127, 127, 0.16);
 }
 
-/* ===========================================================================
-   Kanban responsive band — keyed off the #board-body query container.
-   The board STACKS by default (one full-width lane per row, set on
-   .board-kanban above), so a docked sidebar NEVER scrolls horizontally —
-   every lane and card stays reachable by ordinary vertical scrolling. Only
-   when the surface is genuinely wide (e.g. the view dragged into the editor
-   area) do lanes spread into a grid that PACKS and WRAPS — still never a
-   horizontal scroller. Keyed off the lane's OWN width via @container, so it's
-   correct in the sidebar and when popped out. The wide board lives in the
-   separate "Open Wide" Manager tab (media/panel/fleet.*).
-   =========================================================================== */
-@container board (min-width: 600px) {
-  .board-kanban {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
-    align-items: start;
-    overflow-x: visible;
-  }
-  .board-col { width: auto; }
-  .board-col-head { position: sticky; top: 0; }
-}
+/* The board's responsive reflow is handled entirely by the auto-fit grid on
+   .board-kanban above (1→2→3→4→5 lanes by available width; wrap, not scroll),
+   so no @container band is needed here. The wide board also lives in the
+   separate "Open Wide" Manager tab (media/panel/fleet.*). */
