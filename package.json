@@ -542,308 +542,341 @@
         "mac": "cmd+alt+l"
       }
     ],
-    "configuration": {
-      "title": "AutoClaw",
-      "properties": {
-        "autoclaw.selfHealing.enabled": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "Let the orchestrator **auto-perform bounded, reversible recovery** (the HEAL self-healing phase) each loop tick — e.g. re-open a task whose owner went stale and whose claim has expired — and write a `finding_report` for every action. **Off by default**: when off, the loop only detects and reports drift and never mutates fleet state on its own. Only the single active supervisor host heals; actions never touch the master branch."
-        },
-        "autoclaw.selfHealing.reapDeadClaims": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "Let the orchestrator **auto-release abandoned claims** (CL-3) each loop tick: a claim whose owning *session* has no fresh heartbeat **and** whose claim is expired is archived to `claims/_reaped/` and the task becomes claimable again, with a `finding_report` per release. **Off by default.** This is the *release-only* subset of self-healing — it never touches live work, dispatches, or git — so it is safe to enable independently of `#autoclaw.selfHealing.enabled#`. A live session's claim is never reaped. You can also run it on demand via **AutoClaw: Reap Abandoned Claims**."
-        },
-        "autoclaw.intelligence.backendDir": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Directory the Intelligence vector backend (`sqlite-vec`) installs into. Leave blank for the project-local default `${workspaceFolder}/.autoclaw/native` — your project data stays in the project root and nothing is forced onto C:. Set an absolute path to share one backend across projects (any drive)."
-        },
-        "autoclaw.intelligence.autoRefresh.enabled": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "Run a background service that periodically refreshes the **per-host project context** digests (`autoclaw-project-context.*`) so file-only runners (Cursor, Windsurf, Continue, Cline/KiloCode, Antigravity) stay current even when you're not running `/learn` or `/index-code`. It only rewrites digests that **already exist** (created via **AutoClaw: Intelligence — Write Per-Host Project Context**), so enabling it never creates files as a surprise. Off by default."
-        },
-        "autoclaw.intelligence.autoRefresh.intervalMinutes": {
-          "type": "number",
-          "default": 30,
-          "minimum": 1,
-          "markdownDescription": "How often (minutes) the per-host context refresh service rebuilds existing digests when `#autoclaw.intelligence.autoRefresh.enabled#` is on. Clamped to a 1-minute floor."
-        },
-        "autoclaw.intelligence.systemDir": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Directory for the cross-project **system** intelligence tier (generally-useful / tool-use / system-wide knowledge that many projects share). Leave blank to disable. Set an absolute path on any drive (e.g. `K:/autoclaw-intelligence`) to enable — never silently placed on C:."
-        },
-        "autoclaw.intelligence.modelCacheDir": {
-          "type": "string",
-          "default": "",
-          "markdownDescription": "Directory the semantic embedding model (`@xenova/transformers`) downloads + caches into on first index. Leave blank for the project-local default `${workspaceFolder}/.autoclaw/models` — the multi-hundred-MB model weights stay in the project root and nothing is forced onto C:. Set an absolute path (any drive) to share one model cache across projects. Used only by the `transformers` embedding provider; install it via **AutoClaw: Intelligence — Install Embeddings Provider**."
-        },
-        "autoclaw.intelligence.logLevel": {
-          "type": "string",
-          "enum": [
-            "error",
-            "warn",
-            "info",
-            "debug",
-            "trace"
-          ],
-          "default": "info",
-          "markdownDescription": "Verbosity of the **AutoClaw — Intelligence** output channel. Raise to `debug` or `trace` to capture resolved paths, npm argv, and environment details when debugging install/retrieval issues. Run **AutoClaw: Intelligence — Diagnostics** for a one-shot environment dump."
-        },
-        "autoclaw.support.prompts": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show occasional, non-invasive prompts to rate, review, or support AutoClaw (at usage-day 15, 30, 90, then every 90). Each milestone prompts at most once and includes a permanent opt-out."
-        },
-        "autoclaw.agentRoles": {
-          "type": "object",
-          "default": {},
-          "description": "Declare the role each agent plays on the team, shown in the AutoClaw panel. Map an agent id to a role: orchestrator, architect, product, coder, reviewer, tester, security, designer, creative, docs, researcher, ops, or generalist. Synonyms (dev, qa, security-auditor, ui/ux, …) are accepted. Example: { \"claude-code\": \"orchestrator\", \"kilocode\": \"coder\" }. Use the 'AutoClaw: Set Agent Role' command to edit this without hand-writing JSON. Declared roles override auto-detected ones.",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "autoclaw.kdream.enableFileWatcher": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable file system watcher for KDream state changes"
-        },
-        "autoclaw.kdream.notifyNewTodos": {
-          "type": "boolean",
-          "default": true,
-          "description": "Show notification when new TODOs are detected"
-        },
-        "autoclaw.kdream.refreshInterval": {
-          "type": "number",
-          "default": 30,
-          "description": "Dashboard refresh interval in seconds"
-        },
-        "autoclaw.kdream.adapters": {
-          "type": "array",
-          "default": [
-            {
-              "name": "Claude Code",
-              "id": "Anthropic.claude-code"
-            },
-            {
-              "name": "Cline",
-              "id": "saoudrizwan.claude-dev"
-            },
-            {
-              "name": "KiloCode",
-              "id": "kilocode.kilo-code"
-            },
-            {
-              "name": "Kiro",
-              "id": "amazon.kiro"
-            },
-            {
-              "name": "Windsurf",
-              "id": "codeium.windsurf"
-            },
-            {
-              "name": "Continue",
-              "id": "Continue.continue"
-            },
-            {
-              "name": "Cursor",
-              "id": null
-            },
-            {
-              "name": "Antigravity",
-              "id": null
-            }
-          ],
-          "description": "List of AI adapters to monitor for health status. ZippyMesh LLM Router health is checked separately via HTTP."
-        },
-        "autoclaw.kdream.zippymeshUrl": {
-          "type": "string",
-          "default": "http://localhost:20128",
-          "description": "Base URL of ZippyMesh LLM Router instance (for health checks)"
-        },
-        "autoclaw.kdream.zippymeshSearchPaths": {
-          "type": "array",
-          "items": {
-            "type": "string"
+    "configuration": [
+      {
+        "title": "AutoClaw",
+        "order": 1,
+        "properties": {
+          "autoclaw.hostAgentId": {
+            "type": "string",
+            "enum": [
+              "claude-code",
+              "cline",
+              "kilocode",
+              "kiro",
+              "cursor",
+              "continue",
+              "windsurf",
+              "antigravity"
+            ],
+            "enumDescriptions": [
+              "Invoke skills as /slash commands (skills installed globally to ~/.claude/skills)",
+              "Reference rules in .clinerules/",
+              "Reference rules in .clinerules/ (Kilo Code reads Cline-format rules)",
+              "Reference steering files in .kiro/steering/",
+              "Reference rules in .cursor/rules/ (.mdc)",
+              "Reference prompts in .continue/prompts/ (.prompt)",
+              "Reference rules in .windsurf/rules/",
+              "Reference rules in .agent/rules/"
+            ],
+            "markdownDescription": "Which AI agent the **AutoClaw: Launch Skill** picker targets when several are installed in stock VS Code. Editor forks (Cursor, Kiro, Windsurf, Antigravity) are detected automatically and ignore this. Leave unset to prefer an installed Claude Code, else the single installed agent extension."
           },
-          "default": [],
-          "description": "Additional filesystem paths to search for a ZippyMesh LLM Router installation when configuring MCP. Workspace-relative and ~/zippymesh-router candidates are always checked first."
-        },
-        "autoclaw.kdream.scanPatterns": {
-          "type": "array",
-          "default": [
-            "**/*.ts",
-            "**/*.js",
-            "**/*.tsx",
-            "**/*.jsx",
-            "**/*.py",
-            "**/*.md"
-          ],
-          "description": "File patterns to scan for TODOs/FIXMEs"
-        },
-        "autoclaw.kdream.notificationLevel": {
-          "type": "string",
-          "enum": [
-            "all",
-            "warnings",
-            "errors",
-            "none"
-          ],
-          "default": "all",
-          "description": "Notification verbosity level"
-        },
-        "autoclaw.kdream.autoInstallAdapters": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically install adapters for detected AI extensions"
-        },
-        "autoclaw.hostAgentId": {
-          "type": "string",
-          "enum": [
-            "claude-code",
-            "cline",
-            "kilocode",
-            "kiro",
-            "cursor",
-            "continue",
-            "windsurf",
-            "antigravity"
-          ],
-          "enumDescriptions": [
-            "Invoke skills as /slash commands (skills installed globally to ~/.claude/skills)",
-            "Reference rules in .clinerules/",
-            "Reference rules in .clinerules/ (Kilo Code reads Cline-format rules)",
-            "Reference steering files in .kiro/steering/",
-            "Reference rules in .cursor/rules/ (.mdc)",
-            "Reference prompts in .continue/prompts/ (.prompt)",
-            "Reference rules in .windsurf/rules/",
-            "Reference rules in .agent/rules/"
-          ],
-          "markdownDescription": "Which AI agent the **AutoClaw: Launch Skill** picker targets when several are installed in stock VS Code. Editor forks (Cursor, Kiro, Windsurf, Antigravity) are detected automatically and ignore this. Leave unset to prefer an installed Claude Code, else the single installed agent extension."
-        },
-        "autoclaw.autobuild.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Run scheduled AutoBuild workflows from the extension host"
-        },
-        "autoclaw.autobuild.tickIntervalSeconds": {
-          "type": "number",
-          "default": 30,
-          "minimum": 10,
-          "description": "How often the AutoBuild scheduler checks for due workflows (seconds, minimum 10)"
-        },
-        "autoclaw.orchestrate.workAgents": {
-          "type": "number",
-          "default": 4,
-          "minimum": 1,
-          "maximum": 8,
-          "description": "Number of parallel work agents for orchestration"
-        },
-        "autoclaw.orchestrate.maxTasksPerAgent": {
-          "type": "number",
-          "default": 3,
-          "minimum": 1,
-          "description": "Maximum tasks assigned to a single agent per sprint"
-        },
-        "autoclaw.orchestrate.maxSubtasksPerSprint": {
-          "type": "number",
-          "default": 15,
-          "minimum": 1,
-          "description": "Maximum subtasks across all agents in a single sprint"
-        },
-        "autoclaw.orchestrate.branchPrefix": {
-          "type": "string",
-          "default": "feat/",
-          "description": "Git branch prefix for sprint feature branches"
-        },
-        "autoclaw.orchestrate.migrationRangeSize": {
-          "type": "number",
-          "default": 4,
-          "minimum": 1,
-          "description": "Number of migration slots reserved per agent per sprint"
-        },
-        "autoclaw.orchestrate.baseBranch": {
-          "type": "string",
-          "default": "main",
-          "description": "Base branch that sprint branches are merged into (e.g. main, develop)"
-        },
-        "autoclaw.orchestrate.heartbeatStallSeconds": {
-          "type": "number",
-          "default": 300,
-          "minimum": 30,
-          "description": "Skip WA-N slots whose mapped agent has not heart-beaten within this many seconds when assigning sprints. Default 300 (5 min)."
-        },
-        "autoclaw.orchestrate.reconcileIntervalSeconds": {
-          "type": "number",
-          "default": 300,
-          "minimum": 0,
-          "description": "How often the reconciliation sweep runs to detect drift between tasks.md / sprint YAML / comms-log (seconds). Set 0 to disable."
-        },
-        "autoclaw.bridge.autoStart": {
-          "type": "boolean",
-          "default": true,
-          "description": "Auto-start the OpenClaw bridge on 127.0.0.1 when at least one orchestrator manifest exists. Set false to require an explicit AutoClaw: Start Bridge command."
-        },
-        "autoclaw.bridge.enabled": {
-          "type": "boolean",
-          "default": false,
-          "description": "Force-enable the OpenClaw HTTP bridge server for remote agents (overrides autoStart manifest probe)"
-        },
-        "autoclaw.bridge.port": {
-          "type": "number",
-          "default": 0,
-          "description": "Port for the OpenClaw bridge server. 0 (default) auto-assigns a conflict-free port based on IDE and workspace."
-        },
-        "autoclaw.bridge.host": {
-          "type": "string",
-          "default": "127.0.0.1",
-          "description": "Host for the OpenClaw bridge server (use 0.0.0.0 for external access)"
-        },
-        "autoclaw.kg.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable the AutoClaw Knowledge Graph. This is an in-process store on the Intelligence Layer's ABI-proof SQLite driver — no child process and no native dependencies to install. Opened lazily on first use. Disable to turn off memory recall + bi-temporal facts."
-        },
-        "autoclaw.kg.spawnDaemonOnActivate": {
-          "type": "boolean",
-          "default": false,
-          "description": "Legacy/advanced: spawn the optional standalone Knowledge Graph daemon (packages/kg-daemon) as a child process on activation. Not needed for normal use — the default KG is in-process. Requires the daemon's dependencies to be installed."
-        },
-        "autoclaw.kg.port": {
-          "type": "number",
-          "default": 0,
-          "description": "Port for the OPTIONAL standalone Knowledge Graph daemon's HTTP server (autoclaw.kg.start / spawnDaemonOnActivate). Has no effect on the default in-process store. 0 auto-assigns a conflict-free port based on IDE and workspace."
-        },
-        "autoclaw.kg.dbPath": {
-          "type": "string",
-          "default": "",
-          "description": "Override path to the SQLite file used by the Knowledge Graph. Empty (default) uses `.autoclaw/kg/kg.db` under the workspace."
-        },
-        "autoclaw.fabric.busDriver": {
-          "type": "string",
-          "enum": [
-            "fs",
-            "ws",
-            "nats"
-          ],
-          "default": "fs",
-          "description": "Cross-agent message bus. 'fs' = filesystem mailbox only (default, zero config). 'ws' = piggyback on the bridge BridgeEventBus. 'nats' = NATS server (requires nats-server running; falls back to fs if unreachable)."
-        },
-        "autoclaw.fabric.natsUrl": {
-          "type": "string",
-          "default": "nats://127.0.0.1:4222",
-          "description": "URL of the NATS server used when autoclaw.fabric.busDriver = 'nats'. Ignored for fs/ws drivers."
-        },
-        "autoclaw.workspaceRegistry.enabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable machine-wide workspace registry for cross-IDE agent orchestration. When enabled, each IDE instance registers its bridge endpoint in ~/.autoclaw/.agent-registry.json so other agents can discover it."
+          "autoclaw.agentRoles": {
+            "type": "object",
+            "default": {},
+            "description": "Declare the role each agent plays on the team, shown in the AutoClaw panel. Map an agent id to a role: orchestrator, architect, product, coder, reviewer, tester, security, designer, creative, docs, researcher, ops, or generalist. Synonyms (dev, qa, security-auditor, ui/ux, …) are accepted. Example: { \"claude-code\": \"orchestrator\", \"kilocode\": \"coder\" }. Use the 'AutoClaw: Set Agent Role' command to edit this without hand-writing JSON. Declared roles override auto-detected ones.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "autoclaw.support.prompts": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show occasional, non-invasive prompts to rate, review, or support AutoClaw (at usage-day 15, 30, 90, then every 90). Each milestone prompts at most once and includes a permanent opt-out."
+          }
+        }
+      },
+      {
+        "title": "Intelligence",
+        "order": 2,
+        "properties": {
+          "autoclaw.intelligence.backendDir": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Directory the Intelligence vector backend (`sqlite-vec`) installs into. Leave blank for the project-local default `${workspaceFolder}/.autoclaw/native` — your project data stays in the project root and nothing is forced onto C:. Set an absolute path to share one backend across projects (any drive)."
+          },
+          "autoclaw.intelligence.autoRefresh.enabled": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Run a background service that periodically refreshes the **per-host project context** digests (`autoclaw-project-context.*`) so file-only runners (Cursor, Windsurf, Continue, Cline/KiloCode, Antigravity) stay current even when you're not running `/learn` or `/index-code`. It only rewrites digests that **already exist** (created via **AutoClaw: Intelligence — Write Per-Host Project Context**), so enabling it never creates files as a surprise. Off by default."
+          },
+          "autoclaw.intelligence.autoRefresh.intervalMinutes": {
+            "type": "number",
+            "default": 30,
+            "minimum": 1,
+            "markdownDescription": "How often (minutes) the per-host context refresh service rebuilds existing digests when `#autoclaw.intelligence.autoRefresh.enabled#` is on. Clamped to a 1-minute floor."
+          },
+          "autoclaw.intelligence.systemDir": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Directory for the cross-project **system** intelligence tier (generally-useful / tool-use / system-wide knowledge that many projects share). Leave blank to disable. Set an absolute path on any drive (e.g. `K:/autoclaw-intelligence`) to enable — never silently placed on C:."
+          },
+          "autoclaw.intelligence.modelCacheDir": {
+            "type": "string",
+            "default": "",
+            "markdownDescription": "Directory the semantic embedding model (`@xenova/transformers`) downloads + caches into on first index. Leave blank for the project-local default `${workspaceFolder}/.autoclaw/models` — the multi-hundred-MB model weights stay in the project root and nothing is forced onto C:. Set an absolute path (any drive) to share one model cache across projects. Used only by the `transformers` embedding provider; install it via **AutoClaw: Intelligence — Install Embeddings Provider**."
+          },
+          "autoclaw.intelligence.logLevel": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warn",
+              "info",
+              "debug",
+              "trace"
+            ],
+            "default": "info",
+            "markdownDescription": "Verbosity of the **AutoClaw — Intelligence** output channel. Raise to `debug` or `trace` to capture resolved paths, npm argv, and environment details when debugging install/retrieval issues. Run **AutoClaw: Intelligence — Diagnostics** for a one-shot environment dump."
+          }
+        }
+      },
+      {
+        "title": "Knowledge Graph",
+        "order": 3,
+        "properties": {
+          "autoclaw.kg.enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable the AutoClaw Knowledge Graph. This is an in-process store on the Intelligence Layer's ABI-proof SQLite driver — no child process and no native dependencies to install. Opened lazily on first use. Disable to turn off memory recall + bi-temporal facts."
+          },
+          "autoclaw.kg.dbPath": {
+            "type": "string",
+            "default": "",
+            "description": "Override path to the SQLite file used by the Knowledge Graph. Empty (default) uses `.autoclaw/kg/kg.db` under the workspace."
+          },
+          "autoclaw.kg.spawnDaemonOnActivate": {
+            "type": "boolean",
+            "default": false,
+            "description": "Legacy/advanced: spawn the optional standalone Knowledge Graph daemon (packages/kg-daemon) as a child process on activation. Not needed for normal use — the default KG is in-process. Requires the daemon's dependencies to be installed."
+          },
+          "autoclaw.kg.port": {
+            "type": "number",
+            "default": 0,
+            "description": "Port for the OPTIONAL standalone Knowledge Graph daemon's HTTP server (autoclaw.kg.start / spawnDaemonOnActivate). Has no effect on the default in-process store. 0 auto-assigns a conflict-free port based on IDE and workspace."
+          }
+        }
+      },
+      {
+        "title": "Orchestration & AutoBuild",
+        "order": 4,
+        "properties": {
+          "autoclaw.autobuild.enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Run scheduled AutoBuild workflows from the extension host"
+          },
+          "autoclaw.autobuild.tickIntervalSeconds": {
+            "type": "number",
+            "default": 30,
+            "minimum": 10,
+            "description": "How often the AutoBuild scheduler checks for due workflows (seconds, minimum 10)"
+          },
+          "autoclaw.orchestrate.workAgents": {
+            "type": "number",
+            "default": 4,
+            "minimum": 1,
+            "maximum": 8,
+            "description": "Number of parallel work agents for orchestration"
+          },
+          "autoclaw.orchestrate.maxTasksPerAgent": {
+            "type": "number",
+            "default": 3,
+            "minimum": 1,
+            "description": "Maximum tasks assigned to a single agent per sprint"
+          },
+          "autoclaw.orchestrate.maxSubtasksPerSprint": {
+            "type": "number",
+            "default": 15,
+            "minimum": 1,
+            "description": "Maximum subtasks across all agents in a single sprint"
+          },
+          "autoclaw.orchestrate.branchPrefix": {
+            "type": "string",
+            "default": "feat/",
+            "description": "Git branch prefix for sprint feature branches"
+          },
+          "autoclaw.orchestrate.migrationRangeSize": {
+            "type": "number",
+            "default": 4,
+            "minimum": 1,
+            "description": "Number of migration slots reserved per agent per sprint"
+          },
+          "autoclaw.orchestrate.baseBranch": {
+            "type": "string",
+            "default": "main",
+            "description": "Base branch that sprint branches are merged into (e.g. main, develop)"
+          },
+          "autoclaw.orchestrate.heartbeatStallSeconds": {
+            "type": "number",
+            "default": 300,
+            "minimum": 30,
+            "description": "Skip WA-N slots whose mapped agent has not heart-beaten within this many seconds when assigning sprints. Default 300 (5 min)."
+          },
+          "autoclaw.orchestrate.reconcileIntervalSeconds": {
+            "type": "number",
+            "default": 300,
+            "minimum": 0,
+            "description": "How often the reconciliation sweep runs to detect drift between tasks.md / sprint YAML / comms-log (seconds). Set 0 to disable."
+          },
+          "autoclaw.selfHealing.enabled": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Let the orchestrator **auto-perform bounded, reversible recovery** (the HEAL self-healing phase) each loop tick — e.g. re-open a task whose owner went stale and whose claim has expired — and write a `finding_report` for every action. **Off by default**: when off, the loop only detects and reports drift and never mutates fleet state on its own. Only the single active supervisor host heals; actions never touch the master branch."
+          },
+          "autoclaw.selfHealing.reapDeadClaims": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Let the orchestrator **auto-release abandoned claims** (CL-3) each loop tick: a claim whose owning *session* has no fresh heartbeat **and** whose claim is expired is archived to `claims/_reaped/` and the task becomes claimable again, with a `finding_report` per release. **Off by default.** This is the *release-only* subset of self-healing — it never touches live work, dispatches, or git — so it is safe to enable independently of `#autoclaw.selfHealing.enabled#`. A live session's claim is never reaped. You can also run it on demand via **AutoClaw: Reap Abandoned Claims**."
+          }
+        }
+      },
+      {
+        "title": "Networking & Fabric",
+        "order": 5,
+        "properties": {
+          "autoclaw.bridge.autoStart": {
+            "type": "boolean",
+            "default": true,
+            "description": "Auto-start the OpenClaw bridge on 127.0.0.1 when at least one orchestrator manifest exists. Set false to require an explicit AutoClaw: Start Bridge command."
+          },
+          "autoclaw.bridge.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Force-enable the OpenClaw HTTP bridge server for remote agents (overrides autoStart manifest probe)"
+          },
+          "autoclaw.bridge.port": {
+            "type": "number",
+            "default": 0,
+            "description": "Port for the OpenClaw bridge server. 0 (default) auto-assigns a conflict-free port based on IDE and workspace."
+          },
+          "autoclaw.bridge.host": {
+            "type": "string",
+            "default": "127.0.0.1",
+            "description": "Host for the OpenClaw bridge server (use 0.0.0.0 for external access)"
+          },
+          "autoclaw.fabric.busDriver": {
+            "type": "string",
+            "enum": [
+              "fs",
+              "ws",
+              "nats"
+            ],
+            "default": "fs",
+            "description": "Cross-agent message bus. 'fs' = filesystem mailbox only (default, zero config). 'ws' = piggyback on the bridge BridgeEventBus. 'nats' = NATS server (requires nats-server running; falls back to fs if unreachable)."
+          },
+          "autoclaw.fabric.natsUrl": {
+            "type": "string",
+            "default": "nats://127.0.0.1:4222",
+            "description": "URL of the NATS server used when autoclaw.fabric.busDriver = 'nats'. Ignored for fs/ws drivers."
+          },
+          "autoclaw.workspaceRegistry.enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable machine-wide workspace registry for cross-IDE agent orchestration. When enabled, each IDE instance registers its bridge endpoint in ~/.autoclaw/.agent-registry.json so other agents can discover it."
+          }
+        }
+      },
+      {
+        "title": "KDream Dashboard",
+        "order": 6,
+        "properties": {
+          "autoclaw.kdream.enableFileWatcher": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable file system watcher for KDream state changes"
+          },
+          "autoclaw.kdream.notifyNewTodos": {
+            "type": "boolean",
+            "default": true,
+            "description": "Show notification when new TODOs are detected"
+          },
+          "autoclaw.kdream.refreshInterval": {
+            "type": "number",
+            "default": 30,
+            "description": "Dashboard refresh interval in seconds"
+          },
+          "autoclaw.kdream.adapters": {
+            "type": "array",
+            "default": [
+              {
+                "name": "Claude Code",
+                "id": "Anthropic.claude-code"
+              },
+              {
+                "name": "Cline",
+                "id": "saoudrizwan.claude-dev"
+              },
+              {
+                "name": "KiloCode",
+                "id": "kilocode.kilo-code"
+              },
+              {
+                "name": "Kiro",
+                "id": "amazon.kiro"
+              },
+              {
+                "name": "Windsurf",
+                "id": "codeium.windsurf"
+              },
+              {
+                "name": "Continue",
+                "id": "Continue.continue"
+              },
+              {
+                "name": "Cursor",
+                "id": null
+              },
+              {
+                "name": "Antigravity",
+                "id": null
+              }
+            ],
+            "description": "List of AI adapters to monitor for health status. ZippyMesh LLM Router health is checked separately via HTTP."
+          },
+          "autoclaw.kdream.zippymeshUrl": {
+            "type": "string",
+            "default": "http://localhost:20128",
+            "description": "Base URL of ZippyMesh LLM Router instance (for health checks)"
+          },
+          "autoclaw.kdream.zippymeshSearchPaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "Additional filesystem paths to search for a ZippyMesh LLM Router installation when configuring MCP. Workspace-relative and ~/zippymesh-router candidates are always checked first."
+          },
+          "autoclaw.kdream.scanPatterns": {
+            "type": "array",
+            "default": [
+              "**/*.ts",
+              "**/*.js",
+              "**/*.tsx",
+              "**/*.jsx",
+              "**/*.py",
+              "**/*.md"
+            ],
+            "description": "File patterns to scan for TODOs/FIXMEs"
+          },
+          "autoclaw.kdream.notificationLevel": {
+            "type": "string",
+            "enum": [
+              "all",
+              "warnings",
+              "errors",
+              "none"
+            ],
+            "default": "all",
+            "description": "Notification verbosity level"
+          },
+          "autoclaw.kdream.autoInstallAdapters": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically install adapters for detected AI extensions"
+          }
         }
       }
-    }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile && npm run copy-webview && npm run copy-runtime-deps",
