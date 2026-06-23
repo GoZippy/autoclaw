@@ -90,6 +90,74 @@ suite('board renderer — kanban shell', () => {
   });
 });
 
+suite('board renderer — card detail drill-down (Lane A)', () => {
+  test('every card carries a detail toggle + a collapsed .card-detail block', () => {
+    const html = renderBoard(board, ctx);
+    assert.ok(html.includes('card-detail-toggle'), 'detail toggle present');
+    // The detail block ships collapsed (hidden) so the board reads compact.
+    assert.ok(/<div class="card-detail" hidden>/.test(html), 'detail block hidden by default');
+  });
+
+  test('claimable detail surfaces priority/sprint/files', () => {
+    const html = renderBoard(board, ctx);
+    // T-1 lists two files in its detail.
+    assert.ok(html.includes('detail-files'));
+    assert.ok(html.includes('a.ts') && html.includes('b.ts'));
+    assert.ok(html.includes('>high<'), 'priority value present in detail');
+  });
+
+  test('review detail surfaces approvals / change-requests / votes / rule', () => {
+    const html = renderBoard(board, ctx);
+    assert.ok(html.includes('Approvals'));
+    assert.ok(html.includes('Change requests'));
+    assert.ok(html.includes('>majority<'), 'consensus rule value present');
+    assert.ok(html.includes('detail-reviewers'), 'reviewers row present');
+  });
+
+  test('stuck detail surfaces reason + detail note', () => {
+    const html = renderBoard(board, ctx);
+    assert.ok(html.includes('>claim expired<'), 'reason in detail KV');
+    assert.ok(html.includes('ttl exceeded'), 'detail note rendered');
+  });
+
+  test('Open-chat button renders ONLY when sessionOf has the owner', () => {
+    // No sessionOf → no button anywhere (graceful omission, no dead button).
+    assert.ok(!renderBoard(board, ctx).includes('session-open'));
+    // With a session for the in-flight owner (claude-code), its card gets one.
+    const withSession: BoardRenderContext = {
+      ...ctx,
+      sessionOf: {
+        'claude-code': { session_id: 'sess-abc', source: 'claude-code', rawRef: '/x/raw' },
+      },
+    };
+    const html = renderBoard(board, withSession);
+    assert.ok(html.includes('session-open'), 'open-chat button rendered for owner with a session');
+    assert.ok(html.includes('data-session-id="sess-abc"'));
+    assert.ok(html.includes('data-source="claude-code"'));
+    assert.ok(html.includes('data-raw-ref="/x/raw"'));
+  });
+
+  test('no Open-chat button for an owner absent from sessionOf', () => {
+    // kilocode authors no in-flight work and has no session entry → review card
+    // (authored by claude-code) gets a button, but only because claude-code has one.
+    const onlyKilo: BoardRenderContext = {
+      ...ctx,
+      sessionOf: { kilocode: { session_id: 'k-1', source: 'kilocode' } },
+    };
+    const html = renderBoard(board, onlyKilo);
+    // The in-flight + done + review cards are owned by claude-code (no session) →
+    // no button references claude-code's (absent) session.
+    assert.ok(!html.includes('data-session-id="k-1"'),
+      'kilocode session never surfaces (it owns no card here)');
+  });
+
+  test('a card with no detail/sessionOf renders no toggle (back-compat)', () => {
+    // An empty board still produces the empty hint, never a stray toggle.
+    const empty = renderBoard({ claimable: [], in_flight: [], awaiting_review: [], stuck: [] }, ctx);
+    assert.ok(!empty.includes('card-detail-toggle'));
+  });
+});
+
 suite('board renderer — large fleets', () => {
   test('caps cards per column and shows a "+N more" footer', () => {
     const n = MAX_CARDS_PER_COLUMN + 5;

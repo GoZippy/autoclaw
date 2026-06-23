@@ -4,9 +4,45 @@
  * so it tracks light/dark/high-contrast themes. No external fonts / no CDN.
  */
 
+/* ── AutoClaw design tokens (CANONICAL) ─────────────────────────────────
+ * This :root block is the single source of truth for AutoClaw's webview
+ * design language. It is MIRRORED byte-for-byte into the three panel
+ * stylesheets — src/webview/kdream-dashboard.css, media/panel/fleet.css and
+ * media/intelligence/dashboard.css — because each surface loads from a
+ * different asset root and links exactly one stylesheet, so they cannot yet
+ * share one physical file without host-side wiring + CSP review. Keep the
+ * three copies identical. Every value derives from a VS Code theme var (with
+ * a fallback equal to the literal it replaced) so all three surfaces still
+ * track light / dark / high-contrast themes. A future refactor can promote
+ * this to a real shared tokens.css.
+ * ----------------------------------------------------------------------- */
 :root {
-  --gap: 12px;
-  --radius: 6px;
+  /* Spacing scale */
+  --acw-space-1: 4px;
+  --acw-space-2: 6px;
+  --acw-space-3: 8px;
+  --acw-space-4: 10px;
+  --acw-space-5: 12px;
+  /* Radii */
+  --acw-radius-sm: 4px;
+  --acw-radius-md: 6px;
+  /* Surfaces */
+  --acw-card-bg: var(--vscode-editorWidget-background, rgba(127,127,127,0.06));
+  --acw-card-border: var(--vscode-panel-border, rgba(127,127,127,0.25));
+  --acw-section-bg: var(--vscode-editor-inactiveSelectionBackground);
+  --acw-header-fg: var(--vscode-descriptionForeground);
+  /* Canonical status / role colors */
+  --acw-status-active: var(--vscode-charts-green, #89d185);
+  --acw-status-idle: var(--vscode-charts-yellow, #d7ba7d);
+  --acw-status-warn: var(--vscode-charts-orange, #d7935d);
+  --acw-status-info: var(--vscode-charts-blue, #3794ff);
+  --acw-status-error: var(--vscode-charts-red, #f14c4c);
+  --acw-status-special: var(--vscode-charts-purple, #b180d7);
+  /* Aliases (kept so dashboard.css's existing --gap / --radius call sites
+   * keep resolving; harmless on the other two surfaces). */
+  --acw-gap: var(--acw-space-5);
+  --gap: var(--acw-space-5);
+  --radius: var(--acw-radius-md);
 }
 
 * {

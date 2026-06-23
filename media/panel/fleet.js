@@ -80,12 +80,58 @@
       return m.type + ' → ' + m.to + ': ' + m.preview;
     });
 
-    const ping = el('button', 'btn-ping', 'Ping');
+    // LANE B: per-agent work-history timeline. The fleet model's card detail
+    // carries the agent's claimed (in-flight) tasks and its recent outbound
+    // activity; render them as a compact, newest-first timeline so the operator
+    // sees what this agent is driving without cross-referencing the board.
+    var claimed = dt.claimedTasks || [];
+    var outbound = dt.lastOutbound || [];
+    if (claimed.length || outbound.length) {
+      detail.appendChild(el('h4', null, 'Work history'));
+      var ol = el('ol', 'history-timeline');
+      claimed.forEach(function (t) {
+        var li = el('li', 'history-row history-active');
+        li.appendChild(el('span', 'history-dot history-dot-active'));
+        li.appendChild(el('span', 'history-task', t));
+        li.appendChild(el('span', 'history-state', 'in flight'));
+        ol.appendChild(li);
+      });
+      outbound.forEach(function (m) {
+        var li = el('li', 'history-row history-done');
+        li.appendChild(el('span', 'history-dot history-dot-done'));
+        li.appendChild(el('span', 'history-task', m.type));
+        li.appendChild(el('span', 'history-title', '→ ' + m.to + ': ' + m.preview));
+        ol.appendChild(li);
+      });
+      detail.appendChild(ol);
+    }
+
+    // LANE B: per-agent Command & Control action row. Each button posts
+    // {command, agentId} to the host; the host owns confirmation (Evict opens a
+    // REQUIRED modal). stopPropagation so a click never toggles the card.
+    var actions = el('div', 'card-actions');
+    function actionBtn(command, label, title, cls) {
+      var b = el('button', 'btn-action' + (cls ? ' ' + cls : ''), label);
+      b.title = title;
+      b.addEventListener('click', function (ev) {
+        ev.stopPropagation();
+        vscode.postMessage({ command: command, agentId: card.agentId });
+      });
+      return b;
+    }
+    var ping = el('button', 'btn-ping', 'Ping');
+    ping.title = 'Ping this agent';
     ping.addEventListener('click', function (ev) {
       ev.stopPropagation();
       vscode.postMessage({ command: 'ping', agentId: card.agentId });
     });
-    detail.appendChild(ping);
+    actions.appendChild(ping);
+    actions.appendChild(actionBtn('messageAgent', 'Message', 'Send this agent a message (lands in its inbox).'));
+    actions.appendChild(actionBtn('pauseAgent', 'Pause', 'Ask this agent to stop claiming new work.'));
+    actions.appendChild(actionBtn('resumeAgent', 'Resume', 'Tell a paused agent it may claim work again.'));
+    actions.appendChild(actionBtn('reassignAgent', 'Reassign', 'Release a claim this agent holds back to the board.'));
+    actions.appendChild(actionBtn('evictAgent', 'Evict', 'Evict this agent (releases work, revokes trust, retires it). Confirmation required.', 'btn-evict'));
+    detail.appendChild(actions);
     return detail;
   }
 
@@ -102,6 +148,12 @@
 
     cards.forEach(function (card) {
       const c = el('div', 'agent-card');
+      // Drill-down parity with the sidebar: the card is a keyboard-focusable
+      // toggle (Enter/Space expands its .card-detail, same as a click). This
+      // makes the .agent-card:focus-visible affordance in fleet.css reachable.
+      c.tabIndex = 0;
+      c.setAttribute('role', 'button');
+      c.setAttribute('aria-expanded', 'false');
 
       const top = el('div', 'card-top');
       top.appendChild(el('span', 'avatar', card.avatar));
@@ -130,8 +182,19 @@
       const detail = renderCardDetail(card);
       c.appendChild(detail);
 
-      c.addEventListener('click', function () {
-        detail.classList.toggle('hidden');
+      function toggleDetail() {
+        const nowHidden = detail.classList.toggle('hidden');
+        c.setAttribute('aria-expanded', nowHidden ? 'false' : 'true');
+      }
+      c.addEventListener('click', toggleDetail);
+      // Keyboard parity: Enter / Space expands, but never when the focus is on a
+      // nested action button (those handle their own activation + stopPropagation).
+      c.addEventListener('keydown', function (ev) {
+        if (ev.target !== c) { return; }
+        if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+          ev.preventDefault();
+          toggleDetail();
+        }
       });
 
       grid.appendChild(c);

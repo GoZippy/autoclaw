@@ -44,6 +44,37 @@ export interface AgentWithLive extends RegisteredAgent {
    *  AgentWorkload in taskLedger.ts; kept inline so this pure render module has
    *  no cross-module import. */
   workload?: AgentWorkload;
+  /** Lane A: the task ids this agent is actively driving right now (board
+   *  `in_flight` claims it owns), computed host-side. Surfaced as a
+   *  "Current task(s)" summary line near the top of the expanded body so the
+   *  agent's live work is legible without cross-referencing the board. Optional
+   *  — absent/empty ⇒ no line (card renders exactly as before). */
+  currentTasks?: string[];
+  /** LANE C: per-agent metrics rolled up from the LLM cost ledger (tokens in /
+   *  out, $ spend, dispatch count), attributed to this agent host-side. Surfaced
+   *  as a compact pip on the always-visible head + a Metrics block in the body.
+   *  Optional — absent ⇒ the card renders exactly as before (no pip, no block).
+   *  The shape mirrors `AgentMetrics` in src/fleet/fleetMetrics.ts; kept inline
+   *  so this pure render module has no cross-module (fs-importing) dependency. */
+  metrics?: AgentMetrics;
+}
+
+/** Per-agent metrics rollup attached to a card model (LANE C).
+ *  Structurally identical to `AgentMetrics` in src/fleet/fleetMetrics.ts. Kept
+ *  inline (not imported) because fleetMetrics.ts pulls in `fs`/`path`, which a
+ *  pure HTML-render module must not depend on. */
+export interface AgentMetrics {
+  agentId: string;
+  /** Summed input tokens across attributed ledger rows. */
+  tokensIn: number;
+  /** Summed output tokens across attributed ledger rows. */
+  tokensOut: number;
+  /** `tokensIn + tokensOut`, precomputed by the builder. */
+  tokensTotal: number;
+  /** Summed spend in USD (cents/100, rounded to cents). 0 for local models. */
+  costUsd: number;
+  /** Number of ledger rows attributed to this agent. */
+  dispatches: number;
 }
 
 /** Per-agent workload rollup + recent completions, attached to a card model.
@@ -319,6 +350,34 @@ function sortSessions(sessions: readonly Heartbeat[]): Heartbeat[] {
     new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 }
 
+/** Minimal shape needed to deep-link a chat session — the canonical
+ *  "Open chat" affordance. Mirrors the relevant Heartbeat fields so callers
+ *  outside the session list (board cards, agent current-task lines) can reuse
+ *  the exact same button + host `openSession` ladder. */
+export interface OpenChatRef {
+  session_id?: string | null;
+  /** Adapter/agent id the host's deep-link ladder keys on (claude-code → resume). */
+  source?: string | null;
+  /** Transcript path for the reveal-rung fallback (tools with no resume URI). */
+  rawRef?: string | null;
+}
+
+/**
+ * The single canonical "Open chat ↗" button markup, shared by the session list
+ * and the board/agent detail views. Renders '' when there is no session id to
+ * act on — mirroring the `if (s.session_id)` guard in {@link renderSessionList},
+ * so a card never carries a dead button. The host wires it via the `openSession`
+ * command (see kdream-dashboard.js) → `handleOpenSession` deep-link ladder.
+ */
+export function openChatButton(ref: OpenChatRef | undefined): string {
+  if (!ref || !ref.session_id) { return ''; }
+  return `<button type="button" class="session-open"`
+    + ` data-session-id="${esc(ref.session_id)}"`
+    + ` data-source="${esc(ref.source ?? '')}"`
+    + ` data-raw-ref="${esc(ref.rawRef ?? '')}"`
+    + ` title="Open this chat session">Open chat ↗</button>`;
+}
+
 /**
  * Render the per-agent session list (expanded card body). One row per
  * session heartbeat: short id, status, model, current task, last-seen.
@@ -346,14 +405,9 @@ export function renderSessionList(sessions: readonly Heartbeat[] | undefined, no
     h += `<span class="session-seen">${esc(formatAge(s.timestamp, now))}</span>`;
     // "Open chat" — only when we have a session id to act on. The host runs a
     // deep-link ladder (resume-by-id → reveal transcript → copy command).
-    if (s.session_id) {
-      const source = s.adapterId || s.agent_id || '';
-      h += `<button type="button" class="session-open"`
-        + ` data-session-id="${esc(s.session_id)}"`
-        + ` data-source="${esc(source)}"`
-        + ` data-raw-ref="${esc(s.rawRef ?? '')}"`
-        + ` title="Open this chat session">Open chat ↗</button>`;
-    }
+    // Shared helper so the board card detail + agent current-task line emit the
+    // byte-identical button (same class, data-attrs, host wiring).
+    h += openChatButton({ session_id: s.session_id, source: s.adapterId || s.agent_id || '', rawRef: s.rawRef });
     h += '</div>';
   }
   h += '</div>';
@@ -412,6 +466,168 @@ export function renderAgentWorkload(wl: AgentWorkload | undefined, now: number =
       h += `<p class="cw-more">+${wl.doneTotal - items.length} earlier</p>`;
     }
     h += '</details>';
+  }
+  h += '</div>';
+  return h;
+}
+
+// ---------------------------------------------------------------------------
+// Agent metrics (LANE C)
+// ---------------------------------------------------------------------------
+
+/** Coerce an unknown to a finite number, defaulting non-numbers/NaN to 0.
+ *  Local to this module so the metric renderers never throw on a malformed
+ *  rollup. Mirrors the `num` helper in src/fleet/fleetMetrics.ts. */
+function metricNum(v: unknown): number {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** One decimal place, dropping a trailing `.0` (`1.0k` → `1k`). */
+function metricTrimZero(n: number): string {
+  const s = n.toFixed(1);
+  return s.endsWith('.0') ? s.slice(0, -2) : s;
+}
+
+/** Compact a token count to `840` / `12.3k` / `1.2M`. Mirrors `formatTokens`
+ *  in src/fleet/fleetMetrics.ts so the sidebar card and the wide Manager format
+ *  identically; kept inline so this render module stays fs-free. */
+export function formatMetricTokens(tokens: number): string {
+  const n = metricNum(tokens);
+  const abs = Math.abs(n);
+  if (abs < 1000) { return String(Math.round(n)); }
+  if (abs < 1_000_000) { return metricTrimZero(n / 1000) + 'k'; }
+  return metricTrimZero(n / 1_000_000) + 'M';
+}
+
+/** Format a dollar amount: `$0.00` / `$1.20`. Mirrors `formatUsd` in
+ *  src/fleet/fleetMetrics.ts. */
+export function formatMetricUsd(usd: number): string {
+  return '$' + metricNum(usd).toFixed(2);
+}
+
+/**
+ * Render the compact metrics pip for the always-visible card head — the
+ * "what has this agent spent / how much has it run" signal at a glance:
+ * `$X · Nk tok · Md`. Returns '' when no metrics were attached OR the rollup
+ * is fully zero (a local-only fleet that legitimately spent nothing and logged
+ * no rows shouldn't carry a noisy all-zero pip). Kept tiny + on one line so it
+ * sits beside the workload pip without wrapping.
+ */
+export function renderAgentMetricsPip(m: AgentMetrics | undefined): string {
+  if (!m) { return ''; }
+  const tokens = metricNum(m.tokensTotal) || (metricNum(m.tokensIn) + metricNum(m.tokensOut));
+  const cost = metricNum(m.costUsd);
+  const runs = metricNum(m.dispatches);
+  // Nothing to show — no spend, no tokens, no dispatches.
+  if (cost === 0 && tokens === 0 && runs === 0) { return ''; }
+  const tip = `${formatMetricUsd(cost)} spent · ${formatMetricTokens(tokens)} tokens · ${runs} dispatch${runs === 1 ? '' : 'es'}`;
+  let h = `<span class="metrics-pip" title="${esc(tip)}">`;
+  h += `<span class="mp-cost" title="spend (USD)">${esc(formatMetricUsd(cost))}</span>`;
+  if (tokens > 0) { h += `<span class="mp-tok" title="total tokens">${esc(formatMetricTokens(tokens))} tok</span>`; }
+  if (runs > 0) { h += `<span class="mp-runs" title="dispatches">${runs}d</span>`; }
+  h += '</span>';
+  return h;
+}
+
+/**
+ * Render the fuller per-agent Metrics block in the expanded card body: a
+ * counter row (Tokens in / out / $ / Dispatches) sourced from the LLM cost
+ * ledger rollup. Visual family matches the workload-rollup + inbox-summary
+ * counters so the body reads consistently. Returns '' when no metrics were
+ * attached, so the card is byte-identical to before for un-augmented models.
+ */
+export function renderAgentMetrics(m: AgentMetrics | undefined, _now: number = Date.now()): string {
+  if (!m) { return ''; }
+  const tIn = metricNum(m.tokensIn);
+  const tOut = metricNum(m.tokensOut);
+  const total = metricNum(m.tokensTotal) || (tIn + tOut);
+  const cost = metricNum(m.costUsd);
+  const runs = metricNum(m.dispatches);
+  let h = '<div class="agent-metrics" aria-label="Metrics">';
+  // Section caption so the block is unambiguous next to the workload rollup.
+  h += '<div class="metrics-caption">Metrics<span class="metrics-sub" title="from the LLM cost ledger">LLM ledger</span></div>';
+  h += '<div class="metrics-rollup">';
+  h += `<div class="mc"><span class="mc-num" title="${tIn}">${esc(formatMetricTokens(tIn))}</span><span class="mc-label">Tokens in</span></div>`;
+  h += `<div class="mc"><span class="mc-num" title="${tOut}">${esc(formatMetricTokens(tOut))}</span><span class="mc-label">Tokens out</span></div>`;
+  h += `<div class="mc mc-cost"><span class="mc-num">${esc(formatMetricUsd(cost))}</span><span class="mc-label">Spend</span></div>`;
+  h += `<div class="mc"><span class="mc-num">${runs}</span><span class="mc-label">Dispatches</span></div>`;
+  h += '</div>';
+  // Total tokens as a footnote line (the pip shows total; the rollup splits it).
+  h += `<p class="metrics-foot">${esc(formatMetricTokens(total))} tokens total</p>`;
+  h += '</div>';
+  return h;
+}
+
+// ---------------------------------------------------------------------------
+// Per-agent Command & Control (LANE B)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render the per-agent action row shown in the expanded card body: Message,
+ * Pause, Resume, Reassign, and EVICT. Each button carries `data-agent-id` (+
+ * `data-session-id` when a self-session is known) and a `data-action` the
+ * webview JS reads to post {command, agentId, sessionId} to the host. The host
+ * owns the confirmation (Evict opens a REQUIRED modal). The Evict button is
+ * visually distinct (`btn-evict`) because it is the one destructive action.
+ *
+ * `selfId` suppresses the row on the card for THIS window's own agent — you
+ * don't pause/evict yourself from your own panel (the doorbells target peers).
+ * Returns '' for the self card so it renders exactly as before.
+ */
+export function renderAgentActions(agent: AgentWithLive, selfId?: string): string {
+  if (selfId && agent.id === selfId) { return ''; }
+  const id = esc(agent.id);
+  const btn = (action: string, label: string, title: string, extraCls = ''): string =>
+    `<button type="button" class="agent-action${extraCls ? ' ' + extraCls : ''}" `
+    + `data-action="${esc(action)}" data-agent-id="${id}" title="${esc(title)}">${esc(label)}</button>`;
+  let h = '<div class="agent-actions" role="group" aria-label="Agent actions">';
+  h += btn('messageAgent', 'Message', 'Send this agent a message (lands in its inbox).');
+  h += btn('pauseAgent', 'Pause', 'Ask this agent to stop claiming new work.');
+  h += btn('resumeAgent', 'Resume', 'Tell a paused agent it may claim work again.');
+  h += btn('reassignAgent', 'Reassign', 'Release a claim this agent holds back to the board.');
+  h += btn('evictAgent', 'Evict', 'Evict this agent (releases work, revokes trust, retires it). Confirmation required.', 'btn-evict');
+  h += '</div>';
+  return h;
+}
+
+/**
+ * Render the per-agent work-history timeline (expanded card body): the tasks the
+ * agent is driving right now (from `currentTasks`) followed by its recent
+ * completions (from the durable ledger via `workload.recentCompleted`), newest
+ * first. This is the "what has this agent been doing" view the operator wants
+ * next to the action buttons. Returns '' when there is nothing to show, so the
+ * card is byte-identical to before for un-augmented models.
+ */
+export function renderAgentHistory(agent: AgentWithLive, now: number = Date.now()): string {
+  const current = (agent.currentTasks ?? []).filter(Boolean);
+  const completed = agent.workload?.recentCompleted ?? [];
+  if (current.length === 0 && completed.length === 0) { return ''; }
+  let h = '<div class="agent-history" aria-label="Work history">';
+  h += '<div class="history-caption">Work history</div>';
+  h += '<ol class="history-timeline">';
+  // In-flight entries first — the live "now" rung of the timeline.
+  for (const t of current) {
+    h += '<li class="history-row history-active">';
+    h += '<span class="history-dot history-dot-active" aria-hidden="true"></span>';
+    h += `<span class="history-task" title="${esc(t)}">${esc(t)}</span>`;
+    h += '<span class="history-state">in flight</span>';
+    h += '</li>';
+  }
+  // Then recent completions, newest first (the ledger already orders them).
+  for (const it of completed) {
+    h += '<li class="history-row history-done">';
+    h += '<span class="history-dot history-dot-done" aria-hidden="true"></span>';
+    h += `<span class="history-task" title="${esc(it.task_id)}">${esc(it.task_id)}</span>`;
+    if (it.title) { h += `<span class="history-title" title="${esc(it.title)}">${esc(it.title)}</span>`; }
+    h += completedStatusBadge(it.review_status);
+    if (it.completed_at) { h += `<span class="history-age" title="${esc(it.completed_at)}">${esc(formatAge(it.completed_at, now))}</span>`; }
+    h += '</li>';
+  }
+  h += '</ol>';
+  const total = agent.workload?.doneTotal ?? completed.length;
+  if (total > completed.length) {
+    h += `<p class="history-more">+${total - completed.length} earlier completions</p>`;
   }
   h += '</div>';
   return h;
@@ -525,6 +741,10 @@ export function renderAgentCard(
     if (wl.doneToday > 0) { head += `<span class="wl-donetoday" title="done today">●${wl.doneToday}</span>`; }
     head += '</span>';
   }
+  // LANE C: compact metrics pip ($ · tokens · dispatches) right after the
+  // workload pip — the "spend / token / run" signal at a glance. Renders '' when
+  // no ledger-backed metrics were attached or the rollup is fully zero.
+  head += renderAgentMetricsPip(agent.metrics);
   head += '</div>';
 
   // ── Expanded body ────────────────────────────────────────────────────────
@@ -532,6 +752,15 @@ export function renderAgentCard(
   // Role first, with the colored pill so the body restates the head chip.
   body += `<div class="agent-detail-row"><span class="detail-label">Role</span>`;
   body += `<span class="detail-value">${renderRoleChip(agentRole(agent), false)}</span></div>`;
+  // Lane A: "Current task(s)" — the task ids this agent is actively driving on
+  // the live board (host-computed from in_flight claims it owns). Each id is a
+  // compact chip so the agent's live work reads at a glance. Hidden when empty.
+  if (agent.currentTasks && agent.currentTasks.length > 0) {
+    const tasks = agent.currentTasks;
+    const chips = tasks.map(t => `<span class="current-task-chip" title="${esc(t)}">${esc(t)}</span>`).join('');
+    body += `<div class="agent-detail-row"><span class="detail-label">Current task${tasks.length === 1 ? '' : 's'}</span>`;
+    body += `<span class="current-task-row">${chips}</span></div>`;
+  }
   body += renderChips('Capabilities', agent.capabilities);
   body += renderChips('LLMs', agent.llms_available);
   if (typeof agent.context_window === 'number' && agent.context_window > 0) {
@@ -607,6 +836,20 @@ export function renderAgentCard(
   // sourced from the durable task ledger. Renders nothing when no workload was
   // attached to the model (backward-compatible).
   body += renderAgentWorkload(agent.workload, now);
+
+  // LANE C: per-agent metrics block (tokens in/out · $ · dispatches), rolled up
+  // from the LLM cost ledger. Renders nothing when no metrics were attached to
+  // the model (backward-compatible).
+  body += renderAgentMetrics(agent.metrics, now);
+
+  // LANE B: per-agent work-history timeline (in-flight tasks + recent
+  // completions). Renders nothing when no current/completed work is known.
+  body += renderAgentHistory(agent, now);
+
+  // LANE B: per-agent Command & Control action row (Message / Pause / Resume /
+  // Reassign / Evict). Suppressed on this window's own card. The host owns
+  // confirmation; the webview JS wires the data-action buttons to postMessage.
+  body += renderAgentActions(agent, selfId);
 
   body += '</div>';
 

@@ -28,8 +28,20 @@
       <span class="fleet-actions-note" title="This Manager observes a single workspace">Single-window: acts on this workspace only.</span>
     </div>
 
+    <!-- Dashboard grid. Wraps the data sections in a responsive auto-fit grid so
+         the Manager reads as a multi-column dashboard when wide and collapses to
+         a single column when the tab is docked narrow (or when these same assets
+         render in the docked sidebar fleet panel). The grid is driven by the
+         #fleet-root container query in fleet.css, NOT a viewport media query, so
+         it reflows by the panel's own width. The Agendaboard (#sec-board) and the
+         Agents roster (#sec-cards) carry `span-wide` to keep their full width; the
+         remaining five sections auto-fit into columns. Only this outer wrapper is
+         added — every inner id (#board-body, #card-grid, #health-grid-body, …)
+         stays exactly where fleet.js expects it. -->
+    <div class="fleet-dashboard">
+
     <!-- Agendaboard (claimable / in-flight / awaiting review / stuck) -->
-    <section class="panel-section" id="sec-board" aria-labelledby="hdr-board">
+    <section class="panel-section span-wide" id="sec-board" aria-labelledby="hdr-board">
       <h2 id="hdr-board" class="section-header">
         Agendaboard
         <span class="badge" id="board-fleet-badge" title="live agents / fleet size">0 / 0</span>
@@ -63,7 +75,7 @@
     </section>
 
     <!-- Agent identity cards -->
-    <section class="panel-section" id="sec-cards" aria-labelledby="hdr-cards">
+    <section class="panel-section span-wide" id="sec-cards" aria-labelledby="hdr-cards">
       <h2 id="hdr-cards" class="section-header">
         Agents <span class="badge" id="cards-badge">0</span>
       </h2>
@@ -95,6 +107,8 @@
       <h2 id="hdr-activity" class="section-header">Activity Feed</h2>
       <div class="section-body activity-feed" id="activity-feed"></div>
     </section>
+
+    </div><!-- /.fleet-dashboard -->
 
   </div>
   <script nonce="%%NONCE%%" src="%%JS_URI%%"></script>

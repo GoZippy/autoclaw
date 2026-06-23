@@ -1,4 +1,46 @@
 /* AutoClaw Unified Panel — responsive sidebar layout */
+
+/* ── AutoClaw design tokens (CANONICAL) ─────────────────────────────────
+ * This :root block is the single source of truth for AutoClaw's webview
+ * design language. It is MIRRORED byte-for-byte into the three panel
+ * stylesheets — src/webview/kdream-dashboard.css, media/panel/fleet.css and
+ * media/intelligence/dashboard.css — because each surface loads from a
+ * different asset root and links exactly one stylesheet, so they cannot yet
+ * share one physical file without host-side wiring + CSP review. Keep the
+ * three copies identical. Every value derives from a VS Code theme var (with
+ * a fallback equal to the literal it replaced) so all three surfaces still
+ * track light / dark / high-contrast themes. A future refactor can promote
+ * this to a real shared tokens.css.
+ * ----------------------------------------------------------------------- */
+:root {
+  /* Spacing scale */
+  --acw-space-1: 4px;
+  --acw-space-2: 6px;
+  --acw-space-3: 8px;
+  --acw-space-4: 10px;
+  --acw-space-5: 12px;
+  /* Radii */
+  --acw-radius-sm: 4px;
+  --acw-radius-md: 6px;
+  /* Surfaces */
+  --acw-card-bg: var(--vscode-editorWidget-background, rgba(127,127,127,0.06));
+  --acw-card-border: var(--vscode-panel-border, rgba(127,127,127,0.25));
+  --acw-section-bg: var(--vscode-editor-inactiveSelectionBackground);
+  --acw-header-fg: var(--vscode-descriptionForeground);
+  /* Canonical status / role colors */
+  --acw-status-active: var(--vscode-charts-green, #89d185);
+  --acw-status-idle: var(--vscode-charts-yellow, #d7ba7d);
+  --acw-status-warn: var(--vscode-charts-orange, #d7935d);
+  --acw-status-info: var(--vscode-charts-blue, #3794ff);
+  --acw-status-error: var(--vscode-charts-red, #f14c4c);
+  --acw-status-special: var(--vscode-charts-purple, #b180d7);
+  /* Aliases (kept so dashboard.css's existing --gap / --radius call sites
+   * keep resolving; harmless on the other two surfaces). */
+  --acw-gap: var(--acw-space-5);
+  --gap: var(--acw-space-5);
+  --radius: var(--acw-radius-md);
+}
+
 *,
 *::before,
 *::after {
@@ -144,9 +186,9 @@ th {
   flex-shrink: 0;
 }
 
-.status-active { background: #4caf50; }
-.status-idle { background: #ff9800; }
-.status-offline { background: #f44336; }
+.status-active { background: var(--acw-status-active); }
+.status-idle { background: var(--acw-status-warn); }
+.status-offline { background: var(--acw-status-error); }
 .status-detected { background: var(--vscode-descriptionForeground); }
 
 /* ── Agent cards (v2 panel) ────────────────────────────────────────── */
@@ -700,10 +742,10 @@ th {
 }
 
 .sprint-fill.pending { background: var(--vscode-descriptionForeground); }
-.sprint-fill.in_progress { background: #ff9800; }
-.sprint-fill.merged { background: #4caf50; }
-.sprint-fill.approved { background: #2196f3; }
-.sprint-fill.assigned { background: #9c27b0; }
+.sprint-fill.in_progress { background: var(--acw-status-warn); }
+.sprint-fill.merged { background: var(--acw-status-active); }
+.sprint-fill.approved { background: var(--acw-status-info); }
+.sprint-fill.assigned { background: var(--acw-status-special); }
 
 .sprint-status {
   font-size: 0.75em;
@@ -727,8 +769,8 @@ th {
 
 .msg-time { color: var(--vscode-descriptionForeground); font-size: 0.85em; }
 .msg-type { font-weight: 600; color: var(--vscode-textLink-foreground); }
-.msg-from { color: #4caf50; }
-.msg-to { color: #ff9800; }
+.msg-from { color: var(--acw-status-active); }
+.msg-to { color: var(--acw-status-warn); }
 
 /* ── Tasks & TODOs ─────────────────────────────────────────────────── */
 .task-item {
@@ -1298,6 +1340,92 @@ th {
 .cw-row .cw-status.cw-pending  { color: var(--vscode-charts-orange, #d7935d); }
 .cw-row .cw-age { margin-left: auto; font-size: 0.85em; color: var(--vscode-descriptionForeground); }
 .cw-more { font-size: 0.85em; font-style: italic; color: var(--vscode-descriptionForeground); margin: 4px 0 0; }
+
+/* ── Per-agent metrics (LANE C) ─────────────────────────────────────── */
+/* Compact pip on the always-visible card summary line — $ · tokens · runs.
+   Same visual family as .workload-pip (rounded chips on the head line). */
+.metrics-pip { display: inline-flex; gap: 4px; margin-left: 6px; font-size: 0.7em; }
+.metrics-pip > span { padding: 0 4px; border-radius: 8px; background: rgba(127,127,127,0.2); font-variant-numeric: tabular-nums; }
+.metrics-pip .mp-cost { color: var(--vscode-charts-green, #89d185); }
+.metrics-pip .mp-tok { color: var(--vscode-charts-blue, #3794ff); }
+/* Fuller block in the expanded body — counter row mirrors .workload-rollup. */
+.agent-metrics { margin-top: 8px; }
+.agent-metrics .metrics-caption {
+  font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground); opacity: 0.85; margin-bottom: 4px;
+}
+.agent-metrics .metrics-sub {
+  margin-left: 6px; text-transform: none; letter-spacing: 0; opacity: 0.7;
+  padding: 0 5px; border-radius: 8px; background: rgba(127,127,127,0.18);
+}
+.metrics-rollup { display: flex; gap: 6px; margin-bottom: 4px; }
+.metrics-rollup .mc {
+  flex: 1; text-align: center; padding: 4px 2px; border-radius: 4px;
+  background: var(--vscode-editorWidget-background, rgba(127,127,127,0.08));
+}
+.metrics-rollup .mc-num { display: block; font-size: 1.1em; font-weight: 600; font-variant-numeric: tabular-nums; }
+.metrics-rollup .mc-label {
+  display: block; font-size: 0.62em; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--vscode-descriptionForeground); opacity: 0.85;
+}
+.metrics-rollup .mc-cost .mc-num { color: var(--vscode-charts-green, #89d185); }
+.agent-metrics .metrics-foot { margin: 0; font-size: 0.78em; color: var(--vscode-descriptionForeground); }
+
+/* LANE B: per-agent work-history timeline (in-flight + recent completions). */
+.agent-history { margin-top: 8px; }
+.agent-history .history-caption {
+  font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground); opacity: 0.85; margin-bottom: 4px;
+}
+.history-timeline { list-style: none; margin: 0; padding: 0; }
+.history-timeline .history-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 0; font-size: 0.8em;
+}
+.history-timeline .history-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--vscode-descriptionForeground); opacity: 0.6;
+}
+.history-timeline .history-dot-active { background: var(--vscode-charts-blue, #4daafc); opacity: 1; }
+.history-timeline .history-dot-done { background: var(--vscode-charts-green, #89d185); opacity: 0.9; }
+.history-timeline .history-task {
+  font-family: var(--vscode-editor-font-family, monospace); font-weight: 600;
+}
+.history-timeline .history-title {
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%;
+}
+.history-timeline .history-state {
+  font-size: 0.85em; color: var(--vscode-charts-blue, #4daafc);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.history-timeline .history-age { margin-left: auto; color: var(--vscode-descriptionForeground); }
+.agent-history .history-more { margin: 2px 0 0; font-size: 0.74em; color: var(--vscode-descriptionForeground); opacity: 0.8; }
+
+/* LANE B: per-agent Command & Control action row. Buttons mirror .session-open
+   (ghost chips); the destructive Evict gets a danger tint. */
+.agent-actions {
+  display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px;
+  padding-top: 6px; border-top: 1px solid var(--vscode-panel-border);
+}
+.agent-actions .agent-action {
+  font: inherit; font-size: 0.78em; cursor: pointer;
+  padding: 2px 8px; border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border);
+  background: rgba(127, 127, 127, 0.08);
+  color: var(--vscode-foreground);
+}
+.agent-actions .agent-action:hover { background: rgba(127, 127, 127, 0.18); }
+.agent-actions .agent-action:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.agent-actions .btn-evict {
+  margin-left: auto;
+  color: var(--vscode-errorForeground, #f48771);
+  border-color: var(--vscode-errorForeground, #f48771);
+}
+.agent-actions .btn-evict:hover {
+  background: var(--vscode-inputValidation-errorBackground, rgba(244, 135, 113, 0.15));
+}
+
 /* Follow-up #4: compact per-agent cost line (tokens / $ / dispatches). Muted,
    one-line, same visual family as .workload-rollup / .inbox-summary labels. */
 .agent-cost {
@@ -1356,6 +1484,64 @@ th {
 }
 .thread-toggle:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
 .thread-icon { font-size: 0.9em; }
+
+/* Lane A: per-card DETAIL toggle (▸) — same pill family as .thread-toggle but a
+   distinct class so the two coexist on .board-card-top. Sits before the thread
+   toggle; both push to the right via the thread toggle's margin-left:auto, so
+   the detail toggle keeps a left margin to separate from the task id. */
+.card-detail-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.74em;
+  cursor: pointer;
+  flex: none;
+}
+/* When a thread toggle is also present it owns margin-left:auto, so the detail
+   toggle should NOT also claim the auto-gap (keeps them adjacent on the right). */
+.board-card-top .card-detail-toggle + .thread-toggle { margin-left: 4px; }
+.card-detail-toggle:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
+.card-detail-caret { line-height: 1; }
+.board-card.detail-open { border-color: var(--vscode-focusBorder); }
+
+/* Lane A: the collapsed drill-down detail panel on a board card. Cloned from
+   .awaiting-detail so the visual family matches the Awaiting-You drill-down;
+   reuses .detail-grid / .detail-kv / .detail-summary / .detail-files directly. */
+.card-detail {
+  margin: 4px 0 2px 0;
+  padding: 6px 8px;
+  border-radius: 3px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border);
+  font-size: 0.8em;
+}
+.card-detail[hidden] { display: none; }
+/* Reviewers row inside a card detail — colored participants (not plain KV). */
+.detail-reviewers { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 2px 0; }
+.detail-reviewers-list { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+/* Open-chat action row at the foot of a card detail. */
+.card-detail-actions { margin-top: 5px; display: flex; }
+/* The shared .session-open button renders at 0.55 opacity (tuned for hover in a
+   session row). In a card detail it stands alone, so keep it always legible. */
+.card-detail-actions .session-open { opacity: 1; }
+
+/* Lane A: agent card "Current task(s)" chips — compact, monospace task ids in
+   the same muted family as .meta-* / capability chips. */
+.current-task-row { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+.current-task-chip {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.92em;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(127, 127, 127, 0.16);
+}
 
 /* meta sub-elements */
 .prio { padding: 0 4px; border-radius: 4px; font-size: 0.92em; font-weight: 600; }

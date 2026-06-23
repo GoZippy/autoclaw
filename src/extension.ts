@@ -114,7 +114,7 @@ import {
 } from './webview-render';
 import {
   renderBoard, renderMessageFeed, buildThreads, boardTaskCount, inferRoleFromActivity,
-  type BoardSnapshot, type BoardRenderContext, type ThreadMessage,
+  type BoardSnapshot, type BoardRenderContext, type ThreadMessage, type AgentSessionRef,
 } from './webview-render-board';
 import { normalizeRole, ROLE_ORDER, ROLE_META, type CanonicalRole } from './roles';
 import {
@@ -126,6 +126,18 @@ import { computePendingAgents, admitAgent } from './fleet/pending';
 import { renderJoinPromptForInvite, JOIN_TARGETS } from './fleet/joinPrompt';
 import { scaffoldAgent, keepaliveProfileFor } from './fleet/scaffold';
 import { appendTaskCompletion, readTaskLedger, summarizeByAgent, recentCompletions } from './taskLedger';
+// LANE C: per-agent LLM-cost metrics (tokens in/out, $, dispatches). The reader
+// is fs-only + swallows errors; the builder is pure. See src/fleet/fleetMetrics.ts.
+import {
+  readLlmLedgerRows, buildAgentMetrics, type MetricsAttribution,
+} from './fleet/fleetMetrics';
+// LANE B: per-agent command & control. evictAgent() is the SAFE CORE eviction
+// transaction (local single-operator only — the §5 cross-machine signing gate
+// is not built); the typed errors map to user-facing modals / scope-violations.
+import {
+  evictAgent, intentsDir,
+  EvictAuthError, EvictHardOnFreshError, EvictRemoteBlockedError,
+} from './fleet/evict';
 import { buildPending } from './views/fleetViewModelBuilders';
 import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
@@ -756,6 +768,18 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', () => fleetJoinPromptCommand()),
     // Wire an arbitrary (non-extension) agent id into the comms tree.
     vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand())
+  );
+
+  // LANE B — per-agent Command & Control. Each accepts a {agentId, sessionId}
+  // arg (posted by the panel action buttons) or prompts when invoked bare from
+  // the palette. evict shows a REQUIRED modal confirm before calling evictAgent;
+  // all of these are LOCAL single-operator only (no relay path).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.fleet.messageAgent', (arg?: unknown) => fleetMessageAgentCommand(arg)),
+    vscode.commands.registerCommand('autoclaw.fleet.pauseAgent', (arg?: unknown) => fleetPauseAgentCommand(arg)),
+    vscode.commands.registerCommand('autoclaw.fleet.resumeAgent', (arg?: unknown) => fleetResumeAgentCommand(arg)),
+    vscode.commands.registerCommand('autoclaw.fleet.reassignAgent', (arg?: unknown) => fleetReassignAgentCommand(arg)),
+    vscode.commands.registerCommand('autoclaw.fleet.evict', (arg?: unknown) => fleetEvictAgentCommand(arg))
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -2177,6 +2201,25 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'declineAgent':
           await vscode.commands.executeCommand('autoclaw.fleet.decline');
+          break;
+        // LANE B — per-agent Command & Control. The card detail buttons post
+        // {command, agentId, sessionId}; forward that arg straight to the
+        // matching command (which prompts/confirms as needed). evict opens a
+        // REQUIRED modal inside its command.
+        case 'messageAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.messageAgent', { agentId: message.agentId, sessionId: message.sessionId });
+          break;
+        case 'pauseAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.pauseAgent', { agentId: message.agentId, sessionId: message.sessionId });
+          break;
+        case 'resumeAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.resumeAgent', { agentId: message.agentId, sessionId: message.sessionId });
+          break;
+        case 'reassignAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.reassignAgent', { agentId: message.agentId, sessionId: message.sessionId });
+          break;
+        case 'evictAgent':
+          await vscode.commands.executeCommand('autoclaw.fleet.evict', { agentId: message.agentId, sessionId: message.sessionId });
           break;
         case 'startKgDaemon':
         case 'restartKgDaemon':
@@ -4128,6 +4171,32 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     fleetAgents.push(beaconToAgent(b));
   }
 
+  // LANE C: per-agent LLM-cost metrics. The LLM ledger (.autoclaw/llm/) carries
+  // NO agentId, so we attribute each row via session_id → agent. Build the
+  // bridge from every agent's primary heartbeat session_id plus its sidecar
+  // session heartbeats (a single agent process can host several sessions); the
+  // known-agent set lets a row whose callerPersonaId IS an agent id resolve
+  // directly. Best-effort + swallowed — a missing ledger ⇒ no metrics attached
+  // ⇒ cards render exactly as before. Mirrors the workload read above.
+  const metricsByAgent: Record<string, import('./fleet/fleetMetrics').AgentMetrics> = {};
+  try {
+    const bySession: Record<string, string> = {};
+    for (const a of fleetAgents) {
+      const primary = a.heartbeat?.session_id;
+      if (primary) { bySession[primary] = a.id; }
+      for (const s of a.sessions ?? []) {
+        if (s?.session_id) { bySession[s.session_id] = a.id; }
+      }
+    }
+    const attribution: MetricsAttribution = {
+      bySession,
+      knownAgents: fleetAgents.map(a => a.id),
+    };
+    const rows = await readLlmLedgerRows(wr);
+    const fleetMetrics = buildAgentMetrics(rows, attribution, Date.now());
+    for (const m of fleetMetrics.perAgent) { metricsByAgent[m.agentId] = m; }
+  } catch { /* no llm ledger / unreadable ⇒ no metrics */ }
+
   // Resolve each agent's role + the single orchestrator via the
   // user-authoritative chain: fleet.json manifest → autoclaw.agentRoles setting
   // → registry role/agent_type/can_orchestrate → live board activity →
@@ -4151,6 +4220,18 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
   const roleOf: Record<string, CanonicalRole> = {};
   const nameOf: Record<string, string> = {};
   const modelOf: Record<string, string> = {};
+  // Lane A: agentId → freshest deep-linkable chat session, so board cards can
+  // offer an "Open chat ↗" button for their owner/author/agent (cards know the
+  // owner id but not that agent's session id). Built from the same session
+  // heartbeats the agent cards use; absent for an agent ⇒ no button (graceful).
+  const sessionOf: Record<string, AgentSessionRef> = {};
+  // Lane A: agentId → task ids it is actively driving on the board right now,
+  // for the agent card's "Current task(s)" line.
+  const currentTasksByAgent: Record<string, string[]> = {};
+  for (const t of board?.in_flight ?? []) {
+    if (!t.claimed_by) { continue; }
+    (currentTasksByAgent[t.claimed_by] ??= []).push(t.task_id);
+  }
   for (const a of fleetAgents) {
     const rr = resolvedFleet.roles[a.id];
     roleOf[a.id] = rr.canonical;
@@ -4159,10 +4240,32 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     (a as { role?: string }).role = rr.canonical;
     // Slice B: attach the per-agent workload rollup (undefined ⇒ card unchanged).
     (a as AgentWithLive).workload = workloadByAgent[a.id];
+    // LANE C: attach the per-agent LLM-cost metrics (undefined ⇒ card unchanged).
+    (a as AgentWithLive).metrics = metricsByAgent[a.id];
+    // Lane A: attach the agent's live tasks (undefined/empty ⇒ no card line).
+    (a as AgentWithLive).currentTasks = currentTasksByAgent[a.id];
     nameOf[a.id] = a.name || a.id;
     const model = a.heartbeat?.current_llm
       || (a.llms_available && a.llms_available.length === 1 ? a.llms_available[0] : undefined);
     if (model) { modelOf[a.id] = model; }
+    // Lane A: pick the agent's freshest session heartbeat carrying a session_id
+    // for the board's Open-chat deep link. `source` keys the host ladder
+    // (claude-code → resume URI), falling back to the agent id.
+    const withSessions = a.sessions ?? [];
+    let freshest: Heartbeat | undefined;
+    for (const sh of withSessions) {
+      if (!sh.session_id) { continue; }
+      if (!freshest || new Date(sh.timestamp).getTime() > new Date(freshest.timestamp).getTime()) {
+        freshest = sh;
+      }
+    }
+    if (freshest?.session_id) {
+      sessionOf[a.id] = {
+        session_id: freshest.session_id,
+        source: freshest.adapterId || a.id,
+        rawRef: freshest.rawRef,
+      };
+    }
   }
 
   // v2.5: per-agent inbox summaries (local agents only) + server-rendered cards
@@ -4226,6 +4329,8 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
   }));
   const boardCtx: BoardRenderContext = {
     roleOf, nameOf, modelOf, threads: buildThreads(threadEntries),
+    // Lane A: per-agent session map so a card's detail can deep-link its owner's chat.
+    sessionOf,
   };
   try {
     view.webview.postMessage({
@@ -4724,6 +4829,234 @@ async function fleetDeclineCommand(): Promise<void> {
   }
   vscode.window.showInformationMessage(`AutoClaw: declined ${pick.agent.agent_id}. Its invite was revoked; the beacon will age out.`);
   if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+}
+
+// ---------------------------------------------------------------------------
+// LANE B — per-agent Command & Control (message / pause / resume / reassign /
+// evict). The panel posts {command, agentId, sessionId}; these commands accept
+// that arg so a button click drives them directly (a palette invocation prompts
+// for the agent id instead). All of these are LOCAL single-operator only — the
+// cross-machine signing gate (evict §5) is not built, so nothing here is wired
+// to the relay/HTTP path.
+// ---------------------------------------------------------------------------
+
+/** The workspace comms dir (`.autoclaw/orchestrator/comms`), or null if no ws. */
+function workspaceCommsDir(): string | null {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return null; }
+  return path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+}
+
+/** Resolve the target agent id: prefer the panel-supplied arg, else prompt. */
+async function resolveTargetAgentId(arg: unknown): Promise<string | undefined> {
+  if (arg && typeof arg === 'object' && typeof (arg as { agentId?: unknown }).agentId === 'string') {
+    return (arg as { agentId: string }).agentId;
+  }
+  if (typeof arg === 'string' && arg.length > 0) { return arg; }
+  return vscode.window.showInputBox({
+    title: 'Target agent id', prompt: 'Agent id to act on', placeHolder: 'kilocode',
+    ignoreFocusOut: true,
+  });
+}
+
+/** Pull an optional session id out of the panel-supplied arg. */
+function argSessionId(arg: unknown): string | undefined {
+  if (arg && typeof arg === 'object' && typeof (arg as { sessionId?: unknown }).sessionId === 'string') {
+    const s = (arg as { sessionId: string }).sessionId;
+    return s.length > 0 ? s : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Send a single typed doorbell into a target agent's inbox. Reuses the existing
+ * `sendMessage` delivery path (writes inboxes/<to>/ + appends the comms log) —
+ * no new transport. `requires_response` is true only for the free-text message
+ * (so it lands in the peer's "Awaiting You").
+ */
+async function sendAgentDoorbell(
+  commsDir: string,
+  to: string,
+  type: Message['type'],
+  payload: Record<string, unknown>,
+  requiresResponse: boolean,
+): Promise<void> {
+  await sendMessage(commsDir, {
+    id: '', from: activeHostAgentId() ?? 'claude-code', to, type,
+    timestamp: new Date().toISOString(),
+    payload, requires_response: requiresResponse,
+  });
+}
+
+/** Per-agent: send a free-text message (a `question`) to the agent's inbox. */
+async function fleetMessageAgentCommand(arg?: unknown): Promise<void> {
+  const commsDir = workspaceCommsDir();
+  if (!commsDir) { return; }
+  const agentId = await resolveTargetAgentId(arg);
+  if (!agentId) { return; }
+  const body = await vscode.window.showInputBox({
+    title: `Message ${agentId}`,
+    prompt: 'Send a message to this agent (lands in its inbox / Awaiting You).',
+    placeHolder: 'Can you pick up task B3 next?',
+    ignoreFocusOut: true,
+  });
+  if (body == null || body.trim().length === 0) { return; }
+  try {
+    await sendAgentDoorbell(commsDir, agentId, 'question', { message: body.trim() }, true);
+    vscode.window.showInformationMessage(`AutoClaw: message sent to ${agentId}.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not message ${agentId} — ${(e as Error).message}`);
+  }
+}
+
+/** Per-agent: ask a cooperating agent to PAUSE (stop claiming new work). */
+async function fleetPauseAgentCommand(arg?: unknown): Promise<void> {
+  const commsDir = workspaceCommsDir();
+  if (!commsDir) { return; }
+  const agentId = await resolveTargetAgentId(arg);
+  if (!agentId) { return; }
+  const sessionId = argSessionId(arg);
+  try {
+    await sendAgentDoorbell(commsDir, agentId, 'pause', {
+      pause: true,
+      ...(sessionId ? { session_id: sessionId } : {}),
+      reason: 'Operator requested pause — finish your current claim, then stop claiming new work.',
+    }, false);
+    vscode.window.showInformationMessage(`AutoClaw: pause sent to ${agentId}. It should stop claiming new work after its current task.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not pause ${agentId} — ${(e as Error).message}`);
+  }
+}
+
+/** Per-agent: tell a paused agent it may RESUME claiming work. */
+async function fleetResumeAgentCommand(arg?: unknown): Promise<void> {
+  const commsDir = workspaceCommsDir();
+  if (!commsDir) { return; }
+  const agentId = await resolveTargetAgentId(arg);
+  if (!agentId) { return; }
+  const sessionId = argSessionId(arg);
+  try {
+    await sendAgentDoorbell(commsDir, agentId, 'resume', {
+      resume: true,
+      ...(sessionId ? { session_id: sessionId } : {}),
+      reason: 'Operator cleared the pause — you may claim work again.',
+    }, false);
+    vscode.window.showInformationMessage(`AutoClaw: resume sent to ${agentId}.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not resume ${agentId} — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Per-agent: RELEASE a claim the agent holds so the board can re-dispatch it.
+ * The SAFE half — deleting a `comms/claims/<task>.json` file IS the mutex
+ * release (the same path the orchestrator's expired-claim sweep uses); we then
+ * broadcast a `reassign` doorbell so the fleet picks the freed task back up. We
+ * never rewrite the DAG or force-assign to a specific agent (Hard Rule 5).
+ */
+async function fleetReassignAgentCommand(arg?: unknown): Promise<void> {
+  const commsDir = workspaceCommsDir();
+  if (!commsDir) { return; }
+  const agentId = await resolveTargetAgentId(arg);
+  if (!agentId) { return; }
+
+  // List the claims this agent currently holds so the operator picks one.
+  const claimsDirPath = path.join(commsDir, 'claims');
+  let claimFiles: string[] = [];
+  try { claimFiles = (await fsPromises.readdir(claimsDirPath)).filter(f => f.endsWith('.json')); } catch { /* none */ }
+  const held: Array<{ taskId: string; file: string }> = [];
+  for (const name of claimFiles) {
+    try {
+      const claim = JSON.parse((await fsPromises.readFile(path.join(claimsDirPath, name), 'utf8')).replace(/^﻿/, '')) as { claimed_by?: string; task_id?: string };
+      if (claim.claimed_by === agentId) {
+        held.push({ taskId: claim.task_id ?? name.replace(/\.json$/, ''), file: path.join(claimsDirPath, name) });
+      }
+    } catch { /* skip malformed */ }
+  }
+  if (held.length === 0) {
+    vscode.window.showInformationMessage(`AutoClaw: ${agentId} holds no claims to reassign.`);
+    return;
+  }
+  const pick = await vscode.window.showQuickPick(
+    held.map(h => ({ label: h.taskId, description: 'release this claim back to the board', held: h })),
+    { title: `Reassign — release a claim held by ${agentId}`, placeHolder: 'Pick a task to release for re-dispatch' },
+  );
+  if (!pick) { return; }
+  try {
+    await fsPromises.unlink(pick.held.file).catch(() => { /* already gone → idempotent */ });
+    // Broadcast that the task is free again so the fleet re-claims it. We do NOT
+    // pin it to another agent — the board's normal claim path owns assignment.
+    await sendAgentDoorbell(commsDir, 'shared', 'reassign', {
+      reassign: true, task_id: pick.held.taskId, released_from: agentId,
+      reason: `Operator released ${pick.held.taskId} from ${agentId} — open for re-claim.`,
+    }, false);
+    vscode.window.showInformationMessage(`AutoClaw: released ${pick.held.taskId} from ${agentId}; it is open for re-claim.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not reassign — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Per-agent: EVICT — the one destructive org primitive (releases claims, revokes
+ * trust + invite, tears down presence, retires). A REQUIRED confirmation modal
+ * gates it; hard mode is refused on a fresh heartbeat (evict.ts gate). Local
+ * single-operator only — the cross-machine signing gate (§5) is not built, so
+ * this never touches the relay path. Delegates the whole transaction to the
+ * tested SAFE-CORE `evictAgent()`.
+ */
+async function fleetEvictAgentCommand(arg?: unknown): Promise<void> {
+  const commsDir = workspaceCommsDir();
+  if (!commsDir) { return; }
+  const agentId = await resolveTargetAgentId(arg);
+  if (!agentId) { return; }
+  const sessionId = argSessionId(arg);
+
+  const operator = activeHostAgentId() ?? 'claude-code';
+  // REQUIRED confirmation — eviction removes a running participant. Modal so it
+  // can't be dismissed by a stray Escape on the toast.
+  const scopeNote = sessionId ? ` (session ${sessionId.slice(0, 8)}…)` : ' (all sessions)';
+  const choice = await vscode.window.showWarningMessage(
+    `Evict ${agentId}${scopeNote}? This releases its claims, revokes its trust + invite, tears down its presence, and retires it. Its work history is kept.`,
+    { modal: true, detail: 'Graceful drains its current work first. Local single-operator action only — cross-machine evict is blocked.' },
+    'Evict (graceful)',
+  );
+  if (choice !== 'Evict (graceful)') { return; }
+
+  try {
+    const intent = await evictAgent(
+      {
+        agentId, ...(sessionId ? { sessionId } : {}),
+        mode: 'graceful', operator, commsDir,
+      },
+      // authorizedOperators omitted ⇒ single-operator in-IDE default (the local
+      // human is the only filesystem writer). The intent record lands under
+      // comms/intents/ so the Manager can show requested→acting→done.
+      {},
+    );
+    const released = intent.released_tasks.length;
+    const blocked = intent.blocked_dependents.length;
+    vscode.window.showInformationMessage(
+      `AutoClaw: evicted ${agentId} (${intent.state}). Released ${released} claim${released === 1 ? '' : 's'}` +
+      `${blocked ? `, ${blocked} dependent${blocked === 1 ? '' : 's'} left blocked (see findings)` : ''}. ` +
+      `Intent ${intent.intent_id} recorded in ${path.relative(commsDir, intentsDir(commsDir))}/.`,
+    );
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    // Map the typed evict errors to clear operator-facing messages.
+    if (e instanceof EvictRemoteBlockedError) {
+      vscode.window.showErrorMessage('AutoClaw: cross-machine evict is blocked (the §5 signing gate is not built). Evict only agents on this machine.');
+    } else if (e instanceof EvictHardOnFreshError) {
+      vscode.window.showWarningMessage(`AutoClaw: ${agentId} has a fresh heartbeat — a forced evict was refused. Use graceful, or wait for the heartbeat to go stale.`);
+    } else if (e instanceof EvictAuthError) {
+      vscode.window.showErrorMessage(`AutoClaw: evict refused — ${(e as Error).message}`);
+    } else {
+      vscode.window.showWarningMessage(`AutoClaw: evict of ${agentId} failed — ${(e as Error).message}`);
+    }
+  }
 }
 
 /** Best-effort "who am I?" for the host running this extension instance.

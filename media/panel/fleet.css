@@ -2,6 +2,47 @@
  * Theme-aware: uses VS Code CSS variables so the panel matches the editor.
  * Sprint 3 — C5 (WA-2). */
 
+/* ── AutoClaw design tokens (CANONICAL) ─────────────────────────────────
+ * This :root block is the single source of truth for AutoClaw's webview
+ * design language. It is MIRRORED byte-for-byte into the three panel
+ * stylesheets — src/webview/kdream-dashboard.css, media/panel/fleet.css and
+ * media/intelligence/dashboard.css — because each surface loads from a
+ * different asset root and links exactly one stylesheet, so they cannot yet
+ * share one physical file without host-side wiring + CSP review. Keep the
+ * three copies identical. Every value derives from a VS Code theme var (with
+ * a fallback equal to the literal it replaced) so all three surfaces still
+ * track light / dark / high-contrast themes. A future refactor can promote
+ * this to a real shared tokens.css.
+ * ----------------------------------------------------------------------- */
+:root {
+  /* Spacing scale */
+  --acw-space-1: 4px;
+  --acw-space-2: 6px;
+  --acw-space-3: 8px;
+  --acw-space-4: 10px;
+  --acw-space-5: 12px;
+  /* Radii */
+  --acw-radius-sm: 4px;
+  --acw-radius-md: 6px;
+  /* Surfaces */
+  --acw-card-bg: var(--vscode-editorWidget-background, rgba(127,127,127,0.06));
+  --acw-card-border: var(--vscode-panel-border, rgba(127,127,127,0.25));
+  --acw-section-bg: var(--vscode-editor-inactiveSelectionBackground);
+  --acw-header-fg: var(--vscode-descriptionForeground);
+  /* Canonical status / role colors */
+  --acw-status-active: var(--vscode-charts-green, #89d185);
+  --acw-status-idle: var(--vscode-charts-yellow, #d7ba7d);
+  --acw-status-warn: var(--vscode-charts-orange, #d7935d);
+  --acw-status-info: var(--vscode-charts-blue, #3794ff);
+  --acw-status-error: var(--vscode-charts-red, #f14c4c);
+  --acw-status-special: var(--vscode-charts-purple, #b180d7);
+  /* Aliases (kept so dashboard.css's existing --gap / --radius call sites
+   * keep resolving; harmless on the other two surfaces). */
+  --acw-gap: var(--acw-space-5);
+  --gap: var(--acw-space-5);
+  --radius: var(--acw-radius-md);
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -39,19 +80,50 @@ button.ghost {
 }
 button.ghost:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,127,127,0.2)); }
 
-/* --- Sections ------------------------------------------------------------- */
-.panel-section { margin-bottom: 14px; }
+/* --- Dashboard grid ------------------------------------------------------- *
+ * The Manager (and the docked sidebar fleet panel, which shares these assets)
+ * lays its data sections out as a responsive auto-fit dashboard instead of one
+ * tall vertical stack. This reuses the same auto-fit idiom as the agent-card
+ * grid below so the whole surface feels like one product. The five secondary
+ * sections (Awaiting You, Health Grid, Agent Tree, Cost Ledger, Activity Feed)
+ * flow into masonry-style columns when wide; the Agendaboard and Agents roster
+ * carry `.span-wide` to keep their full width. The grid collapses to a single
+ * column in the narrow container-query band (see the responsive section), so
+ * the docked sidebar stays a usable single stack.                             */
+.fleet-dashboard {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--acw-space-3);
+  align-items: start;
+}
+.fleet-dashboard > .panel-section { margin-bottom: 0; }
+.fleet-dashboard > .span-wide { grid-column: 1 / -1; }
+
+/* --- Sections ------------------------------------------------------------- *
+ * Each section is a token-framed card so the three webview surfaces share one
+ * visual language. The header reads as a quiet bar; the body inherits the card
+ * padding. All values come from the --acw-* design tokens at the top of this
+ * file.                                                                       */
+.panel-section {
+  margin-bottom: 14px;
+  border: 1px solid var(--acw-card-border);
+  border-radius: var(--acw-radius-md);
+  background: var(--acw-card-bg);
+  padding: var(--acw-space-3);
+}
 
 .section-header {
-  margin: 0 0 6px;
+  margin: 0 0 var(--acw-space-2);
+  padding-bottom: var(--acw-space-2);
+  border-bottom: 1px solid var(--acw-card-border);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--vscode-descriptionForeground);
+  color: var(--acw-header-fg);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--acw-space-2);
 }
 
 .badge {
@@ -80,9 +152,9 @@ button.ghost:hover { background: var(--vscode-toolbar-hoverBackground, rgba(127,
   margin-right: 5px;
   vertical-align: middle;
 }
-.dot.green { background: var(--vscode-testing-iconPassed, #3fb950); }
-.dot.amber { background: var(--vscode-testing-iconQueued, #d29922); }
-.dot.red   { background: var(--vscode-testing-iconFailed, #f85149); }
+.dot.green { background: var(--acw-status-active); }
+.dot.amber { background: var(--acw-status-idle); }
+.dot.red   { background: var(--acw-status-error); }
 
 /* --- Health grid ---------------------------------------------------------- */
 table.health-grid, table.cost-table {
@@ -110,13 +182,18 @@ table.health-grid, table.cost-table {
   gap: 8px;
 }
 .agent-card {
-  border: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.25));
-  border-radius: 6px;
-  padding: 8px;
-  background: var(--vscode-editorWidget-background, rgba(127,127,127,0.05));
+  border: 1px solid var(--acw-card-border);
+  border-radius: var(--acw-radius-md);
+  padding: var(--acw-space-3);
+  background: var(--acw-card-bg);
   cursor: pointer;
 }
-.agent-card:hover { border-color: var(--vscode-focusBorder); }
+/* Drill-down affordance: clicking (or keyboard-activating) a card toggles its
+   .card-detail. Match the sidebar's focus treatment so the expand cue reads the
+   same on both surfaces. */
+.agent-card:hover,
+.agent-card:focus-visible { border-color: var(--vscode-focusBorder); }
+.agent-card:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .agent-card .card-top { display: flex; align-items: center; gap: 8px; }
 .avatar {
   width: 28px; height: 28px;
@@ -147,9 +224,9 @@ table.health-grid, table.cost-table {
   color: var(--vscode-badge-foreground);
 }
 .card-detail {
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.2));
+  margin-top: var(--acw-space-3);
+  padding-top: var(--acw-space-2);
+  border-top: 1px solid var(--acw-card-border);
   font-size: 11px;
 }
 .card-detail.hidden { display: none; }
@@ -169,6 +246,52 @@ table.health-grid, table.cost-table {
   background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
   color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
   border: none;
+}
+
+/* LANE B: per-agent work-history timeline in the card detail. */
+.card-detail .history-timeline { list-style: none; margin: 2px 0 0; padding: 0; }
+.card-detail .history-row {
+  display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11px;
+}
+.card-detail .history-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--vscode-descriptionForeground); opacity: 0.6;
+}
+.card-detail .history-dot-active { background: var(--vscode-charts-blue, #4daafc); opacity: 1; }
+.card-detail .history-dot-done { background: var(--vscode-charts-green, #89d185); opacity: 0.9; }
+.card-detail .history-task { font-family: var(--vscode-editor-font-family, monospace); font-weight: 600; }
+.card-detail .history-title {
+  color: var(--vscode-descriptionForeground);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%;
+}
+.card-detail .history-state {
+  font-size: 0.85em; color: var(--vscode-charts-blue, #4daafc);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+
+/* LANE B: per-agent Command & Control action row in the card detail. The
+   destructive Evict gets a danger tint; all buttons share .btn-ping sizing. */
+.card-actions {
+  display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px;
+  padding-top: 6px; border-top: 1px solid var(--vscode-panel-border, rgba(127,127,127,0.2));
+}
+.card-actions .btn-ping { margin-top: 0; }
+.btn-action {
+  font-size: 11px; padding: 2px 10px; border-radius: 3px; cursor: pointer;
+  background: var(--vscode-button-secondaryBackground, var(--vscode-button-background));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-button-foreground));
+  border: none;
+}
+.btn-action:hover { filter: brightness(1.1); }
+.btn-action:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+.btn-action.btn-evict {
+  margin-left: auto;
+  background: transparent;
+  color: var(--vscode-errorForeground, #f48771);
+  border: 1px solid var(--vscode-errorForeground, #f48771);
+}
+.btn-action.btn-evict:hover {
+  background: var(--vscode-inputValidation-errorBackground, rgba(244, 135, 113, 0.15));
 }
 
 /* --- Agent tree ----------------------------------------------------------- */
@@ -220,13 +343,13 @@ table.health-grid, table.cost-table {
   width: 8px; height: 8px; border-radius: 2px;
   margin-top: 4px; flex-shrink: 0;
 }
-.act-kind.task_started    { background: #58a6ff; }
-.act-kind.task_complete   { background: #3fb950; }
-.act-kind.finding_raised  { background: #d29922; }
+.act-kind.task_started    { background: var(--acw-status-info); }
+.act-kind.task_complete   { background: var(--acw-status-active); }
+.act-kind.finding_raised  { background: var(--acw-status-idle); }
 .act-kind.consensus_passed,
-.act-kind.consensus_failed { background: #a371f7; }
-.act-kind.agent_died      { background: #f85149; }
-.act-kind.review_requested{ background: #f0883e; }
+.act-kind.consensus_failed { background: var(--acw-status-special); }
+.act-kind.agent_died      { background: var(--acw-status-error); }
+.act-kind.review_requested{ background: var(--acw-status-warn); }
 .act-kind.message         { background: var(--vscode-descriptionForeground); }
 
 /* --- Cost rationale rail -------------------------------------------------- */
@@ -347,6 +470,14 @@ table.health-grid, table.cost-table {
   .card-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 }
 
+/* Dashboard grid reflow. The auto-fit grid already drops columns as the panel
+ * narrows, but force a single column below the mid band so a docked sidebar (or
+ * a tightly-split Manager) reads as one clean stack rather than two cramped
+ * columns. The #fleet-root container query above provides the context.        */
+@container (max-width: 520px) {
+  .fleet-dashboard { grid-template-columns: 1fr; }
+}
+
 /* Fallback for any host without container-query support (or if the wrapper is
  * ever swapped for a scroller): mirror the same intent off the viewport. The
  * container rules above win wherever they apply.                              */
@@ -356,4 +487,7 @@ table.health-grid, table.cost-table {
   #presence-text { white-space: normal; }
   .section-header { flex-wrap: wrap; }
   #fleet-root { padding: 6px 6px 12px; }
+}
+@media (max-width: 520px) {
+  .fleet-dashboard { grid-template-columns: 1fr; }
 }

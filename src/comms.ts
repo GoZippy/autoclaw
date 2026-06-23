@@ -92,7 +92,12 @@ export type MessageType =
   | 'thought_record'
   // Phase-3 work subcontracting
   | 'subcontract_request' | 'subcontract_accept'
-  | 'subcontract_deliver' | 'subcontract_ack';
+  | 'subcontract_deliver' | 'subcontract_ack'
+  // LANE B — per-agent command & control doorbells (Command Center).
+  //   evict_notice : the graceful-evict quiesce doorbell (drain-then-release)
+  //   pause/resume : ask a cooperating agent to stop / resume claiming work
+  //   reassign     : a claim was released back to the board for re-dispatch
+  | 'evict_notice' | 'pause' | 'resume' | 'reassign';
 
 export interface Message {
   id: string;
