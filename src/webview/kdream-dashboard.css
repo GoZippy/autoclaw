@@ -1194,13 +1194,14 @@ th {
 }
 .board-kanban {
   display: flex;
+  flex-direction: column;   /* stack by default — a docked sidebar never scrolls sideways */
   gap: 6px;
-  overflow-x: auto;
+  overflow-x: visible;
   padding-bottom: 4px;
 }
 .board-col {
-  flex: 1 1 0;
-  min-width: 132px;
+  min-width: 0;
+  width: 100%;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--vscode-panel-border);
@@ -1217,8 +1218,7 @@ th {
   text-transform: uppercase;
   letter-spacing: 0.03em;
   border-bottom: 1px solid var(--vscode-panel-border);
-  position: sticky;
-  top: 0;
+  position: static;   /* sticky only re-enabled in the wide grid band below */
 }
 .board-col-head .col-count {
   margin-left: auto;
@@ -1472,44 +1472,23 @@ th {
 }
 
 /* ===========================================================================
-   Kanban responsive bands — keyed off the #board-body query container.
-   The lane sizes to its OWN width (not the viewport), so these hold up when
-   the view is popped to the editor area too. Four bands, narrow → wide:
-     ≤360px       STACK    — one full-width column per row
-     360–560px    SNAP     — two columns, horizontal scroll-snap
-     560–760px    AUTO-FIT — responsive grid, no horizontal scroll
-     ≥760px       FLEX     — today's flex layout, slightly roomier columns
-   Only the >760px band touches min-width so narrow sizes never regress.
+   Kanban responsive band — keyed off the #board-body query container.
+   The board STACKS by default (one full-width lane per row, set on
+   .board-kanban above), so a docked sidebar NEVER scrolls horizontally —
+   every lane and card stays reachable by ordinary vertical scrolling. Only
+   when the surface is genuinely wide (e.g. the view dragged into the editor
+   area) do lanes spread into a grid that PACKS and WRAPS — still never a
+   horizontal scroller. Keyed off the lane's OWN width via @container, so it's
+   correct in the sidebar and when popped out. The wide board lives in the
+   separate "Open Wide" Manager tab (media/panel/fleet.*).
    =========================================================================== */
-
-/* STACK: too narrow for side-by-side lanes — stack them full width. The
-   overflow scroller is pointless here, so let it lay out normally; and the
-   sticky head must go static or stacked heads pile up at the scroll origin. */
-@container board (max-width: 360px) {
-  .board-kanban { flex-direction: column; overflow-x: visible; }
-  .board-col { min-width: 0; width: 100%; }
-  .board-col-head { position: static; }
-}
-
-/* SNAP: enough room for two lanes at a time — page through them with
-   horizontal scroll-snap so each pair lands cleanly. */
-@container board (min-width: 360px) and (max-width: 560px) {
-  .board-kanban { scroll-snap-type: x mandatory; }
-  .board-col { flex: 0 0 calc(50% - 4px); scroll-snap-align: start; }
-}
-
-/* AUTO-FIT: wide enough to drop the scroller and reflow lanes into a grid
-   that packs as many columns as fit, each ≥150px. */
-@container board (min-width: 560px) and (max-width: 760px) {
+@container board (min-width: 600px) {
   .board-kanban {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+    align-items: start;
     overflow-x: visible;
   }
-}
-
-/* FLEX (wide): keep today's flex layout; only here is it safe to give lanes
-   a roomier floor without regressing the narrow bands above. */
-@container board (min-width: 760px) {
-  .board-col { min-width: 180px; }
+  .board-col { width: auto; }
+  .board-col-head { position: sticky; top: 0; }
 }
