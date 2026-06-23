@@ -170,6 +170,7 @@ interface ClaimFileShape {
   task_ids?: string[];
   claimed_by?: string;
   agent?: string;
+  session_id?: string;
   claimed_at?: string;
   ttl_ms?: number;
 }
@@ -192,6 +193,7 @@ async function readClaims(workspaceRoot: string): Promise<BoardClaim[]> {
       out.push({
         task_id: id,
         claimed_by: owner,
+        session_id: c.session_id,
         claimed_at: c.claimed_at ?? new Date(0).toISOString(),
         ttl_ms: c.ttl_ms,
       });
@@ -219,6 +221,7 @@ async function readClaims(workspaceRoot: string): Promise<BoardClaim[]> {
         out.push({
           task_id: id,
           claimed_by: owner,
+          session_id: c.session_id,
           claimed_at: c.claimed_at ?? new Date(stat.mtimeMs).toISOString(),
           ttl_ms: c.ttl_ms,
         });
@@ -262,11 +265,11 @@ async function readHeartbeats(workspaceRoot: string): Promise<BoardHeartbeat[]> 
   const out: BoardHeartbeat[] = [];
   for (const name of await listDir(dir)) {
     if (!name.endsWith('.json')) { continue; }
-    const hb = await readJson<{ agent_id?: string; timestamp?: string; status?: string }>(
+    const hb = await readJson<{ agent_id?: string; timestamp?: string; status?: string; session_id?: string }>(
       path.join(dir, name),
     );
     if (!hb?.agent_id || !hb.timestamp) { continue; }
-    out.push({ agent_id: hb.agent_id, timestamp: hb.timestamp, status: hb.status });
+    out.push({ agent_id: hb.agent_id, timestamp: hb.timestamp, status: hb.status, session_id: hb.session_id });
   }
   return out;
 }
