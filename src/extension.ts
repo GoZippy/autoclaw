@@ -177,6 +177,7 @@ import { stopSvidRefresh } from './svid';
 import { getFleetMetrics, recordTaskDuration, resetMetrics } from './metrics';
 export { recordTaskDuration }; // allow reconcile and other callers to import directly
 import { writeConsensusVote } from './orchestrator/voteWriter';
+import { reapDeadClaims } from './orchestrator/claimReaper';
 import { syncVoidSpecCommand } from './voidspec/dispatch';
 
 const fsPromises = fs.promises;
@@ -762,7 +763,9 @@ export function activate(context: vscode.ExtensionContext) {
     // Wire an arbitrary (non-extension) agent id into the comms tree.
     vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand()),
     // Toggle the MCP server's allowWrites gate (lets MCP-lane agents claim/vote).
-    vscode.commands.registerCommand('autoclaw.mcp.allowWrites', () => mcpAllowWritesToggleCommand())
+    vscode.commands.registerCommand('autoclaw.mcp.allowWrites', () => mcpAllowWritesToggleCommand()),
+    // CL-3: manually release dead-session, expired claims (safe, release-only).
+    vscode.commands.registerCommand('autoclaw.fleet.reapClaims', () => fleetReapClaimsCommand())
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -3275,6 +3278,11 @@ function startOrchestratorLoopTick(context: vscode.ExtensionContext): void {
     selfHealingEnabled: vscode.workspace
       .getConfiguration('autoclaw')
       .get<boolean>('selfHealing.enabled', false),
+    // CL-3: opt-in dead-session claim reaper, OFF by default. Release-only —
+    // frees tasks whose owning session is dead and whose claim is expired.
+    reapDeadClaims: vscode.workspace
+      .getConfiguration('autoclaw')
+      .get<boolean>('selfHealing.reapDeadClaims', false),
     onTick(result) {
       // Surface health/dispatch alerts in the output channel.
       const unhealthy = result.health.stalledIds.length + result.health.deadIds.length;
@@ -4735,6 +4743,30 @@ async function fleetPickOrchestratorCommand(): Promise<void> {
     if (kdreamView) { await refreshOrchestratorData(kdreamView); }
   } catch (e) {
     vscode.window.showWarningMessage(`AutoClaw: could not set orchestrator — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * CL-3: manually release dead-session, expired claims. Safe and release-only —
+ * archives each abandoned claim to claims/_reaped/ and frees the task; never
+ * touches live work or git. Available on demand regardless of the auto-reap
+ * setting (which only governs the background loop).
+ */
+async function fleetReapClaimsCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  try {
+    const report = await reapDeadClaims(wr, { apply: true });
+    if (report.reaped.length === 0) {
+      vscode.window.showInformationMessage(`AutoClaw: no abandoned claims to reap (${report.scanned} scanned — all owners live or claims unexpired).`);
+    } else {
+      vscode.window.showInformationMessage(
+        `AutoClaw: reaped ${report.reaped.length} dead-session claim(s) of ${report.scanned} scanned — tasks released (archived to claims/_reaped/): ${report.reaped.map(r => r.task_id).join(', ')}`,
+      );
+    }
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not reap claims — ${(e as Error).message}`);
   }
 }
 
