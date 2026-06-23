@@ -4,13 +4,59 @@
  * so it tracks light/dark/high-contrast themes. No external fonts / no CDN.
  */
 
+/* ── AutoClaw design tokens (CANONICAL) ─────────────────────────────────
+ * This :root block is the single source of truth for AutoClaw's webview
+ * design language. It is MIRRORED byte-for-byte into the three panel
+ * stylesheets — src/webview/kdream-dashboard.css, media/panel/fleet.css and
+ * media/intelligence/dashboard.css — because each surface loads from a
+ * different asset root and links exactly one stylesheet, so they cannot yet
+ * share one physical file without host-side wiring + CSP review. Keep the
+ * three copies identical. Every value derives from a VS Code theme var (with
+ * a fallback equal to the literal it replaced) so all three surfaces still
+ * track light / dark / high-contrast themes. A future refactor can promote
+ * this to a real shared tokens.css.
+ * ----------------------------------------------------------------------- */
 :root {
-  --gap: 12px;
-  --radius: 6px;
+  /* Spacing scale */
+  --acw-space-1: 4px;
+  --acw-space-2: 6px;
+  --acw-space-3: 8px;
+  --acw-space-4: 10px;
+  --acw-space-5: 12px;
+  /* Radii */
+  --acw-radius-sm: 4px;
+  --acw-radius-md: 6px;
+  /* Surfaces */
+  --acw-card-bg: var(--vscode-editorWidget-background, rgba(127,127,127,0.06));
+  --acw-card-border: var(--vscode-panel-border, rgba(127,127,127,0.25));
+  --acw-section-bg: var(--vscode-editor-inactiveSelectionBackground);
+  --acw-header-fg: var(--vscode-descriptionForeground);
+  /* Canonical status / role colors */
+  --acw-status-active: var(--vscode-charts-green, #89d185);
+  --acw-status-idle: var(--vscode-charts-yellow, #d7ba7d);
+  --acw-status-warn: var(--vscode-charts-orange, #d7935d);
+  --acw-status-info: var(--vscode-charts-blue, #3794ff);
+  --acw-status-error: var(--vscode-charts-red, #f14c4c);
+  --acw-status-special: var(--vscode-charts-purple, #b180d7);
+  /* Aliases (kept so dashboard.css's existing --gap / --radius call sites
+   * keep resolving; harmless on the other two surfaces). */
+  --acw-gap: var(--acw-space-5);
+  --gap: var(--acw-space-5);
+  --radius: var(--acw-radius-md);
 }
 
 * {
   box-sizing: border-box;
+}
+
+/* Stable responsive container. #dashboard-root always wraps every section
+ * (toolbars, cards, charts, runs) so it is the right hook for size queries —
+ * and unlike a width media query it stays correct when this view is popped
+ * out to a wide editor tab. inline-size only contains the inline axis, so it
+ * never clips vertical content or scrolling. */
+#dashboard-root {
+  container-type: inline-size;
+  container-name: intel;
 }
 
 /* Backend "online" pill — shown when the vector backend is installed; sits
@@ -151,6 +197,11 @@ button.action:focus-visible {
 canvas.chart {
   width: 100%;
   height: auto;
+  /* The HTML width/height attrs give the canvas an intrinsic ~2.7:1 aspect
+   * ratio, so `height:auto` collapses it to ~80px and clips axis labels when
+   * the view is narrow. Floor it so charts stay legible; setupCanvas() reads
+   * clientHeight so this height is honored by the drawing code too. */
+  min-height: 140px;
   display: block;
   background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.05));
   border-radius: var(--radius);
@@ -219,4 +270,90 @@ canvas.chart {
 
 .badge-est {
   color: var(--vscode-charts-yellow, #cca700);
+}
+
+/* ---- Responsive ----------------------------------------------------------
+ * Size queries on the #dashboard-root container (NOT the viewport) so the
+ * sidebar reflows correctly whether it is docked narrow or popped to a wide
+ * editor tab. Chromium ~128 (engines.vscode ^1.95.0) supports @container, so
+ * no media-query fallback is required.
+ *
+ * Breakpoints are width thresholds where specific failures appear:
+ *   <= 360px : the 7+ button manage toolbar can no longer fit on 2 rows
+ *              cleanly; a flex:1 1 auto last button stretches across an
+ *              orphan row. Cap each button so rows fill evenly.
+ *   <= 240px : near-minimum sidebar; force equal-width grid cells for the
+ *              toolbars and shrink card columns so nothing overflows. */
+
+/* Stop the orphan-row stretch: a lone last .action on its own wrapped row
+ * would expand to fill the whole row (flex-grow). Cap growth with a sensible
+ * max so wrapped rows look like even, repeated buttons instead. */
+@container intel (max-width: 360px) {
+  button.action {
+    flex: 1 1 auto;
+    max-width: 50%;
+  }
+
+  /* Ghost buttons (refresh / settings) stay compact and never grow. */
+  button.action.ghost {
+    flex: 0 1 auto;
+    max-width: 44px;
+  }
+}
+
+/* Very narrow: switch both toolbars to an auto-fit grid of equal cells so
+ * buttons wrap into clean, full-width rows with no stretched orphan. The
+ * backend pill spans its own full row when shown. */
+@container intel (max-width: 240px) {
+  .toolbar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+    align-items: stretch;
+  }
+
+  button.action,
+  button.action.ghost {
+    flex: initial;
+    max-width: none;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .backend-pill {
+    grid-column: 1 / -1;
+    justify-content: center;
+  }
+
+  /* Tighten the card grid so a single column never overflows the ~220px
+   * minimum sidebar (110px min + 2*gap + padding would clip otherwise). */
+  .cards {
+    grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+    gap: 8px;
+  }
+
+  .card .value {
+    font-size: 1.25em;
+    overflow-wrap: anywhere;
+  }
+
+  /* Let recent-run rows stack their timestamp above the metrics instead of
+   * colliding via space-between at narrow widths. */
+  .recent-row {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .recent-row .meta {
+    text-align: left;
+  }
+
+  .recent-row .when {
+    white-space: normal;
+  }
+
+  /* Legend swatches can wrap rather than overflow horizontally. */
+  .legend {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
 }
