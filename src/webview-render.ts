@@ -287,19 +287,87 @@ function sortSessions(sessions: readonly Heartbeat[]): Heartbeat[] {
     new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 }
 
+/** A session is "stale" when its last heartbeat is older than this. */
+const SESSION_STALE_MS = 10 * 60_000;
+
+/** Options that let the self agent's session list flag which row is "this window". */
+export interface SessionListOpts {
+  /** The host's own session id. When it matches a row exactly, that row is
+   *  pinned as "this window" — the deterministic case. */
+  selfSessionId?: string;
+  /** True when these sessions belong to the agent running in THIS window. Enables
+   *  the "this window" marker: a deterministic {@link selfSessionId} match, else
+   *  (heuristic) the freshest non-stale session — almost always the one you are
+   *  typing in. Honest by design: when every session is stale, none is flagged. */
+  isSelfAgent?: boolean;
+}
+
+/** Resolve the one-word state shown on each session row. The deterministic /
+ *  heuristic "this window" wins; otherwise it reflects the heartbeat status. */
+function sessionState(
+  status: string | undefined,
+  stale: boolean,
+  isThisWindow: boolean
+): { label: string; cls: string; title: string } {
+  if (isThisWindow) {
+    return { label: 'this window', cls: 'sst-window',
+      title: 'The session running in this window (your active chat). Other rows are background or older sessions of the same agent.' };
+  }
+  if (stale) {
+    return { label: 'stale', cls: 'sst-stale',
+      title: 'No heartbeat in over 10 minutes — an old or closed session.' };
+  }
+  switch ((status || '').toLowerCase()) {
+    case 'watch': return { label: 'watch', cls: 'sst-watch', title: 'Idling in watch mode — no claimable work right now.' };
+    case 'idle': return { label: 'idle', cls: 'sst-idle', title: 'Connected but not actively working.' };
+    case 'active': return { label: 'active', cls: 'sst-active', title: 'A background session, actively working.' };
+    default: return { label: (status || 'live').toLowerCase(), cls: 'sst-live', title: 'Live session.' };
+  }
+}
+
 /**
  * Render the per-agent session list (expanded card body). One row per
- * session heartbeat: short id, status, model, current task, last-seen.
+ * session heartbeat: short id, state, model, current task, last-seen.
+ *
+ * For the agent running in this window ({@link SessionListOpts.isSelfAgent}),
+ * exactly one row is flagged "this window" and floated to the top so the user
+ * can tell their active chat apart from background / older sessions of the same
+ * agent — the single most useful disambiguation when one tool hosts many chats.
  */
-export function renderSessionList(sessions: readonly Heartbeat[] | undefined, now: number = Date.now()): string {
+export function renderSessionList(
+  sessions: readonly Heartbeat[] | undefined,
+  now: number = Date.now(),
+  opts: SessionListOpts = {}
+): string {
   if (!sessions || sessions.length === 0) { return ''; }
+  const sorted = sortSessions(sessions);
+  const isStale = (s: Heartbeat) => now - new Date(s.timestamp).getTime() > SESSION_STALE_MS;
+
+  // Which row is "this window"? Deterministic id match first; else, for the self
+  // agent, the freshest non-stale session. Never guesses when all are stale.
+  let thisWindowId: string | undefined;
+  if (opts.selfSessionId && sorted.some(s => s.session_id === opts.selfSessionId)) {
+    thisWindowId = opts.selfSessionId;
+  } else if (opts.isSelfAgent) {
+    thisWindowId = sorted.find(s => s.session_id && !isStale(s))?.session_id;
+  }
+  // Float the this-window row to the top (stable for every other row).
+  const ordered = thisWindowId
+    ? [...sorted].sort((a, b) =>
+        (b.session_id === thisWindowId ? 1 : 0) - (a.session_id === thisWindowId ? 1 : 0))
+    : sorted;
+
   let h = '<div class="session-list" aria-label="Sessions">';
-  h += `<div class="session-list-label">Sessions<span class="session-list-count">${sessions.length}</span></div>`;
-  for (const s of sortSessions(sessions)) {
-    const stale = now - new Date(s.timestamp).getTime() > 10 * 60_000;
-    h += `<div class="session-row${stale ? ' stale' : ''}">`;
-    h += `<span class="session-dot ${stale ? 'status-offline' : 'status-' + esc(s.status || 'idle')}" aria-hidden="true"></span>`;
+  h += `<div class="session-list-label">Sessions<span class="session-list-count">${sorted.length}</span></div>`;
+  for (const s of ordered) {
+    const isThisWindow = !!thisWindowId && s.session_id === thisWindowId;
+    const stale = !isThisWindow && isStale(s);
+    h += `<div class="session-row${isThisWindow ? ' this-window' : ''}${stale ? ' stale' : ''}">`;
+    const dotStatus = isThisWindow ? 'status-active' : (stale ? 'status-offline' : 'status-' + esc(s.status || 'idle'));
+    h += `<span class="session-dot ${dotStatus}" aria-hidden="true"></span>`;
     h += `<span class="session-id" title="${esc(s.session_id ?? '')}">${esc(shortSessionId(s.session_id) || '(no id)')}</span>`;
+    const st = sessionState(s.status, stale, isThisWindow);
+    h += `<span class="session-state ${st.cls}" title="${esc(st.title)}">${esc(st.label)}</span>`;
     if (s.current_llm) { h += `<span class="session-model" title="${esc(s.current_llm)}">${esc(shortModel(s.current_llm))}</span>`; }
     // Context-window chip (from the model catalog) + remaining-budget chip when
     // the agent reports one — the per-session token signals the panel can show.
@@ -369,6 +437,22 @@ export function renderDetailRow(label: string, value: string | undefined | null)
   return `<div class="agent-detail-row"><span class="detail-label">${esc(label)}</span><span class="detail-value">${esc(value)}</span></div>`;
 }
 
+/** Badge describing HOW an agent joined the team — a delegated sub-agent
+ *  (spawned by an orchestrator, carries `parent_id`) or an external tool that
+ *  checked in via a beacon ("joined"). Returns '' for ordinary team agents.
+ *  `parent_id` is read defensively: the registry carries it on spawned rows even
+ *  though it isn't on the base RegisteredAgent type. */
+export function renderProvenanceBadge(agent: AgentWithLive): string {
+  const parent = (agent as { parent_id?: string | null }).parent_id;
+  if (parent) {
+    return `<span class="prov-badge prov-sub" title="Delegated sub-agent spawned by ${esc(parent)}">sub-agent</span>`;
+  }
+  if (agent.origin === 'beacon') {
+    return '<span class="prov-badge prov-joined" title="Joined from another tool / IDE / runner on this machine (beacon check-in)">joined</span>';
+  }
+  return '';
+}
+
 /**
  * Render one agent card. The summary row is always rendered; the expanded
  * body is rendered as a sibling div the JS can toggle by adding/removing
@@ -378,7 +462,8 @@ export function renderAgentCard(
   agent: AgentWithLive,
   summary: InboxSummary | null = null,
   now: number = Date.now(),
-  selfId?: string
+  selfId?: string,
+  selfSessionId?: string
 ): string {
   const live = agent.live_status || agent.status || 'detected';
   const hb = agent.heartbeat ?? null;
@@ -392,11 +477,12 @@ export function renderAgentCard(
   head += '<span class="card-chevron"></span>';
   head += `<span class="status-pill ${statusBadgeClass(live)}" title="${esc(live)}">${esc(live)}</span>`;
   head += `<span class="agent-name">${esc(agent.name || agent.id)}</span>`;
-  // "you" pill — marks the agent running in THIS window, so the user can tell
-  // why the self-scoped "Awaiting You" section attaches to this agent and not
-  // another. Only one card per window carries it.
+  // "your agent" pill — marks the TOOL running in this window, not a single
+  // session. One tool can host many chat sessions, so the precise "this window"
+  // flag lives on a session row below; this pill only says which agent is yours
+  // (and why the self-scoped "Awaiting You" section attaches here).
   if (isSelf) {
-    head += '<span class="you-pill" title="This is you — the agent running in this window">you</span>';
+    head += '<span class="you-pill" title="Your agent — the tool running in this window. It can host several chat sessions; the one you are in is flagged “this window” under Sessions below.">your agent</span>';
   }
   // Role chip — the single most useful "what is this agent doing on the team"
   // signal, so it sits right after the name on the always-visible summary line.
@@ -421,6 +507,10 @@ export function renderAgentCard(
       : `Remote agent on ${esc(host)} (via cloud relay)`;
     head += `<span class="origin-badge origin-${isBeacon ? 'beacon' : 'remote'}" title="${title}">⌂ ${esc(host)}</span>`;
   }
+  // Provenance — HOW this agent got onto the team (vs the origin badge's WHERE):
+  // a delegated sub-agent spawned by an orchestrator, or an external tool that
+  // joined via a beacon check-in. Primary team agents carry no provenance badge.
+  head += renderProvenanceBadge(agent);
   if (summary && summary.awaiting_response > 0) {
     head += `<span class="awaiting-pip" title="${summary.awaiting_response} awaiting your response">${summary.awaiting_response}</span>`;
   }
@@ -487,9 +577,14 @@ export function renderAgentCard(
   // row each (a single agent process can host several chat sessions). Falls
   // back to the single primary session id when no sidecars were collected.
   if (agent.sessions && agent.sessions.length > 0) {
-    body += renderSessionList(agent.sessions, now);
+    body += renderSessionList(agent.sessions, now, { selfSessionId, isSelfAgent: isSelf });
   } else if (hb?.session_id) {
     body += renderDetailRow('Session', shortSessionId(hb.session_id));
+  } else {
+    // Registered/present but no live chat session — e.g. an idle peer that is
+    // "not doing anything right now". Say so plainly instead of an empty gap.
+    body += '<div class="session-list session-none" aria-label="Sessions">'
+      + '<span class="session-none-label">No active chat sessions</span></div>';
   }
 
   // Inbox summary counters (per agent)
@@ -524,7 +619,7 @@ export function renderSelfIdentity(
   const name = self?.name || selfId;
   const known = !!self;
   const note = known
-    ? 'The "Awaiting You" section and your inbox counts are scoped to this agent.'
+    ? 'This is your agent — the tool running in this window. The "Awaiting You" section and inbox counts are scoped to it; your active chat is flagged “this window” under its Sessions.'
     : 'This window’s agent is not registered on the team yet.';
   return (
     `<div class="self-identity${known ? '' : ' unknown'}" title="${esc(note)}">` +
@@ -545,14 +640,15 @@ export function renderAgentList(
   agents: readonly AgentWithLive[],
   summaries: Record<string, InboxSummary> = {},
   now: number = Date.now(),
-  selfId?: string
+  selfId?: string,
+  selfSessionId?: string
 ): string {
   if (!agents || agents.length === 0) {
     return '<p class="empty">No agents detected.</p>';
   }
 
   const hasRelay = agents.some(isRemoteAgent);
-  const card = (a: AgentWithLive) => renderAgentCard(a, summaries[a.id] ?? null, now, selfId);
+  const card = (a: AgentWithLive) => renderAgentCard(a, summaries[a.id] ?? null, now, selfId, selfSessionId);
   const summary = renderSelfIdentity(agents, selfId) + renderTeamSummary(agents, now);
 
   if (!hasRelay) {

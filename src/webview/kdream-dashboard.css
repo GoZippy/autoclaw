@@ -302,6 +302,29 @@ th {
   border: 1px solid color-mix(in srgb, var(--vscode-charts-blue, #4daafc) 40%, transparent);
 }
 
+/* Provenance badge — HOW an agent joined the team (vs origin's WHERE):
+   a delegated sub-agent (parent_id) or an external tool that joined via beacon. */
+.prov-badge {
+  font-size: 0.68em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  margin-left: 4px;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.prov-badge.prov-sub {
+  background: color-mix(in srgb, var(--vscode-charts-orange, #d18616) 20%, transparent);
+  color: var(--vscode-charts-orange, #d18616);
+  border: 1px solid color-mix(in srgb, var(--vscode-charts-orange, #d18616) 40%, transparent);
+}
+.prov-badge.prov-joined {
+  background: color-mix(in srgb, var(--vscode-charts-green, #89d185) 18%, transparent);
+  color: var(--vscode-charts-green, #89d185);
+  border: 1px solid color-mix(in srgb, var(--vscode-charts-green, #89d185) 38%, transparent);
+}
+
 /* Custom (user-defined) role label — neutral chip, no canonical color. */
 .role-chip.role-custom,
 .who.role-custom {
@@ -1124,10 +1147,48 @@ th {
   font-size: 0.8em;
 }
 .session-row.stale { opacity: 0.55; }
+/* The session running in this window — the literal "you". Floated to the top of
+   the list and given an accent rail so it reads apart from background sessions. */
+.session-row.this-window {
+  opacity: 1;
+  border-left: 2px solid var(--vscode-textLink-foreground);
+  margin-left: -2px;
+  padding-left: 4px;
+  background: var(--vscode-editor-inactiveSelectionBackground);
+  border-radius: 0 4px 4px 0;
+}
 .session-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.session-dot.status-active { background: var(--vscode-charts-green, #89d185); }
+.session-dot.status-active, .session-dot.status-watch { background: var(--vscode-charts-green, #89d185); }
 .session-dot.status-idle { background: var(--vscode-charts-yellow, #d7ba7d); }
 .session-dot.status-offline { background: var(--vscode-charts-red, #f14c4c); }
+/* One-word per-session state chip: this window / active / watch / idle / stale. */
+.session-state {
+  flex: none;
+  font-size: 0.82em;
+  padding: 0 6px;
+  border-radius: 8px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  background: rgba(127, 127, 127, 0.18);
+  color: var(--vscode-descriptionForeground);
+}
+.session-state.sst-window {
+  background: var(--vscode-textLink-foreground);
+  color: var(--vscode-editor-background);
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 0.72em;
+  letter-spacing: 0.04em;
+}
+.session-state.sst-active { color: var(--vscode-charts-green, #89d185); }
+.session-state.sst-watch { color: var(--vscode-charts-blue, #75beff); }
+.session-state.sst-idle { color: var(--vscode-charts-yellow, #d7ba7d); }
+.session-state.sst-stale { color: var(--vscode-charts-red, #f14c4c); }
+/* "No active chat sessions" — shown for a present-but-idle peer (e.g. Kilo Code
+   registered but not working right now). */
+.session-none { margin-top: 6px; border-top: 1px dashed var(--vscode-panel-border); padding-top: 5px; color: var(--vscode-descriptionForeground); font-style: italic; }
+.session-none-label { font-size: 0.8em; }
 .session-id { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-descriptionForeground); }
 .session-model {
   font-family: var(--vscode-editor-font-family, monospace);
