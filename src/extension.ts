@@ -119,7 +119,10 @@ import { createInvite, listInvites, revokeInvite, type AdmitPolicy } from './fle
 import { computePendingAgents, admitAgent } from './fleet/pending';
 import { renderJoinPromptForInvite, JOIN_TARGETS } from './fleet/joinPrompt';
 import { scaffoldAgent, keepaliveProfileFor } from './fleet/scaffold';
+import { scaffoldFleetManifest, setManifestOrchestrator, generateNeedsFile, type DetectedAgent as ManifestAgent } from './fleet/authoring';
 import { appendTaskCompletion, readTaskLedger, summarizeByAgent, recentCompletions } from './taskLedger';
+import { setAllowWrites, isWritesAllowed } from './mcp/allowWritesConfig';
+import { readAgentCosts } from './agentCost';
 import { buildPending } from './views/fleetViewModelBuilders';
 import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
@@ -740,6 +743,14 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('autoclaw.designateOrchestrator', () => designateOrchestratorCommand())
   );
 
+  // Fleet manifest authoring — CREATE fleet.json + needs.json from detected
+  // agents (the per-agent setAgentRole/designateOrchestrator commands above only
+  // edit an existing manifest; this scaffolds it in the first place).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.fleet.scaffoldManifest', () => fleetScaffoldManifestCommand()),
+    vscode.commands.registerCommand('autoclaw.fleet.pickOrchestrator', () => fleetPickOrchestratorCommand())
+  );
+
   // Fleet federation (FF-3) — invite outside agents, admit/decline the pending tray.
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.fleet.invite', () => fleetInviteCommand()),
@@ -749,7 +760,9 @@ export function activate(context: vscode.ExtensionContext) {
     // Desktop/OpenClaw/Hermes/…), bundling a fresh invite token + lane steps.
     vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', () => fleetJoinPromptCommand()),
     // Wire an arbitrary (non-extension) agent id into the comms tree.
-    vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand())
+    vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand()),
+    // Toggle the MCP server's allowWrites gate (lets MCP-lane agents claim/vote).
+    vscode.commands.registerCommand('autoclaw.mcp.allowWrites', () => mcpAllowWritesToggleCommand())
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -3256,6 +3269,12 @@ function startOrchestratorLoopTick(context: vscode.ExtensionContext): void {
   activeOrchestratorLoopHandle = startOrchestratorLoop({
     workspaceRoot,
     tickMs: 30_000, // 30 s between ticks
+    // Follow-up #3: opt-in self-healing, OFF by default. When the operator
+    // enables it, the loop's HEAL phase performs bounded, reversible recovery
+    // (act-then-report) each tick; otherwise the loop only detects/reports.
+    selfHealingEnabled: vscode.workspace
+      .getConfiguration('autoclaw')
+      .get<boolean>('selfHealing.enabled', false),
     onTick(result) {
       // Surface health/dispatch alerts in the output channel.
       const unhealthy = result.health.stalledIds.length + result.health.deadIds.length;
@@ -4103,6 +4122,9 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     }
   } catch { /* no claims dir */ }
   const workloadByAgent = summarizeByAgent(ledger, claims, board, { now: new Date(), recentLimit: 5 });
+  // Follow-up #4: per-agent cost rollup (tokens / $ / dispatches) from the LLM
+  // cost ledger. Best-effort; missing ledger degrades to empty.
+  const costByAgent = (() => { try { return readAgentCosts(wr); } catch { return {}; } })();
 
   // Merge in agents that checked in from OTHER tools/IDEs/runners via beacons
   // (other-IDE AutoClaw, Hermes, openclaw, …). Local registry agents win on id
@@ -4148,6 +4170,8 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     (a as { role?: string }).role = rr.canonical;
     // Slice B: attach the per-agent workload rollup (undefined ⇒ card unchanged).
     (a as AgentWithLive).workload = workloadByAgent[a.id];
+    // Follow-up #4: attach per-agent cost rollup (undefined ⇒ card unchanged).
+    (a as AgentWithLive).cost = costByAgent[a.id];
     nameOf[a.id] = a.name || a.id;
     const model = a.heartbeat?.current_llm
       || (a.llms_available && a.llms_available.length === 1 ? a.llms_available[0] : undefined);
@@ -4549,8 +4573,30 @@ async function fleetJoinPromptCommand(): Promise<void> {
   });
   const scope = (scopeRaw ?? '').split(',').map(s => s.trim()).filter(Boolean);
 
-  // 5. Optional REST bridge URL — only meaningful for the HTTP lane (e.g. Hermes).
   const target = JOIN_TARGETS[targetPick.key];
+
+  // 5. MCP-lane peers are READ-ONLY until allowWrites is enabled. Offer to flip
+  // the file flag now — enabling writes is a TRUST decision, so it is explicit
+  // opt-in, never silent.
+  if ((target.lane === 'mcp' || target.fallbackLane === 'mcp') && !isWritesAllowed(wr)) {
+    const enable = await vscode.window.showWarningMessage(
+      'Enable MCP writes for this project? Required for MCP-lane agents (Codex, ' +
+      'Claude Desktop) to claim tasks / vote. Writes stay gated per-tool by ' +
+      '.autoclaw/mcp/config.json.',
+      { modal: true },
+      'Enable writes', 'Keep read-only',
+    );
+    if (enable === 'Enable writes') {
+      try {
+        await setAllowWrites(wr, true);
+        vscode.window.showInformationMessage('AutoClaw: MCP writes enabled (.autoclaw/mcp/config.json).');
+      } catch (e) {
+        vscode.window.showWarningMessage(`AutoClaw: could not enable MCP writes — ${(e as Error).message}`);
+      }
+    }
+  }
+
+  // 6. Optional REST bridge URL — only meaningful for the HTTP lane (e.g. Hermes).
   let bridgeUrl: string | undefined;
   if (target.lane === 'http' || target.fallbackLane === 'http') {
     bridgeUrl = (await vscode.window.showInputBox({
@@ -4614,6 +4660,81 @@ async function fleetScaffoldAgentCommand(): Promise<void> {
     if (kdreamView) { await refreshOrchestratorData(kdreamView); }
   } catch (e) {
     vscode.window.showWarningMessage(`AutoClaw: could not scaffold agent — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Toggle the MCP server's coarse `allowWrites` gate in .autoclaw/mcp/config.json.
+ * MCP-lane peers (Codex, Claude Desktop) are read-only until this is on —
+ * enabling it lets them claim tasks / vote. A trust decision, so it's explicit.
+ */
+async function mcpAllowWritesToggleCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const currently = isWritesAllowed(wr);
+  const pick = await vscode.window.showQuickPick(
+    [
+      { label: '$(check) Enable MCP writes', description: 'Let MCP-lane agents claim tasks / vote (trust decision)', val: true },
+      { label: '$(circle-slash) Disable MCP writes', description: 'Make the MCP server read-only again', val: false },
+    ],
+    { title: `MCP writes are currently ${currently ? 'ENABLED' : 'disabled'}`, placeHolder: 'Toggle the .autoclaw/mcp/config.json allowWrites flag' },
+  );
+  if (!pick) { return; }
+  try {
+    await setAllowWrites(wr, pick.val);
+    vscode.window.showInformationMessage(`AutoClaw: MCP writes ${pick.val ? 'enabled' : 'disabled'}.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not update MCP writes — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Scaffold or refresh fleet.json (and needs.json) from the currently-detected
+ * agents. Preserves any hand-set entries; only adds missing agents — so role
+ * election finally has a live manifest to read.
+ */
+async function fleetScaffoldManifestCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const autoclawDir = path.join(wr, '.autoclaw');
+  const commsDir = path.join(autoclawDir, 'orchestrator', 'comms');
+  try {
+    const statuses = await getAgentStatuses(commsDir);
+    if (statuses.length === 0) {
+      vscode.window.showWarningMessage('AutoClaw: no agents detected yet — provision the comms tree first.');
+      return;
+    }
+    const agents: ManifestAgent[] = statuses.map(s => ({
+      id: s.id,
+      role: (s as { role?: string }).role,
+      agent_type: s.agent_type ?? null,
+      can_orchestrate: s.can_orchestrate ?? false,
+    }));
+    const res = await scaffoldFleetManifest(autoclawDir, agents);
+    await generateNeedsFile(autoclawDir);
+    vscode.window.showInformationMessage(`AutoClaw fleet manifest: ${res.summary}.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: scaffold failed — ${(e as Error).message}`);
+  }
+}
+
+/** Pick the fleet orchestrator from the detected agents (writes fleet.json). */
+async function fleetPickOrchestratorCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const autoclawDir = path.join(wr, '.autoclaw');
+  try {
+    const statuses = await getAgentStatuses(path.join(autoclawDir, 'orchestrator', 'comms'));
+    if (statuses.length === 0) { vscode.window.showWarningMessage('AutoClaw: no agents detected.'); return; }
+    const pick = await vscode.window.showQuickPick(statuses.map(s => s.id), { placeHolder: 'Choose the fleet orchestrator' });
+    if (!pick) { return; }
+    await setManifestOrchestrator(autoclawDir, pick);
+    vscode.window.showInformationMessage(`AutoClaw: orchestrator set to ${pick}.`);
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not set orchestrator — ${(e as Error).message}`);
   }
 }
 

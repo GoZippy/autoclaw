@@ -18,6 +18,7 @@ import {
   type CanonicalRole, ROLE_META, resolveAgentRole, summarizeRoles,
 } from './roles';
 import { contextWindowForModel } from './llm/modelCatalog';
+import type { AgentCost } from './agentCost';
 
 /** Where an agent's presence reached this panel from (CF-2, integrate-automate-v3.2).
  *  Mirrors the `FleetOrigin` in views/fleetViewModel.ts; kept inline so the
@@ -44,6 +45,10 @@ export interface AgentWithLive extends RegisteredAgent {
    *  AgentWorkload in taskLedger.ts; kept inline so this pure render module has
    *  no cross-module import. */
   workload?: AgentWorkload;
+  /** Follow-up #4: per-agent cost rollup (tokens / $ / dispatches), built from
+   *  the LLM cost ledger (see src/agentCost.ts readAgentCosts). Optional —
+   *  absent ⇒ the card renders exactly as before (no cost line). */
+  cost?: AgentCost;
 }
 
 /** Per-agent workload rollup + recent completions, attached to a card model.
@@ -417,6 +422,46 @@ export function renderAgentWorkload(wl: AgentWorkload | undefined, now: number =
   return h;
 }
 
+/** Compact a token count to a "12.3k" / "1.2M" style label. Keeps one decimal
+ *  below 100k / 1M so small-but-meaningful counts stay legible, then rounds. */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) { return '0'; }
+  if (n < 1000) { return String(Math.round(n)); }
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    return (k < 100 ? k.toFixed(1) : Math.round(k).toString()) + 'k';
+  }
+  const m = n / 1_000_000;
+  return (m < 100 ? m.toFixed(1) : Math.round(m).toString()) + 'M';
+}
+
+/**
+ * Render the per-agent cost rollup as one compact muted line in the card body,
+ * e.g. "▸ 12.3k tok · $0.04 · 7 runs". Mirrors the additive workload pattern:
+ * returns '' when no cost is attached (card byte-identical for un-augmented
+ * models) and when the rollup has nothing worth showing (no tokens, no cost,
+ * no dispatches). Cost ($) and tokens are each dropped when zero/absent.
+ */
+export function renderAgentCost(cost: AgentCost | undefined): string {
+  if (!cost) { return ''; }
+  const parts: string[] = [];
+  if (cost.tokensTotal > 0) {
+    parts.push(`<span class="cost-tok">${esc(formatTokens(cost.tokensTotal))} tok</span>`);
+  }
+  if (typeof cost.costUsd === 'number' && cost.costUsd > 0) {
+    parts.push(`<span class="cost-usd">$${esc(cost.costUsd.toFixed(cost.costUsd < 1 ? 2 : 2))}</span>`);
+  }
+  if (cost.dispatches > 0) {
+    parts.push(`<span class="cost-runs">${esc(cost.dispatches)} run${cost.dispatches === 1 ? '' : 's'}</span>`);
+  }
+  if (parts.length === 0) { return ''; }
+  const tip =
+    `${cost.tokensIn} in · ${cost.tokensOut} out · ${cost.tokensTotal} total tokens` +
+    (typeof cost.costUsd === 'number' ? ` · $${cost.costUsd.toFixed(4)}` : '') +
+    ` · ${cost.dispatches} dispatch${cost.dispatches === 1 ? '' : 'es'}`;
+  return `<div class="agent-cost" aria-label="Cost" title="${esc(tip)}"><span class="cost-arrow">▸</span>${parts.join('<span class="cost-sep">·</span>')}</div>`;
+}
+
 // ---------------------------------------------------------------------------
 // Agent card
 // ---------------------------------------------------------------------------
@@ -607,6 +652,10 @@ export function renderAgentCard(
   // sourced from the durable task ledger. Renders nothing when no workload was
   // attached to the model (backward-compatible).
   body += renderAgentWorkload(agent.workload, now);
+
+  // Follow-up #4: per-agent cost line (tokens / $ / dispatches) from the LLM
+  // cost ledger. Renders nothing when no cost was attached (backward-compatible).
+  body += renderAgentCost(agent.cost);
 
   body += '</div>';
 

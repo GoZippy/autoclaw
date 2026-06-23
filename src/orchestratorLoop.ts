@@ -169,6 +169,28 @@ export interface OrchestratorLoopOptions {
   workspaceRoot?: string;
   tickMs?: number;
   onTick?: (result: TickResult) => void;
+  /**
+   * Opt-in self-healing (Follow-up #3). When TRUE the loop runs the HEAL phase
+   * each tick — bounded, reversible, act-then-report recovery on the fleet
+   * (steal a stale+expired claim, emit a finding_report per action). When FALSE
+   * (the default) the HEAL phase is skipped entirely: detection/reporting still
+   * happens via the reconcile sweep + board write, but the orchestrator never
+   * AUTO-ACTS on the fleet. OFF by default because this mutates shared state.
+   * The boolean is sourced from `autoclaw.selfHealing.enabled` in extension.ts;
+   * the orchestrator modules stay vscode-free.
+   */
+  selfHealingEnabled?: boolean;
+}
+
+/** Per-tick options. Additive + defaulted so existing 2-arg callers are unchanged. */
+export interface TickOptions {
+  /**
+   * Run the bounded, reversible, act-then-report HEAL phase this tick. Default
+   * FALSE — when off the HEAL block is skipped and behavior is identical to a
+   * loop that never opted in (no acts, no HEAL finding_reports). See
+   * {@link OrchestratorLoopOptions.selfHealingEnabled}.
+   */
+  selfHealingEnabled?: boolean;
 }
 
 export interface OrchestratorLoopHandle {
@@ -720,8 +742,10 @@ function freshLoopState(): LoopState {
 
 export async function runTick(
   workspaceRoot: string,
-  state: LoopState
+  state: LoopState,
+  opts: TickOptions = {}
 ): Promise<TickResult> {
+  const selfHealingEnabled = opts.selfHealingEnabled ?? false;
   const t0 = Date.now();
   state.tick++;
   state.totalTicks++;
@@ -855,18 +879,34 @@ export async function runTick(
     // stale holder is taken over by the next ticking loop). Act-then-report:
     // bounded, reversible recovery + a finding_report per action; never master.
     // Skipped while the fleet is HALTed. Fully guarded — never breaks the tick.
+    //
+    // Follow-up #3 GATE: the act-then-report HEAL phase only runs when the
+    // operator OPTS IN (`selfHealingEnabled`, default FALSE). When it is off the
+    // `runHealPhase` call below is skipped entirely — ZERO fleet mutation and
+    // ZERO HEAL finding_reports, identical to a loop that never opted in. The
+    // supervisor lease + recall sweep are NOT gated by it, so non-HEAL
+    // supervisor behavior is unchanged whether or not self-healing is enabled.
     try {
       if (!isFleetHalted(workspaceRoot)) {
         const sup = await acquireSupervisorRole(workspaceRoot, LOOP_INSTANCE_ID);
         if (sup.isSupervisor) {
-          const heal = await runHealPhase(workspaceRoot, { mode: 'act' });
-          if (heal.actions.length > 0 || sup.stole) {
+          if (selfHealingEnabled) {
+            const heal = await runHealPhase(workspaceRoot, { mode: 'act' });
+            if (heal.actions.length > 0 || sup.stole) {
+              await writeLoopJournal(workspaceRoot, {
+                at: new Date().toISOString(), tick: state.tick, phase: 'work',
+                action: 'heal', detail: {
+                  summary: heal.summary, stolen: heal.stolen,
+                  findings: heal.findingsEmitted, took_over: sup.stole,
+                },
+              });
+            }
+          } else if (sup.stole) {
+            // Self-healing disabled: do NOT act/report. Still record the lease
+            // takeover for audit (internal journal only — not a fleet finding).
             await writeLoopJournal(workspaceRoot, {
               at: new Date().toISOString(), tick: state.tick, phase: 'work',
-              action: 'heal', detail: {
-                summary: heal.summary, stolen: heal.stolen,
-                findings: heal.findingsEmitted, took_over: sup.stole,
-              },
+              action: 'heal_disabled', detail: { took_over: sup.stole },
             });
           }
           // HRW-3: supervisor-only roster-gated recall sweep (no-op without
@@ -920,6 +960,9 @@ export async function runTick(
 export function startOrchestratorLoop(opts: OrchestratorLoopOptions = {}): OrchestratorLoopHandle {
   const workspaceRoot = opts.workspaceRoot ?? '';
   const tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
+  // Follow-up #3: OFF by default — the loop only auto-heals when the operator
+  // opts in (extension.ts reads `autoclaw.selfHealing.enabled` and passes it).
+  const selfHealingEnabled = opts.selfHealingEnabled ?? false;
   let running = true;
   let timerId: NodeJS.Timeout | null = null;
   const state = freshLoopState();
@@ -930,7 +973,7 @@ export function startOrchestratorLoop(opts: OrchestratorLoopOptions = {}): Orche
   const kick = async (): Promise<TickResult | void> => {
     if (!running) return;
     try {
-      const result = await runTick(workspaceRoot, state);
+      const result = await runTick(workspaceRoot, state, { selfHealingEnabled });
       if (workspaceRoot) await writeLoopState(workspaceRoot, state);
       opts.onTick?.(result);
     } catch (e) {
