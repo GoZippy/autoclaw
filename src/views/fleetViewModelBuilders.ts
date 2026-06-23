@@ -31,6 +31,7 @@ import type {
   FleetDashboardModel,
 } from './fleetViewModel';
 import type { PendingAgent } from '../fleet/pending';
+import { isActionableForMe, type CommsMessage } from '../orchestrator/coordination';
 
 // ---------------------------------------------------------------------------
 // Raw input shapes (subset of comms types — kept local to avoid a hard
@@ -432,11 +433,15 @@ export function buildAgentTree(cards: AgentCard[]): AgentTreeNode[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the "Awaiting You" list:  messages where
- * `to == selfAgentId ∧ requires_response ∧ replied_at == null` and not archived.
+ * Build the "Awaiting You" list: messages genuinely awaiting a response from
+ * `selfAgentId` that are not archived or already replied to.
  *
- * `states` maps `msg.id` → its inbox state; a missing entry means unread /
- * unreplied (backwards-compatible with the inbox state machine).
+ * CL-2: actionability is delegated to {@link isActionableForMe} in the
+ * coordination contract so loop telemetry and auto `task_claim`/`next-<agent>`
+ * nudges (which set `requires_response:true` but are not real asks) and my own
+ * messages are excluded — the same single source of truth the GC and panel use.
+ * The inbox-state gate (archived / replied) is layered on top, preserving the
+ * backward-compatible "missing state ⇒ unread/unreplied" semantics.
  */
 export function buildAwaitingYou(
   messages: RawMessage[],
@@ -446,8 +451,8 @@ export function buildAwaitingYou(
 ): AwaitingItem[] {
   return messages
     .filter(m => {
-      if (m.to !== selfAgentId) { return false; }
       if (!m.requires_response) { return false; }
+      if (!isActionableForMe(m as CommsMessage, selfAgentId)) { return false; }
       const st = states.get(m.id);
       if (st?.archived_at) { return false; }
       if (st?.replied_at) { return false; }

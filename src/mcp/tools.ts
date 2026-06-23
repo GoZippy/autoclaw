@@ -29,6 +29,7 @@ import { getKnowledgeGraph } from '../intelligence/kg/service';
 import type { SearchStrategy } from '../intelligence/kg/types';
 import { readAllBeacons } from '../fleet/beacons';
 import { retrieveCode, buildContextPack } from '../intelligence';
+import { buildFleetBrief } from '../orchestrator/fleetBrief';
 
 const fsPromises = fs.promises;
 
@@ -348,6 +349,49 @@ const presenceFleetTool: ToolHandler = {
         reason: 'internal_error',
         detail: err instanceof Error ? err.message : String(err),
       };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: fleet.brief (CL-5)
+// ---------------------------------------------------------------------------
+
+/**
+ * One read for full situational awareness: live sessions (+ each one's current
+ * task / branch / file-scope), top claimable tasks, in-flight / awaiting-review /
+ * stuck counts, file-scope overlaps to avoid, and the shared-inbox signals
+ * awaiting the caller. Read-only — folds heartbeats, board.json, leases, and the
+ * shared inbox into one object so an agent can self-route without the human.
+ */
+const fleetBriefTool: ToolHandler = {
+  definition: {
+    name: 'fleet.brief',
+    description:
+      'One read for full situational awareness: live sessions (+ their current task / branch / ' +
+      'file-scope), top claimable tasks, in-flight / awaiting-review / stuck counts, file-scope ' +
+      'overlaps to avoid, and the shared-inbox signals awaiting you. Read-only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agent: { type: 'string', description: "Caller agent id for 'awaiting_me'. Omit to use the session-derived agent." },
+        topN: { type: 'number', description: 'Cap on claimable_top (default 8).' },
+      },
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    try {
+      const workspaceRoot = path.dirname(ctx.autoclawDir);
+      const sessionId = (ctx as { sessionId?: string }).sessionId;
+      const selfAgentId = (typeof args.agent === 'string' && args.agent.trim()) || sessionId || undefined;
+      const brief = await buildFleetBrief(workspaceRoot, {
+        ...(selfAgentId ? { selfAgentId } : {}),
+        ...(sessionId ? { selfSessionId: sessionId } : {}),
+        ...(typeof args.topN === 'number' ? { topN: args.topN } : {}),
+      });
+      return { ok: true, data: brief };
+    } catch (err) {
+      return { ok: false, reason: 'internal_error', detail: err instanceof Error ? err.message : String(err) };
     }
   },
 };
@@ -1001,6 +1045,7 @@ export const READ_ONLY_TOOLS: ToolHandler[] = [
   fleetStatusTool,
   fleetCardsTool,
   presenceFleetTool,
+  fleetBriefTool,
   inboxReadTool,
   todoListTool,
   doctorRunTool,

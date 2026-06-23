@@ -17,6 +17,7 @@ import type {
 import {
   type CanonicalRole, ROLE_META, resolveAgentRole, summarizeRoles,
 } from './roles';
+import { isActionableForMe, type CommsMessage } from './orchestrator/coordination';
 import { contextWindowForModel } from './llm/modelCatalog';
 import type { AgentCost } from './agentCost';
 
@@ -791,15 +792,29 @@ export function payloadExcerpt(payload: Record<string, unknown> | undefined, max
   }
 }
 
-/** Filter messages to those that need a response from `me`. */
+/**
+ * Filter messages to those that genuinely need a response from `me`.
+ *
+ * CL-2: this is the "Awaiting You" basis, so it must exclude loop telemetry and
+ * the orchestrator's auto `task_claim`/`next-<agent>` nudges (which carry
+ * `requires_response:true` but are not real asks) and messages I sent myself.
+ * The signal-vs-telemetry decision is delegated to {@link isActionableForMe} in
+ * the coordination contract — the single source of truth — then the existing
+ * reply-state gate is applied on top so already-answered items drop off.
+ *
+ * `sessionId` is optional and only used to keep a *different* session of my own
+ * agent id (cross-window) from being filtered out; omit it for the legacy
+ * behavior. Signature is otherwise backward-compatible.
+ */
 export function filterAwaitingYou(
   messages: readonly Message[],
   me: string,
-  states: Record<string, { replied_at: string | null }> = {}
+  states: Record<string, { replied_at: string | null }> = {},
+  sessionId?: string,
 ): Message[] {
   return messages.filter(m =>
-    m.to === me &&
     m.requires_response === true &&
+    isActionableForMe(m as CommsMessage, me, sessionId) &&
     !states[m.id]?.replied_at
   );
 }
