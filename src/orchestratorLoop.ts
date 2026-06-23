@@ -558,7 +558,7 @@ export async function dispatchWork(
   workspaceRoot: string,
   pkg: WorkPackage,
   controlLevel: ControlLevel = 'individual',
-  opts: { generateContextPack?: boolean } = {}
+  opts: { generateContextPack?: boolean; recordToKg?: boolean } = {}
 ): Promise<string | null> {
   // Fleet HALT kill switch (HKS-3, agent-trigger-hooks spec): when the
   // operator has engaged `.autoclaw/orchestrator/HALT`, NOTHING dispatches —
@@ -665,6 +665,22 @@ export async function dispatchWork(
   const sidecarPath = path.join(sidecarDir, filename);
   await fsPromises.writeFile(sidecarPath, JSON.stringify(record, null, 2), 'utf8');
 
+  // Real-time KG: remember this assignment as a durable fact (best-effort).
+  if (opts.recordToKg) {
+    try {
+      const { recordOrchestrationEventsToKg } = await import('./intelligence');
+      await recordOrchestrationEventsToKg(workspaceRoot, [{
+        type: 'dispatch',
+        eventId: filename.replace(/\.json$/, ''),
+        agentId: pkg.assignToVendor,
+        taskId: pkg.taskId,
+        sprint: pkg.sprint,
+        text: `Dispatched ${pkg.taskName || pkg.taskId} (${pkg.taskId}) to ${pkg.assignToVendor}` +
+          (typeof pkg.sprint === 'number' ? ` for sprint ${pkg.sprint}` : '') + '.',
+      }]);
+    } catch { /* best-effort — never block dispatch */ }
+  }
+
   const sharedInbox = path.join(workspaceRoot, SHARED_INBOX_REL);
   const claimMsg: Message = {
     id:          `msg-claim-${pkg.taskId}-${Date.now().toString(36)}`,
@@ -764,7 +780,7 @@ export async function runTick(
   if (work.length > 0) {
     for (const w of work.slice(0, 2)) {
       try {
-        const sidecar = await dispatchWork(workspaceRoot, w.item, 'individual', { generateContextPack: true });
+        const sidecar = await dispatchWork(workspaceRoot, w.item, 'individual', { generateContextPack: true, recordToKg: true });
         if (sidecar) { dispatched++; state.totalDispatches++; }
       } catch (e: any) { tickErrors++; state.totalErrors++; }
     }
@@ -783,6 +799,20 @@ export async function runTick(
           action: 'peer_reviews_promoted',
           detail: { promoted: promo.promoted, promotions: promo.promotions },
         });
+        // Real-time KG: remember each completion as a durable fact (best-effort).
+        try {
+          const { recordOrchestrationEventsToKg } = await import('./intelligence');
+          await recordOrchestrationEventsToKg(
+            workspaceRoot,
+            promo.promotions.map((p) => ({
+              type: 'completion' as const,
+              eventId: p.sourceMessageId,
+              agentId: p.author,
+              taskId: p.taskId,
+              text: `${p.author} completed ${p.taskId ?? 'a task'} (now in peer review).`,
+            })),
+          );
+        } catch { /* best-effort — never break the tick */ }
       }
     } catch (e: any) {
       tickErrors++; state.totalErrors++;

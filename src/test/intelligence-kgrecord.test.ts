@@ -16,7 +16,7 @@
 
 import * as assert from 'assert';
 
-import { recordCoordinationToKg } from '../intelligence/kgRecord';
+import { recordCoordinationToKg, recordOrchestrationEventsToKg, OrchestrationEvent } from '../intelligence/kgRecord';
 import { CoordinationSignals } from '../intelligence/coordinationSignals';
 import type { KnowledgeGraph } from '../intelligence/kg/types';
 
@@ -42,7 +42,7 @@ function signals(overrides: Partial<CoordinationSignals> = {}): CoordinationSign
 
 /** In-memory KG that mimics the real store: duplicate id → throw (plain INSERT). */
 function fakeKg() {
-  const recorded: Array<{ id?: string; project: string; task_id?: string; kind: string; text: string; meta?: Record<string, unknown> }> = [];
+  const recorded: Array<{ id?: string; project: string; agent?: string; task_id?: string; kind: string; text: string; meta?: Record<string, unknown> }> = [];
   const ids = new Set<string>();
   const kg = {
     async recordThought(t: any) {
@@ -125,5 +125,60 @@ suite('intelligence-kgrecord', function () {
     });
     assert.strictEqual(res.recorded, 0);
     assert.strictEqual(res.skipped, 2, 'all outcomes counted as skipped');
+  });
+
+  suite('recordOrchestrationEventsToKg', () => {
+    const events: OrchestrationEvent[] = [
+      { type: 'dispatch', eventId: 'B1-123-ab', agentId: 'claude-code', taskId: 'B1', sprint: 2, text: 'Dispatched B1 to claude-code.' },
+      { type: 'completion', eventId: 'msg-9', agentId: 'kilocode', taskId: 'B2', text: 'kilocode completed B2.' },
+    ];
+
+    test('records dispatch + completion as observation thoughts (deterministic ids)', async () => {
+      const f = fakeKg();
+      const res = await recordOrchestrationEventsToKg(WS, events, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(res.recorded, 2);
+      assert.strictEqual(f.recorded.length, 2);
+      const dispatch = f.recorded.find((t) => t.task_id === 'B1')!;
+      assert.strictEqual(dispatch.kind, 'observation');
+      assert.strictEqual(dispatch.agent, 'claude-code', 'attributed to the assignee');
+      assert.ok(dispatch.id!.startsWith('dispatch:') && dispatch.id!.endsWith(':B1-123-ab'), 'dispatch id');
+      assert.strictEqual((dispatch.meta as any).source, 'dispatch');
+      const done = f.recorded.find((t) => t.task_id === 'B2')!;
+      assert.ok(done.id!.startsWith('completion:') && done.id!.endsWith(':msg-9'), 'completion id');
+      assert.strictEqual(done.agent, 'kilocode');
+    });
+
+    test('idempotent — re-recording the same events records nothing new', async () => {
+      const f = fakeKg();
+      await recordOrchestrationEventsToKg(WS, events, { deps: { getKg: () => f.kg } });
+      const second = await recordOrchestrationEventsToKg(WS, events, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(second.recorded, 0);
+      assert.strictEqual(second.skipped, 2);
+      assert.strictEqual(f.recorded.length, 2);
+    });
+
+    test('skips malformed events and survives a KG open failure', async () => {
+      const f = fakeKg();
+      const res = await recordOrchestrationEventsToKg(
+        WS,
+        [...events, { type: 'dispatch', eventId: '', agentId: 'x', text: 'no id' } as OrchestrationEvent],
+        { deps: { getKg: () => f.kg } },
+      );
+      assert.strictEqual(res.recorded, 2, 'malformed (empty eventId) filtered out');
+
+      const failed = await recordOrchestrationEventsToKg(WS, events, {
+        deps: { getKg: () => { throw new Error('no driver'); } },
+      });
+      assert.strictEqual(failed.recorded, 0);
+      assert.strictEqual(failed.skipped, 2);
+    });
+
+    test('empty list records nothing', async () => {
+      const f = fakeKg();
+      assert.deepStrictEqual(
+        await recordOrchestrationEventsToKg(WS, [], { deps: { getKg: () => f.kg } }),
+        { recorded: 0, skipped: 0 },
+      );
+    });
   });
 });
