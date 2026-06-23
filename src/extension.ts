@@ -178,6 +178,7 @@ import { getFleetMetrics, recordTaskDuration, resetMetrics } from './metrics';
 export { recordTaskDuration }; // allow reconcile and other callers to import directly
 import { writeConsensusVote } from './orchestrator/voteWriter';
 import { reapDeadClaims } from './orchestrator/claimReaper';
+import { declareScope, releaseScope, readLeases, detectConflicts, type ScopeConflict } from './orchestrator/scopeLease';
 import { syncVoidSpecCommand } from './voidspec/dispatch';
 
 const fsPromises = fs.promises;
@@ -765,7 +766,12 @@ export function activate(context: vscode.ExtensionContext) {
     // Toggle the MCP server's allowWrites gate (lets MCP-lane agents claim/vote).
     vscode.commands.registerCommand('autoclaw.mcp.allowWrites', () => mcpAllowWritesToggleCommand()),
     // CL-3: manually release dead-session, expired claims (safe, release-only).
-    vscode.commands.registerCommand('autoclaw.fleet.reapClaims', () => fleetReapClaimsCommand())
+    vscode.commands.registerCommand('autoclaw.fleet.reapClaims', () => fleetReapClaimsCommand()),
+    // CL-4: file-scope leases — declare/release the globs this window is editing,
+    // and surface overlaps with other sessions as scope_violation findings.
+    vscode.commands.registerCommand('autoclaw.fleet.declareScope', () => fleetDeclareScopeCommand()),
+    vscode.commands.registerCommand('autoclaw.fleet.releaseScope', () => fleetReleaseScopeCommand()),
+    vscode.commands.registerCommand('autoclaw.fleet.scopeStatus', () => fleetScopeStatusCommand())
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -4768,6 +4774,76 @@ async function fleetReapClaimsCommand(): Promise<void> {
   } catch (e) {
     vscode.window.showWarningMessage(`AutoClaw: could not reap claims — ${(e as Error).message}`);
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  CL-4: file-scope leases                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** Stable per-window session id so two windows of the same agent are distinct. */
+let scopeSessionId: string | undefined;
+function extScopeSession(): string {
+  if (!scopeSessionId) { scopeSessionId = crypto.randomUUID(); }
+  return scopeSessionId;
+}
+
+function summarizeScopeConflicts(conflicts: ScopeConflict[]): string {
+  return conflicts
+    .map(c => `${c.b.agent_id}/${String(c.b.session_id).slice(0, 8)} holds "${c.glob_b}" (vs your "${c.glob_a}")`)
+    .join('; ');
+}
+
+/** Declare the globs this window is editing; warn on overlap with other sessions. */
+async function fleetDeclareScopeCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const raw = await vscode.window.showInputBox({
+    title: 'Declare file-scope lease',
+    prompt: 'Comma-separated globs this window is editing (others see a scope_violation if they overlap).',
+    placeHolder: 'src/extension.ts, src/orchestrator/**',
+    ignoreFocusOut: true,
+  });
+  const globs = (raw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  if (globs.length === 0) { return; }
+  try {
+    const res = await declareScope(wr, {
+      agent_id: activeHostAgentId() ?? 'claude-code',
+      session_id: extScopeSession(),
+      globs,
+    });
+    if (res.conflicts.length === 0) {
+      vscode.window.showInformationMessage(`AutoClaw: scope lease declared for ${globs.length} glob(s). No overlaps.`);
+    } else {
+      vscode.window.showWarningMessage(
+        `AutoClaw: scope OVERLAP — ${summarizeScopeConflicts(res.conflicts)}. Coordinate before editing; a scope_violation was posted to the board.`,
+      );
+    }
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not declare scope — ${(e as Error).message}`);
+  }
+}
+
+/** Release this window's scope lease. */
+async function fleetReleaseScopeCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const released = await releaseScope(wr, activeHostAgentId() ?? 'claude-code', extScopeSession());
+  vscode.window.showInformationMessage(released ? 'AutoClaw: scope lease released.' : 'AutoClaw: no active scope lease for this window.');
+  if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+}
+
+/** Show active scope leases across the fleet + any overlaps. */
+async function fleetScopeStatusCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const leases = await readLeases(wr);
+  const live = leases.filter(l => !l.expires_at || Date.parse(l.expires_at) > Date.now());
+  if (live.length === 0) { vscode.window.showInformationMessage('AutoClaw: no active file-scope leases.'); return; }
+  const conflicts = detectConflicts(live, Date.now());
+  const lines = live.map(l => `• ${l.agent_id}/${l.session_id.slice(0, 8)}: ${l.globs.join(', ')}`);
+  const head = conflicts.length ? `⚠ ${conflicts.length} scope overlap(s) — ` : `${live.length} active scope lease(s):\n`;
+  vscode.window.showInformationMessage(head + lines.join('\n'), { modal: conflicts.length > 0 });
 }
 
 /** Read the pending tray: agents with a fresh beacon not yet in fleet.json. */
