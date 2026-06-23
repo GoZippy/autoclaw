@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+## [3.6.5] - 2026-06-23
+
+A large coordination + connectivity release: agents now self-coordinate without
+the human relaying between windows, and the panel becomes a real command center.
+
+### Added
+
+- **Agent join & fleet visibility.** One-click **join-prompt generator**
+  (`AutoClaw: Generate Join Prompt for Agent…`) renders a ready-to-paste prompt
+  per tool (Codex, Claude Desktop, OpenClaw, Hermes, IDE hosts) with the right
+  join lane + invite token; an **arbitrary-agent scaffolder**
+  (`autoclaw.fleet.scaffoldAgent`); per-agent **workload / cost / completed-work**
+  on the team panel + a kanban **Done** lane backed by a durable task ledger;
+  keepalive templates for every runner so `/orchestrate revive` resolves.
+- **Coordination Layer v2** — so the fleet self-coordinates:
+  - **CL-1 auto-announce** — a session announces itself (current task / branch /
+    file-scope) on start.
+  - **CL-2 telemetry/signal split** — `autoclaw.fleet.archiveTelemetry` keeps the
+    shared inbox signal; `awaiting_you` no longer counts auto-nudges.
+  - **CL-3 dead-session claim reaper** — `autoclaw.fleet.reapClaims` (manual) /
+    `autoclaw.selfHealing.reapDeadClaims` (opt-in) releases abandoned claims.
+  - **CL-4 file-scope leases** — `autoclaw.fleet.declareScope`; overlapping edits
+    raise a `scope_violation` instead of a silent clobber.
+  - **CL-5 `fleet.brief`** — one read (MCP tool + `autoclaw.fleet.brief`) for full
+    situational awareness: live sessions, claimable work, scope overlaps, awaiting.
+  - Session-aware owner liveness + opt-in self-healing (`autoclaw.selfHealing.enabled`,
+    default off).
+- **acp/1 connector platform (Phase 0)** — the unified connector contract
+  (`src/connector/`): one signed manifest + one identity + three faces (runner /
+  source / presence), a fail-closed manifest validator with ABI-range negotiation,
+  and read-only out-of-tree connector discovery.
+- **Panel command center** — responsive sidebar/manager layout, drill-down agent
+  detail, per-agent **command & control + EVICT**, per-agent metrics, design
+  tokens, and an **Open Wide** manager view; plus session-scoped clarity (the
+  "this window" marker, per-session state chips, and sub-agent/joined provenance
+  badges).
+
 ## [3.6.4] - 2026-06-22
 
 ### Added
