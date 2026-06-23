@@ -179,6 +179,9 @@ export { recordTaskDuration }; // allow reconcile and other callers to import di
 import { writeConsensusVote } from './orchestrator/voteWriter';
 import { reapDeadClaims } from './orchestrator/claimReaper';
 import { declareScope, releaseScope, readLeases, detectConflicts, type ScopeConflict } from './orchestrator/scopeLease';
+import { announceSession } from './orchestrator/announce';
+import { archiveSharedInbox } from './orchestrator/commsGc';
+import { writeFleetBrief } from './orchestrator/fleetBrief';
 import { syncVoidSpecCommand } from './voidspec/dispatch';
 
 const fsPromises = fs.promises;
@@ -771,7 +774,11 @@ export function activate(context: vscode.ExtensionContext) {
     // and surface overlaps with other sessions as scope_violation findings.
     vscode.commands.registerCommand('autoclaw.fleet.declareScope', () => fleetDeclareScopeCommand()),
     vscode.commands.registerCommand('autoclaw.fleet.releaseScope', () => fleetReleaseScopeCommand()),
-    vscode.commands.registerCommand('autoclaw.fleet.scopeStatus', () => fleetScopeStatusCommand())
+    vscode.commands.registerCommand('autoclaw.fleet.scopeStatus', () => fleetScopeStatusCommand()),
+    // CL-5: one-read situational awareness (write fleet-brief.json + summary).
+    vscode.commands.registerCommand('autoclaw.fleet.brief', () => fleetBriefCommand()),
+    // CL-2: archive shared-inbox telemetry so it returns to being signal.
+    vscode.commands.registerCommand('autoclaw.fleet.archiveTelemetry', () => fleetArchiveTelemetryCommand())
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -1037,10 +1044,26 @@ export function activate(context: vscode.ExtensionContext) {
     installAdapters(adaptersDir, context.extensionPath, true);
   }
 
-  // Auto-provision cross-agent comms infrastructure
-  provisionCrossAgentComms().catch(e =>
-    console.error('cross-agent comms provisioning failed:', e)
-  );
+  // Auto-provision cross-agent comms infrastructure, then CL-1 auto-announce this
+  // session (self-describing fleet) + CL-2 one-time telemetry sweep of the shared
+  // inbox so it starts as signal. Both best-effort — never block activation.
+  provisionCrossAgentComms()
+    .then(async () => {
+      const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!wr) { return; }
+      let branch: string | undefined;
+      try {
+        branch = (await fsPromises.readFile(path.join(wr, '.git', 'HEAD'), 'utf8'))
+          .trim().replace(/^ref:\s*refs\/heads\//, '') || undefined;
+      } catch { /* not a git checkout / detached — omit branch */ }
+      await announceSession(wr, {
+        agent_id: activeHostAgentId() ?? 'claude-code',
+        session_id: extScopeSession(),
+        branch,
+      });
+      await archiveSharedInbox(wr).catch(() => { /* best-effort */ });
+    })
+    .catch(e => console.error('cross-agent comms provisioning failed:', e));
 
   // Start heartbeat ticker — writes real heartbeats for detected agents
   startHeartbeatTicker(context);
@@ -4844,6 +4867,42 @@ async function fleetScopeStatusCommand(): Promise<void> {
   const lines = live.map(l => `• ${l.agent_id}/${l.session_id.slice(0, 8)}: ${l.globs.join(', ')}`);
   const head = conflicts.length ? `⚠ ${conflicts.length} scope overlap(s) — ` : `${live.length} active scope lease(s):\n`;
   vscode.window.showInformationMessage(head + lines.join('\n'), { modal: conflicts.length > 0 });
+}
+
+/** CL-5: write fleet-brief.json + show a one-line situational-awareness summary. */
+async function fleetBriefCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  try {
+    const dest = await writeFleetBrief(wr);
+    const brief = JSON.parse(await fsPromises.readFile(dest, 'utf8'));
+    const live = (brief.sessions ?? []).filter((s: { live: boolean }) => s.live).length;
+    const summary =
+      `Fleet brief: ${live}/${(brief.sessions ?? []).length} live · ` +
+      `${(brief.claimable_top ?? []).length} claimable · ${brief.in_flight_count ?? 0} in flight · ` +
+      `${brief.awaiting_review_count ?? 0} in review · ${brief.stuck_count ?? 0} stuck` +
+      ((brief.scope_conflicts ?? []).length ? ` · ⚠ ${brief.scope_conflicts.length} scope overlap(s)` : '');
+    vscode.window.showInformationMessage(summary, { modal: (brief.scope_conflicts ?? []).length > 0 });
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not build fleet brief — ${(e as Error).message}`);
+  }
+}
+
+/** CL-2: archive aged telemetry / over-cap signals out of the shared inbox. */
+async function fleetArchiveTelemetryCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  try {
+    const r = await archiveSharedInbox(wr);
+    vscode.window.showInformationMessage(
+      `AutoClaw: archived ${r.archivedTelemetry} telemetry + ${r.archivedAgedSignals} aged/over-cap signals ` +
+      `(scanned ${r.scanned}). Shared inbox is signal again.`,
+    );
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: archive failed — ${(e as Error).message}`);
+  }
 }
 
 /** Read the pending tray: agents with a fresh beacon not yet in fleet.json. */
