@@ -598,59 +598,6 @@
           "default": true,
           "description": "Show occasional, non-invasive prompts to rate, review, or support AutoClaw (at usage-day 15, 30, 90, then every 90). Each milestone prompts at most once and includes a permanent opt-out."
         },
-        "autoclaw.licensing.enforceGates": {
-          "type": "boolean",
-          "default": false,
-          "description": "Enforce paid feature gates (Pro/Team commands prompt to upgrade after the 7-day trial). Default OFF — leave off until a purchase path exists, so no feature is ever blocked with nowhere to buy. When off, all gated commands run normally for everyone."
-        },
-        "autoclaw.support.donationUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Square (or any) payment link for one-time donations. Leave blank to use the bundled placeholder."
-        },
-        "autoclaw.support.customAmountUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Payment link for a custom donation amount."
-        },
-        "autoclaw.support.proUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Checkout/subscription link for a commercial (Pro/Teams) license."
-        },
-        "autoclaw.support.koFiUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Ko-fi page for one-time tips and memberships. Leave blank to use the bundled default."
-        },
-        "autoclaw.support.reviewVscodeUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Override the VS Code Marketplace review deep-link."
-        },
-        "autoclaw.support.reviewOpenVsxUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Override the Open VSX review deep-link."
-        },
-        "autoclaw.support.feedbackUrl": {
-          "type": "string",
-          "default": "",
-          "description": "Where less-than-happy ratings send the user for private feedback (defaults to the GitHub issues page)."
-        },
-        "autoclaw.support.contactEmail": {
-          "type": "string",
-          "default": "",
-          "description": "Commercial-license / enterprise contact email."
-        },
-        "autoclaw.support.cryptoWallets": {
-          "type": "object",
-          "default": {},
-          "description": "Crypto donation addresses, mapping coin symbol to wallet address. Example: { \"BTC\": \"bc1...\", \"ETH\": \"0x...\" }.",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
         "autoclaw.agentRoles": {
           "type": "object",
           "default": {},
