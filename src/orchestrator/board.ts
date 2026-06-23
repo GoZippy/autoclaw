@@ -45,6 +45,10 @@ export interface BoardClaim {
   task_id: string;
   claimed_by: string;
   claimed_at: string;
+  /** Session that made the claim — used for session-aware owner liveness so a
+   *  claim left by a dead session of an agent is not vouched for by a *different*
+   *  live session of the same agent. Absent on legacy claims (agent-level fallback). */
+  session_id?: string;
   /** Optional explicit TTL; falls back to {@link CLAIM_TTL_DEFAULT_MS}. */
   ttl_ms?: number;
 }
@@ -64,6 +68,9 @@ export interface BoardHeartbeat {
   agent_id: string;
   timestamp: string;
   status?: string;
+  /** Session this heartbeat belongs to (agent-level file or per-session sidecar).
+   *  Feeds session-aware owner liveness for in-flight claims. */
+  session_id?: string;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -216,13 +223,31 @@ export function buildBoard(inputs: BuildBoardInputs): BoardModel {
       hbByAgent.set(hb.agent_id, hb);
     }
   }
-  const isLive = (agentId: string): boolean => {
-    const hb = hbByAgent.get(agentId);
-    if (!hb) { return false; }
+  const hbFresh = (hb: BoardHeartbeat): boolean => {
     if (hb.status === 'halted' || hb.status === 'offline') { return false; }
     const age = now - new Date(hb.timestamp).getTime();
     return Number.isFinite(age) && age < HEARTBEAT_OFFLINE_MS;
   };
+  const isLive = (agentId: string): boolean => {
+    const hb = hbByAgent.get(agentId);
+    return hb ? hbFresh(hb) : false;
+  };
+
+  // Session-level liveness. A claim's owner is "healthy" only if the SESSION
+  // that made the claim still has a fresh heartbeat — one live session of an
+  // agent must NOT vouch for claims a long-dead session of the same agent left
+  // behind, or stale claims are never reclaimable (the orchestrator keeps an
+  // agent-level heartbeat fresh, so agent-level liveness pins every old claim
+  // to "healthy" forever). Collected from every fresh heartbeat carrying a
+  // session_id (the agent-level file + per-session sidecars).
+  const liveSessionIds = new Set<string>();
+  for (const hb of inputs.heartbeats) {
+    if (hb?.session_id && hb.timestamp && hbFresh(hb)) { liveSessionIds.add(hb.session_id); }
+  }
+  const claimOwnerHealthy = (claim: BoardClaim): boolean =>
+    claim.session_id
+      ? liveSessionIds.has(claim.session_id) // session-aware
+      : isLive(claim.claimed_by);            // legacy claim (no session_id) → agent-level fallback
 
   const liveCount = Array.from(hbByAgent.keys()).filter(isLive).length;
   const isDoneStatus = (s: BoardTask['status'] | undefined): boolean =>
@@ -266,7 +291,7 @@ export function buildBoard(inputs: BuildBoardInputs): BoardModel {
       claimed_by: claim.claimed_by,
       claimed_at: claim.claimed_at,
       age_ms: Math.max(0, ageMs),
-      owner_healthy: isLive(claim.claimed_by),
+      owner_healthy: claimOwnerHealthy(claim),
     });
   }
   inFlight.sort((a, b) => a.task_id.localeCompare(b.task_id));
