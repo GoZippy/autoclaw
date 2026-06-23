@@ -2,18 +2,17 @@
 //
 // Support / donation / review configuration.
 //
+// These are MAINTAINER / PRODUCT values, not end-user settings — an end user has
+// no reason to set their own donation URL, wallet, or contact email. They are
+// therefore NOT contributed to the VS Code Settings UI. Configure them by editing
+// the DEFAULTS below before publishing (the primary path).
+//
 // All payment endpoints are PLACEHOLDERS by design — there is nothing here that
-// costs Zippy Technologies anything. Fill in real values either by editing the
-// DEFAULTS below, or (preferred) by setting them in VS Code settings so they
-// survive extension updates:
+// costs Zippy Technologies anything.
 //
-//   "autoclaw.support.donationUrl":   "https://square.link/u/XXXX"
-//   "autoclaw.support.customAmountUrl":"https://square.link/u/XXXX"
-//   "autoclaw.support.proUrl":        "https://square.link/u/XXXX"
-//   "autoclaw.support.koFiUrl":       "https://ko-fi.com/yourname"
-//   "autoclaw.support.cryptoWallets": { "BTC": "...", "ETH": "...", "SOL": "...", "USDC": "..." }
-//
-// Settings always win over the DEFAULTS in this file.
+// A hidden, advanced override still works: these keys are read from settings.json
+// even though they are not shown in the Settings UI, so a deployment can set e.g.
+// `autoclaw.support.donationUrl` by hand. Settings always win over the DEFAULTS.
 
 import * as vscode from 'vscode';
 

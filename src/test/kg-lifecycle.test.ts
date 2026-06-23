@@ -199,7 +199,12 @@ suite('KG: package.json contributions', function () {
 
   test('declares autoclaw.kg.* configuration with enabled defaulting to true', function () {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-    const props = pkg.contributes?.configuration?.properties ?? {};
+    // contributes.configuration may be a single object or an array of titled
+    // category groups (the Settings UI grouping) — flatten either shape.
+    const cfg = pkg.contributes?.configuration;
+    const props: Record<string, any> = Array.isArray(cfg)
+      ? Object.assign({}, ...cfg.map((g: any) => g?.properties ?? {}))
+      : (cfg?.properties ?? {});
     assert.ok('autoclaw.kg.enabled' in props, 'autoclaw.kg.enabled defined');
     assert.strictEqual(props['autoclaw.kg.enabled'].default, true,
       'kg.enabled defaults to true (in-process store, safe + free)');
