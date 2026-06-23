@@ -135,8 +135,27 @@ export function openManagerPanel(context: vscode.ExtensionContext): void {
 
   panel.webview.onDidReceiveMessage(
     (msg: { command?: string }) => {
-      if (msg?.command === 'refresh' || msg?.command === 'ready') {
-        void refresh();
+      switch (msg?.command) {
+        case 'refresh':
+        case 'ready':
+          void refresh();
+          break;
+        // Command Center P1 — safe fleet actions. Each delegates to an
+        // already-registered command; no fleet logic is reimplemented here.
+        case 'generateJoinPrompt':
+          void vscode.commands.executeCommand('autoclaw.fleet.joinPrompt');
+          break;
+        case 'inviteAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.invite');
+          break;
+        case 'admitAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.admit');
+          break;
+        case 'declineAgent':
+          void vscode.commands.executeCommand('autoclaw.fleet.decline');
+          break;
+        default:
+          break;
       }
     },
     undefined,

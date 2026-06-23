@@ -320,6 +320,14 @@
     vscode.postMessage({ command: 'generateJoinPrompt' });
   });
 
+  // Board "Open Wide" — pop the cramped sidebar board into the roomy
+  // editor-tab Manager. stopPropagation so the click doesn't also toggle the
+  // section's collapse.
+  document.getElementById('btn-board-open-wide')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    vscode.postMessage({ command: 'openManagerWide' });
+  });
+
   // Render the pending tray. The section header (with Invite + Join-prompt
   // buttons) stays visible always; the body shows a hint when nobody is waiting.
   function renderPending(pending) {

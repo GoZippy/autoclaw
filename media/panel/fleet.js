@@ -423,6 +423,22 @@
     });
   }
 
+  // ---- fleet actions toolbar (Command Center P1) --------------------------
+  // Each button just posts a command the host maps to an existing, already-
+  // registered command — no fleet logic lives here.
+  function wireAction(id, command) {
+    const btn = byId(id);
+    if (btn) {
+      btn.addEventListener('click', function () {
+        vscode.postMessage({ command: command });
+      });
+    }
+  }
+  wireAction('btn-join-prompt', 'generateJoinPrompt');
+  wireAction('btn-invite-agent', 'inviteAgent');
+  wireAction('btn-admit-agent', 'admitAgent');
+  wireAction('btn-decline-agent', 'declineAgent');
+
   // Restore last state immediately, then ask the host for fresh data.
   const prev = vscode.getState();
   if (prev && prev.model) { render(prev.model); }

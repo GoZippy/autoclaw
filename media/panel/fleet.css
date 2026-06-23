@@ -286,3 +286,74 @@ table.health-grid, table.cost-table {
   color: var(--vscode-errorForeground, #f85149);
   font-weight: 600;
 }
+
+/* --- Responsive: dock / split narrow -------------------------------------- *
+ * The Manager panel is a full editor tab, so the user can drag it into a
+ * narrow split or pop it beside the editor at any width. Drive the reflow off
+ * the panel's OWN width with container queries (not the viewport @media) so it
+ * stays correct when the tab is docked next to other content rather than
+ * full-screen. #fleet-root is the always-present outer wrapper; #board-body is
+ * the agendaboard wrapper. Both are stable hooks (never an overflow scroller),
+ * so containment here is safe.                                                */
+#fleet-root,
+#board-body { container-type: inline-size; }
+
+/* Wide data tables (agendaboard subsections, health grid, cost ledger) would
+ * otherwise push the whole panel wide and force a page-level horizontal
+ * scroll. Promote each table to its OWN block scroller so it scrolls inside
+ * its box and the surrounding layout keeps reflowing instead of growing. We
+ * cannot add a wrapper element (the renderer is off-limits), so the scroll
+ * lives on the table itself: display:block makes the table a block scroller
+ * whose intrinsic content width can exceed the panel, and overflow-x then
+ * scrolls it. Header and body stay one table (no rowgroup splitting) so the
+ * columns keep their shared widths and stay aligned.                          */
+.board-table,
+.health-grid,
+.cost-table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* The agent-card grid is this renderer's lane-like element. Reflow it the same
+ * way the sidebar board does: full multi-up when wide, auto-fit above a mid
+ * band, snap to 2-up in the mid band, and a single stacked column when very
+ * narrow — so cards never overflow into a runaway horizontal scroll.          */
+@container (max-width: 360px) {
+  /* Very narrow: stacked single column. */
+  .card-grid { grid-template-columns: 1fr; }
+
+  /* Header / action rows stay usable: let them wrap and keep the refresh
+   * button reachable instead of clipping the presence text. */
+  .presence-bar {
+    flex-wrap: wrap;
+    gap: 4px 8px;
+  }
+  #presence-text { white-space: normal; }
+  .section-header { flex-wrap: wrap; }
+
+  /* Tighten outer padding so content gets the full narrow width. */
+  #fleet-root { padding: 6px 6px 12px; }
+}
+
+@container (min-width: 360px) and (max-width: 520px) {
+  /* Mid band: snap to a 2-up grid rather than auto-fit (which would drop to
+   * one column and waste the width). */
+  .card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@container (min-width: 520px) {
+  /* Roomy: let cards auto-fit, comfortable column floor. */
+  .card-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+}
+
+/* Fallback for any host without container-query support (or if the wrapper is
+ * ever swapped for a scroller): mirror the same intent off the viewport. The
+ * container rules above win wherever they apply.                              */
+@media (max-width: 360px) {
+  .card-grid { grid-template-columns: 1fr; }
+  .presence-bar { flex-wrap: wrap; gap: 4px 8px; }
+  #presence-text { white-space: normal; }
+  .section-header { flex-wrap: wrap; }
+  #fleet-root { padding: 6px 6px 12px; }
+}

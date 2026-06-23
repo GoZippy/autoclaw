@@ -29,6 +29,13 @@ import { getKnowledgeGraph } from '../intelligence/kg/service';
 import type { SearchStrategy } from '../intelligence/kg/types';
 import { readAllBeacons } from '../fleet/beacons';
 import { retrieveCode, buildContextPack } from '../intelligence';
+import { gatherFleetData } from '../panel/fleetData';
+import {
+  buildFleetDigest,
+  FLEET_STATUS_REL_PATH,
+  type FleetDigest,
+  type FleetDigestModel,
+} from '../fleet/fleetDigest';
 
 const fsPromises = fs.promises;
 
@@ -342,6 +349,63 @@ const presenceFleetTool: ToolHandler = {
       });
       rows.sort((a, b) => a.agent_id.localeCompare(b.agent_id));
       return { ok: true, data: rows };
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'internal_error',
+        detail: err instanceof Error ? err.message : String(err),
+      };
+    }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: fleet.digest (FLEET-DIGEST)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the canonical FLEET-DIGEST (`fleet-status.json`) — one small, stable
+ * artifact a joining/looping agent reads each SYNC instead of re-walking the
+ * registry, every inbox, the claims dir, and `board.json`. The extension host
+ * writes this on its refresh cadence; if it has not yet (no panel open / never
+ * refreshed), we build the SAME digest on demand from `gatherFleetData` + the
+ * board snapshot so an MCP-only peer is never blocked. WRITE-FREE: the
+ * on-demand path computes in-memory and never persists.
+ */
+const fleetDigestTool: ToolHandler = {
+  definition: {
+    name: 'fleet.digest',
+    description:
+      'Read the FLEET-DIGEST (fleet-status.json): a single small, canonical ' +
+      'snapshot of the fleet (agents, claims rollup, board lanes, awaiting-you) ' +
+      'so an agent can SYNC without re-walking the whole comms tree. Falls back ' +
+      'to building it on demand (read-only) when the file is absent.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  async run(ctx): Promise<ToolResult> {
+    try {
+      const statusPath = path.join(ctx.autoclawDir, 'orchestrator', 'comms', 'fleet-status.json');
+      const onDisk = await readJsonFile<FleetDigest>(statusPath);
+      if (onDisk && onDisk.schema_version) {
+        return { ok: true, data: onDisk };
+      }
+      // Absent / unparseable → build the same digest on demand (read-only).
+      const selfAgentId = ctx.sessionId ? ctx.host : (ctx.host || 'mcp');
+      const model = await gatherFleetData({
+        workspaceRoot: ctx.workspaceRoot,
+        selfAgentId,
+      });
+      const board = await readJsonFile<unknown>(
+        path.join(ctx.autoclawDir, 'orchestrator', 'board.json'),
+      );
+      const digestModel: FleetDigestModel = board
+        ? { ...model, board: board as FleetDigestModel['board'] }
+        : model;
+      const digest = buildFleetDigest(digestModel, new Date().toISOString());
+      return { ok: true, data: digest };
     } catch (err) {
       return {
         ok: false,
@@ -1001,6 +1065,7 @@ export const READ_ONLY_TOOLS: ToolHandler[] = [
   fleetStatusTool,
   fleetCardsTool,
   presenceFleetTool,
+  fleetDigestTool,
   inboxReadTool,
   todoListTool,
   doctorRunTool,

@@ -90,7 +90,13 @@ import {
   readRelayConfig, writeRelayConfig, endpointIsSecure, defaultRelayConfig,
 } from './cloud';
 import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS, dispatchViaRegistry } from './runners';
-import { recordDispatchCost } from './panel/fleetData';
+import { recordDispatchCost, gatherFleetData } from './panel/fleetData';
+import {
+  buildFleetDigest,
+  serializeFleetDigest,
+  FLEET_STATUS_REL_PATH,
+  type FleetDigestModel,
+} from './fleet/fleetDigest';
 // Agent-fabric taxonomy via explicit subpaths (keeps the message-bus + bridge
 // out of modules that only need the taxonomy).
 import { onboardPlatform } from './fabric/onboarding';
@@ -2156,6 +2162,10 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           await vscode.commands.executeCommand('autoclaw.doctor');
           break;
         }
+        case 'openManagerWide':
+          // Pop the sidebar board into the roomy editor-tab Manager surface.
+          await vscode.commands.executeCommand('autoclaw.manager.open');
+          break;
         case 'inviteAgent':
           await vscode.commands.executeCommand('autoclaw.fleet.invite');
           break;
@@ -2294,6 +2304,7 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
                 <span class="section-chevron"></span>
                 Board
                 <span class="section-badge" id="board-badge">0</span>
+                <button id="btn-board-open-wide" class="pending-invite-btn" type="button" aria-label="Open the board in the roomy Manager tab" title="Pop the board into the full editor-tab Manager">&#10530; Open Wide</button>
             </div>
             <div class="section-body" id="board-body">
                 <div id="board-content"><p class="empty">Loading...</p></div>
@@ -4287,6 +4298,30 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
       })),
     });
   } catch {}
+
+  // FLEET-DIGEST — collapse the same fleet picture into one small, canonical
+  // artifact (`fleet-status.json`) every agent reads each SYNC instead of
+  // re-walking the whole comms tree. Best-effort: piggybacks this refresh
+  // cadence (no new timer), derives from the SAME render model the panel uses
+  // (no second data path), and NEVER throws into the refresh path.
+  try {
+    const selfId = activeHostAgentId() ?? 'claude-code';
+    const fleetModel = await gatherFleetData({ workspaceRoot: wr, selfAgentId: selfId });
+    // The board snapshot was already read once above; attach it the same way
+    // the Manager panel does (`{ ...model, board }`).
+    const digestModel: FleetDigestModel = board
+      ? { ...fleetModel, board: board as unknown as FleetDigestModel['board'] }
+      : fleetModel;
+    const digest = buildFleetDigest(digestModel, new Date().toISOString());
+    const serialized = serializeFleetDigest(digest);
+    const outPath = path.join(wr, ...FLEET_STATUS_REL_PATH.split('/'));
+    await fsPromises.mkdir(path.dirname(outPath), { recursive: true });
+    // Atomic write: tmp file in the same dir, then rename over the target so a
+    // reader never sees a half-written digest.
+    const tmpPath = `${outPath}.tmp-${process.pid}-${Date.now()}`;
+    await fsPromises.writeFile(tmpPath, serialized, 'utf8');
+    await fsPromises.rename(tmpPath, outPath);
+  } catch { /* best-effort; digest write never breaks the refresh */ }
 }
 
 // ---------------------------------------------------------------------------

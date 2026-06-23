@@ -971,7 +971,7 @@ th {
   table { font-size: 0.75em; }
   th, td { padding: 2px 3px; }
 
-  .sprint-bar { flex-wrap: wrap; }
+  /* .sprint-bar already flex-wraps in its base rule — no override needed. */
 
   .todo-item { flex-direction: column; gap: 2px; }
   .todo-text { white-space: normal; }
@@ -979,6 +979,16 @@ th {
   .adapter-status { flex-wrap: wrap; }
 
   .task-item { flex-direction: column; gap: 2px; }
+}
+
+/* ── Very-narrow sidebar: let agent-card-head chips wrap ───────────── */
+/* Below ~280px the head's chips (name, id, model, platform badge) clip
+   because .agent-platform pins itself to the right with margin-left:auto.
+   Allow the row to wrap and drop that auto-margin so chips flow onto a
+   second line instead of being cut off. */
+@media (max-width: 280px) {
+  .agent-card-head { flex-wrap: wrap; }
+  .agent-platform { margin-left: 0; }
 }
 
 /* ── UI-2: Version footer ─────────────────────────────────────────── */
@@ -1172,6 +1182,16 @@ th {
 .session-open:focus-visible { opacity: 1; outline: 1px solid var(--vscode-focusBorder); }
 
 /* -- Kanban board --------------------------------------------------------- */
+/* #board-body is the board's WRAPPER (set in extension.ts). Make it a query
+   container so the kanban responds to the lane's OWN width — correct even
+   when the view is popped out to the editor area, where viewport @media
+   would lie. Containment goes on the wrapper, never on .board-kanban itself
+   (that element is the overflow-x scroller; containing a scroller breaks its
+   sizing). Breakpoint bands live at the foot of this file. */
+#board-body {
+  container-type: inline-size;
+  container-name: board;
+}
 .board-kanban {
   display: flex;
   gap: 6px;
@@ -1275,11 +1295,29 @@ th {
 .cw-row .cw-status.cw-pending  { color: var(--vscode-charts-orange, #d7935d); }
 .cw-row .cw-age { margin-left: auto; font-size: 0.85em; color: var(--vscode-descriptionForeground); }
 .cw-more { font-size: 0.85em; font-style: italic; color: var(--vscode-descriptionForeground); margin: 4px 0 0; }
+/* Follow-up #4: compact per-agent cost line (tokens / $ / dispatches). Muted,
+   one-line, same visual family as .workload-rollup / .inbox-summary labels. */
+.agent-cost {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  margin-top: 6px; font-size: 0.78em;
+  color: var(--vscode-descriptionForeground);
+}
+.agent-cost .cost-arrow { opacity: 0.7; }
+.agent-cost .cost-sep { opacity: 0.5; }
+.agent-cost .cost-tok { font-variant-numeric: tabular-nums; }
+.agent-cost .cost-usd { color: var(--vscode-charts-green, #89d185); font-variant-numeric: tabular-nums; }
+.agent-cost .cost-runs { font-variant-numeric: tabular-nums; }
 .board-card-top { display: flex; align-items: center; gap: 6px; }
 .board-card .task-id {
   font-family: var(--vscode-editor-font-family, monospace);
   font-weight: 600;
   font-size: 0.82em;
+  /* A long task_id must ellipsize, never widen the lane. .board-card-top is a
+     flex row, so a min-width:0 is required for the truncation to engage. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .board-card .task-title {
   font-size: 0.8em;
@@ -1333,7 +1371,11 @@ th {
 .meta-reviewers, .meta-author { display: inline-flex; align-items: center; gap: 3px; flex-wrap: wrap; }
 
 /* -- Recent evidence strip (capsules) ------------------------------------- */
-.board-evidence { margin-top: 8px; }
+/* The evidence table is 6 columns wide; in a narrow sidebar that cramps to
+   illegibility. Let the container scroll horizontally instead of squeezing —
+   overflow-x:auto only engages when the table actually outgrows the lane. */
+.board-evidence { margin-top: 8px; overflow-x: auto; }
+.board-evidence-table { min-width: 360px; }
 .board-evidence-title {
   font-size: 0.78em;
   font-weight: 600;
@@ -1427,4 +1469,47 @@ th {
   padding: 0 4px;
   border-radius: 4px;
   background: rgba(127, 127, 127, 0.16);
+}
+
+/* ===========================================================================
+   Kanban responsive bands — keyed off the #board-body query container.
+   The lane sizes to its OWN width (not the viewport), so these hold up when
+   the view is popped to the editor area too. Four bands, narrow → wide:
+     ≤360px       STACK    — one full-width column per row
+     360–560px    SNAP     — two columns, horizontal scroll-snap
+     560–760px    AUTO-FIT — responsive grid, no horizontal scroll
+     ≥760px       FLEX     — today's flex layout, slightly roomier columns
+   Only the >760px band touches min-width so narrow sizes never regress.
+   =========================================================================== */
+
+/* STACK: too narrow for side-by-side lanes — stack them full width. The
+   overflow scroller is pointless here, so let it lay out normally; and the
+   sticky head must go static or stacked heads pile up at the scroll origin. */
+@container board (max-width: 360px) {
+  .board-kanban { flex-direction: column; overflow-x: visible; }
+  .board-col { min-width: 0; width: 100%; }
+  .board-col-head { position: static; }
+}
+
+/* SNAP: enough room for two lanes at a time — page through them with
+   horizontal scroll-snap so each pair lands cleanly. */
+@container board (min-width: 360px) and (max-width: 560px) {
+  .board-kanban { scroll-snap-type: x mandatory; }
+  .board-col { flex: 0 0 calc(50% - 4px); scroll-snap-align: start; }
+}
+
+/* AUTO-FIT: wide enough to drop the scroller and reflow lanes into a grid
+   that packs as many columns as fit, each ≥150px. */
+@container board (min-width: 560px) and (max-width: 760px) {
+  .board-kanban {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    overflow-x: visible;
+  }
+}
+
+/* FLEX (wide): keep today's flex layout; only here is it safe to give lanes
+   a roomier floor without regressing the narrow bands above. */
+@container board (min-width: 760px) {
+  .board-col { min-width: 180px; }
 }
