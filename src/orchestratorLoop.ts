@@ -31,6 +31,7 @@ import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
 import { resolvePendingConsensus } from './orchestrator/consensusTally';
 import { writeBoard } from './orchestrator/boardWriter';
 import { runHealPhase } from './orchestrator/heal';
+import { reapDeadClaims } from './orchestrator/claimReaper';
 import { acquireSupervisorRole } from './orchestrator/supervisorLease';
 import { ingestWorkforceSignals } from './fleet/workforceIngest';
 import { runRecallSweep } from './fleet/recallDispatch';
@@ -180,6 +181,16 @@ export interface OrchestratorLoopOptions {
    * the orchestrator modules stay vscode-free.
    */
   selfHealingEnabled?: boolean;
+  /**
+   * Opt-in dead-session claim reaper (CL-3). When TRUE the active supervisor, each
+   * tick, releases claims whose owning session is dead AND whose claim is expired
+   * (archives the claim file to `claims/_reaped/`, emits a finding_report, frees
+   * the task). RELEASE-ONLY — never touches live work, dispatches, or git — so it
+   * is the safe subset of self-healing and is gated separately from
+   * {@link selfHealingEnabled}. OFF by default. Sourced from
+   * `autoclaw.selfHealing.reapDeadClaims` in extension.ts.
+   */
+  reapDeadClaims?: boolean;
 }
 
 /** Per-tick options. Additive + defaulted so existing 2-arg callers are unchanged. */
@@ -191,6 +202,8 @@ export interface TickOptions {
    * {@link OrchestratorLoopOptions.selfHealingEnabled}.
    */
   selfHealingEnabled?: boolean;
+  /** Run the release-only dead-session claim reaper this tick (default FALSE). */
+  reapDeadClaims?: boolean;
 }
 
 export interface OrchestratorLoopHandle {
@@ -746,6 +759,7 @@ export async function runTick(
   opts: TickOptions = {}
 ): Promise<TickResult> {
   const selfHealingEnabled = opts.selfHealingEnabled ?? false;
+  const reapEnabled = opts.reapDeadClaims ?? false;
   const t0 = Date.now();
   state.tick++;
   state.totalTicks++;
@@ -909,6 +923,22 @@ export async function runTick(
               action: 'heal_disabled', detail: { took_over: sup.stole },
             });
           }
+          // CL-3: dead-session claim reaper — RELEASE-ONLY and gated SEPARATELY
+          // from self-healing (it never acts on live work, dispatches, or git;
+          // it only frees a task whose owning session is dead AND whose claim is
+          // expired, archiving the claim file for audit). Safe with HEAL off.
+          if (reapEnabled) {
+            const reap = await reapDeadClaims(workspaceRoot, { apply: true });
+            if (reap.reaped.length > 0) {
+              await writeLoopJournal(workspaceRoot, {
+                at: new Date().toISOString(), tick: state.tick, phase: 'work',
+                action: 'reap_claims', detail: {
+                  reaped: reap.reaped.length, scanned: reap.scanned,
+                  tasks: reap.reaped.map(r => r.task_id),
+                },
+              });
+            }
+          }
           // HRW-3: supervisor-only roster-gated recall sweep (no-op without
           // .autoclaw/orchestrator/roster.json). Keeps the establishment staffed.
           const sweep = await runRecallSweep(workspaceRoot);
@@ -963,6 +993,9 @@ export function startOrchestratorLoop(opts: OrchestratorLoopOptions = {}): Orche
   // Follow-up #3: OFF by default — the loop only auto-heals when the operator
   // opts in (extension.ts reads `autoclaw.selfHealing.enabled` and passes it).
   const selfHealingEnabled = opts.selfHealingEnabled ?? false;
+  // CL-3: OFF by default — release-only dead-session claim reaping when the
+  // operator opts in (`autoclaw.selfHealing.reapDeadClaims`).
+  const reapDeadClaimsEnabled = opts.reapDeadClaims ?? false;
   let running = true;
   let timerId: NodeJS.Timeout | null = null;
   const state = freshLoopState();
@@ -973,7 +1006,7 @@ export function startOrchestratorLoop(opts: OrchestratorLoopOptions = {}): Orche
   const kick = async (): Promise<TickResult | void> => {
     if (!running) return;
     try {
-      const result = await runTick(workspaceRoot, state, { selfHealingEnabled });
+      const result = await runTick(workspaceRoot, state, { selfHealingEnabled, reapDeadClaims: reapDeadClaimsEnabled });
       if (workspaceRoot) await writeLoopState(workspaceRoot, state);
       opts.onTick?.(result);
     } catch (e) {
