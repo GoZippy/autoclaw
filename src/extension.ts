@@ -117,6 +117,9 @@ import {
 import { readAllBeacons, type BeaconRow } from './fleet/beacons';
 import { createInvite, listInvites, revokeInvite, type AdmitPolicy } from './fleet/invites';
 import { computePendingAgents, admitAgent } from './fleet/pending';
+import { renderJoinPromptForInvite, JOIN_TARGETS } from './fleet/joinPrompt';
+import { scaffoldAgent, keepaliveProfileFor } from './fleet/scaffold';
+import { appendTaskCompletion, readTaskLedger, summarizeByAgent, recentCompletions } from './taskLedger';
 import { buildPending } from './views/fleetViewModelBuilders';
 import { readSessionHeartbeats } from './comms/heartbeat';
 import { readSnapshots, type Snapshot } from './timetravel';
@@ -741,7 +744,12 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.fleet.invite', () => fleetInviteCommand()),
     vscode.commands.registerCommand('autoclaw.fleet.admit', () => fleetAdmitCommand()),
-    vscode.commands.registerCommand('autoclaw.fleet.decline', () => fleetDeclineCommand())
+    vscode.commands.registerCommand('autoclaw.fleet.decline', () => fleetDeclineCommand()),
+    // Generate a ready-to-paste join prompt for a chosen tool (Codex/Claude
+    // Desktop/OpenClaw/Hermes/…), bundling a fresh invite token + lane steps.
+    vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', () => fleetJoinPromptCommand()),
+    // Wire an arbitrary (non-extension) agent id into the comms tree.
+    vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand())
   );
 
   // Fleet HALT kill switch + trigger hooks (HKS-1..3, agent-trigger-hooks spec).
@@ -2151,6 +2159,9 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
         case 'inviteAgent':
           await vscode.commands.executeCommand('autoclaw.fleet.invite');
           break;
+        case 'generateJoinPrompt':
+          await vscode.commands.executeCommand('autoclaw.fleet.joinPrompt');
+          break;
         case 'admitAgent':
           await vscode.commands.executeCommand('autoclaw.fleet.admit');
           break;
@@ -2264,12 +2275,13 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
         </div>
 
         <!-- Pending agents tray (FF-3) — joined via beacon, not yet admitted -->
-        <div class="panel-section" id="pending-section" style="display:none">
+        <div class="panel-section" id="pending-section">
             <div class="section-header" role="button" tabindex="0" aria-expanded="false" aria-controls="pending-body" data-section="pending">
                 <span class="section-chevron"></span>
-                Pending agents
+                Agents
                 <span class="section-badge" id="pending-badge">0</span>
-                <button id="btn-invite-agent" class="pending-invite-btn" type="button" aria-label="Invite agent">&#10133; Invite agent&#8230;</button>
+                <button id="btn-join-prompt" class="pending-invite-btn" type="button" aria-label="Generate join prompt">&#128203; Join prompt&#8230;</button>
+                <button id="btn-invite-agent" class="pending-invite-btn" type="button" aria-label="Invite agent">&#10133; Invite&#8230;</button>
             </div>
             <div class="section-body" id="pending-body">
                 <div id="pending-content" aria-live="polite"></div>
@@ -3149,7 +3161,9 @@ async function provisionCrossAgentComms(): Promise<void> {
   const agents = detectAgents(workspaceRoot);
   const detectedAgents = agents.filter(a => a.detected);
 
-  if (detectedAgents.length < 2) { return; }
+  // A single detected agent still gets a comms tree so a newcomer (or a
+  // scaffolded peer) can be wired into it later. Only bail when none are found.
+  if (detectedAgents.length < 1) { return; }
 
   // Skip if already provisioned with same agent set
   try {
@@ -3199,6 +3213,9 @@ async function provisionCrossAgentComms(): Promise<void> {
       rules_path: path.join(a.rulesDir, a.rulesFormat === 'codex-instructions' ? 'instructions.md' : a.rulesFormat === 'kiro-steering' ? 'cross-agent.md' : 'cross-agent-protocol.md'),
       inbox_path: `.autoclaw/orchestrator/comms/inboxes/${a.id}/`,
       hooks_supported: a.hooksSupported, last_heartbeat: null, status: 'detected',
+      // loop_mechanism + keepalive_template so `/orchestrate revive <id>` resolves
+      // a shipped template (codex.md, cursor.md, …) for this agent.
+      ...keepaliveProfileFor(a.id),
     })),
     ide: vscode.env.appName || 'unknown',
     provisioned_at: new Date().toISOString(),
@@ -4069,6 +4086,24 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     }
   } catch { board = null; }
 
+  // Durable task ledger + live claims → per-agent workload rollups and the
+  // board's Done lane (Slice B). Best-effort; missing files degrade to empty.
+  const ledger = (() => { try { return readTaskLedger(commsDir); } catch { return []; } })();
+  const claims: Array<{ task_id: string; claimed_by?: string; agent?: string }> = [];
+  try {
+    const claimsDir = path.join(commsDir, 'claims');
+    if (fs.existsSync(claimsDir)) {
+      for (const f of await fsPromises.readdir(claimsDir)) {
+        if (!f.endsWith('.json')) { continue; }
+        try {
+          const c = JSON.parse((await fsPromises.readFile(path.join(claimsDir, f), 'utf8')).replace(/^﻿/, ''));
+          claims.push({ task_id: c.task_id ?? path.basename(f, '.json'), claimed_by: c.claimed_by, agent: c.agent });
+        } catch { /* skip malformed claim */ }
+      }
+    }
+  } catch { /* no claims dir */ }
+  const workloadByAgent = summarizeByAgent(ledger, claims, board, { now: new Date(), recentLimit: 5 });
+
   // Merge in agents that checked in from OTHER tools/IDEs/runners via beacons
   // (other-IDE AutoClaw, Hermes, openclaw, …). Local registry agents win on id
   // collision. See docs/FLEET_ARCHITECTURE.md §4.
@@ -4111,6 +4146,8 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
     // Stamp the resolved canonical role back so the agent cards + team summary
     // (which call agentRole() internally) agree with the board's coloring.
     (a as { role?: string }).role = rr.canonical;
+    // Slice B: attach the per-agent workload rollup (undefined ⇒ card unchanged).
+    (a as AgentWithLive).workload = workloadByAgent[a.id];
     nameOf[a.id] = a.name || a.id;
     const model = a.heartbeat?.current_llm
       || (a.llms_available && a.llms_available.length === 1 ? a.llms_available[0] : undefined);
@@ -4187,10 +4224,23 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
   } catch {}
 
   // Task board (kanban) — board.json was read once above and is reused here.
+  // The Done lane is reconstructed from the durable ledger (board.json drops
+  // completed work); the section badge still counts open work only.
+  const boardWithDone: BoardSnapshot | null = board
+    ? { ...board, done: recentCompletions(ledger, 30).map(e => ({
+        task_id: e.task_id, agent_id: e.agent_id, title: e.title,
+        sprint: e.sprint, completed_at: e.completed_at, review_status: e.review_status,
+      })) }
+    : (ledger.length
+        ? { done: recentCompletions(ledger, 30).map(e => ({
+            task_id: e.task_id, agent_id: e.agent_id, title: e.title,
+            sprint: e.sprint, completed_at: e.completed_at, review_status: e.review_status,
+          })) }
+        : null);
   try {
     view.webview.postMessage({
       command: 'updateBoard',
-      data: { html: renderBoard(board, boardCtx), count: boardTaskCount(board) },
+      data: { html: renderBoard(boardWithDone, boardCtx), count: boardTaskCount(board) },
     });
   } catch {}
 
@@ -4457,6 +4507,113 @@ async function fleetInviteCommand(): Promise<void> {
     if (kdreamView) { await refreshOrchestratorData(kdreamView); }
   } catch (e) {
     vscode.window.showWarningMessage(`AutoClaw: could not create invite — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Issue a single-use invite AND render a ready-to-paste "join this project"
+ * prompt tailored to a chosen tool's join lane (MCP / HTTP / filesystem / slash).
+ * Closes the bare-token gap: the human gets a full prompt to paste into Codex,
+ * Claude Desktop, OpenClaw, Hermes, or any in-extension IDE host.
+ */
+async function fleetJoinPromptCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+
+  // 1. Target tool — drives the join lane + announced agent_id.
+  const targetItems = Object.entries(JOIN_TARGETS).map(([key, c]) => ({ label: c.label, description: key, key }));
+  const targetPick = await vscode.window.showQuickPick(targetItems, {
+    title: 'Generate join prompt — target tool',
+    placeHolder: 'Which tool is joining? (selects its join lane)',
+  });
+  if (!targetPick) { return; }
+
+  // 2. Suggested role.
+  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
+  const rolePick = await vscode.window.showQuickPick(roleItems, { title: 'Join prompt — suggested role', placeHolder: 'What role should the joining agent play?' });
+  if (!rolePick) { return; }
+
+  // 3. Behavioral type (drives auto-preapproved admit).
+  const typePick = await vscode.window.showQuickPick(
+    ['coder', 'runner', 'auditor', 'supervisor', 'assistant', 'governance'].map(t => ({ label: t })),
+    { title: 'Join prompt — behavioral type', placeHolder: 'agent_type (drives routing/gating)' },
+  );
+  if (!typePick) { return; }
+
+  // 4. Optional path scope.
+  const scopeRaw = await vscode.window.showInputBox({
+    title: 'Join prompt — path scope (optional)',
+    prompt: 'Comma-separated globs the agent may touch (seeds a scope-lease). Blank = whole repo.',
+    placeHolder: 'src/test/**, docs/**',
+    ignoreFocusOut: true,
+  });
+  const scope = (scopeRaw ?? '').split(',').map(s => s.trim()).filter(Boolean);
+
+  // 5. Optional REST bridge URL — only meaningful for the HTTP lane (e.g. Hermes).
+  const target = JOIN_TARGETS[targetPick.key];
+  let bridgeUrl: string | undefined;
+  if (target.lane === 'http' || target.fallbackLane === 'http') {
+    bridgeUrl = (await vscode.window.showInputBox({
+      title: 'Join prompt — REST bridge URL (optional)',
+      prompt: 'Base URL of the AutoClaw HTTP bridge for this project (HTTP-lane tools only).',
+      placeHolder: 'http://127.0.0.1:7878',
+      ignoreFocusOut: true,
+    }))?.trim() || undefined;
+  }
+
+  try {
+    const project = path.basename(wr);
+    const invite = await createInvite({
+      issued_by: activeHostAgentId() ?? 'claude-code',
+      project,
+      workspace: wr,
+      suggested_role: rolePick.role,
+      suggested_agent_type: typePick.label,
+      admit_policy: 'auto-preapproved',
+      preapproved_types: [typePick.label],
+      ...(scope.length ? { scope } : {}),
+      transports: ['fs', 'mcp', 'http'],
+    });
+    const prompt = renderJoinPromptForInvite(targetPick.key, invite, bridgeUrl ? { bridgeUrl } : {});
+    await vscode.env.clipboard.writeText(prompt);
+    const pick = await vscode.window.showInformationMessage(
+      `AutoClaw: join prompt for ${target.label} copied — paste it into that tool's chat.`,
+      'Copy again',
+    );
+    if (pick === 'Copy again') { await vscode.env.clipboard.writeText(prompt); }
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not generate join prompt — ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Scaffold an arbitrary (non-extension) agent id into the comms tree: create its
+ * inbox, ensure a registry row (with keepalive mapping), and write a bootstrap
+ * rules file. Lets a brand-new tool join even when it isn't an auto-detected
+ * extension.
+ */
+async function fleetScaffoldAgentCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+  const agentId = await vscode.window.showInputBox({
+    title: 'Scaffold agent into project',
+    prompt: 'Agent id to wire into this project (e.g. codex, hermes, my-bot)',
+    placeHolder: 'codex',
+    ignoreFocusOut: true,
+    validateInput: v => /^[a-z0-9][a-z0-9._-]*$/i.test(v.trim()) ? null : 'Use letters, digits, dot, dash or underscore (no slashes).',
+  });
+  if (!agentId) { return; }
+  try {
+    const commsRoot = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+    const res = await scaffoldAgent(commsRoot, { agentId: agentId.trim() });
+    vscode.window.showInformationMessage(
+      `AutoClaw: scaffolded "${res.agentId}" (${res.keepalive.loop_mechanism}). ` +
+      `${res.registryRowAdded ? 'Registry row added' : 'Registry row refreshed'}; inbox + bootstrap ready.`,
+    );
+    if (kdreamView) { await refreshOrchestratorData(kdreamView); }
+  } catch (e) {
+    vscode.window.showWarningMessage(`AutoClaw: could not scaffold agent — ${(e as Error).message}`);
   }
 }
 
@@ -4905,8 +5062,28 @@ function startInboxWatcher(context: vscode.ExtensionContext): void {
 
       if (msg.type === 'task_complete') {
         const agentId = String(msg.from ?? 'an agent');
-        const taskId = String((msg.payload as Record<string, unknown>)?.task_id ?? 'a task');
+        const payload = (msg.payload as Record<string, unknown>) ?? {};
+        const taskId = String(payload.task_id ?? 'a task');
         const sprintNum = typeof msg.sprint === 'number' ? msg.sprint : null;
+
+        // Durable completed-work ledger (Slice B): claims are deleted and
+        // board.json is a live snapshot, so this append is the only durable
+        // record the panel's Done lane + per-agent history read. Best-effort —
+        // recording must never break the watcher.
+        try {
+          const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+          appendTaskCompletion(commsDir, {
+            task_id: taskId,
+            agent_id: agentId,
+            session_id: typeof msg.session_id === 'string' ? msg.session_id : undefined,
+            completed_at: typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
+            sprint: sprintNum ?? undefined,
+            title: typeof payload.summary === 'string' ? payload.summary
+                 : typeof payload.title === 'string' ? payload.title : undefined,
+            review_status: typeof payload.review_status === 'string' ? payload.review_status : undefined,
+            branch: typeof payload.branch === 'string' ? payload.branch : undefined,
+          });
+        } catch { /* ledger is best-effort */ }
 
         if (sprintNum !== null) {
           if (!sprintCompletions.has(sprintNum)) { sprintCompletions.set(sprintNum, new Set()); }

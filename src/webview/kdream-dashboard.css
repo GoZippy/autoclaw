@@ -463,6 +463,13 @@ th {
 
 .inbox-summary .ic-awaiting .ic-num { color: var(--vscode-charts-orange); }
 
+.pending-empty {
+  padding: 6px 8px;
+  font-size: 0.85em;
+  line-height: 1.4;
+  color: var(--vscode-descriptionForeground);
+}
+
 /* ── Awaiting You section ──────────────────────────────────────────── */
 .awaiting-list { display: flex; flex-direction: column; gap: 6px; }
 .awaiting-row {
@@ -1204,6 +1211,7 @@ th {
 .board-col-inflight .col-glyph { color: var(--vscode-charts-blue, #3794ff); }
 .board-col-review .col-glyph   { color: var(--vscode-charts-orange, #d7935d); }
 .board-col-blocked .col-glyph  { color: var(--vscode-charts-red, #f14c4c); }
+.board-col-done .col-glyph     { color: var(--vscode-charts-green, #89d185); }
 .board-col-body { padding: 5px; display: flex; flex-direction: column; gap: 5px; }
 .board-empty { font-size: 0.78em; color: var(--vscode-descriptionForeground); opacity: 0.7; margin: 4px 2px; }
 .board-more { font-size: 0.74em; color: var(--vscode-descriptionForeground); opacity: 0.8; margin: 3px 2px 0; text-align: center; font-style: italic; }
@@ -1219,7 +1227,54 @@ th {
 .board-card.is-inflight  { border-left-color: var(--vscode-charts-blue, #3794ff); }
 .board-card.is-review    { border-left-color: var(--vscode-charts-orange, #d7935d); }
 .board-card.is-stuck     { border-left-color: var(--vscode-charts-red, #f14c4c); }
+.board-card.is-done      { border-left-color: var(--vscode-charts-green, #89d185); opacity: 0.92; }
 .board-card.thread-open  { border-color: var(--vscode-focusBorder); }
+/* Done-card review-status chips */
+.board-card .meta-review { font-size: 0.72em; padding: 0 5px; border-radius: 8px; background: rgba(127,127,127,0.18); }
+.board-card .meta-review.done-approved { color: var(--vscode-charts-green, #89d185); }
+.board-card .meta-review.done-rejected { color: var(--vscode-charts-red, #f14c4c); }
+.board-card .meta-review.done-pending  { color: var(--vscode-charts-orange, #d7935d); }
+
+/* ── Per-agent workload (Slice B) ──────────────────────────────────── */
+/* Compact pip on the always-visible card summary line. */
+.workload-pip { display: inline-flex; gap: 4px; margin-left: auto; font-size: 0.7em; }
+.workload-pip > span { padding: 0 4px; border-radius: 8px; background: rgba(127,127,127,0.2); }
+.workload-pip .wl-inflight { color: var(--vscode-charts-blue, #3794ff); }
+.workload-pip .wl-donetoday { color: var(--vscode-charts-green, #89d185); }
+/* Rollup counters in the expanded body — mirror the inbox-summary look. */
+.agent-workload { margin-top: 8px; }
+.workload-rollup { display: flex; gap: 6px; margin-bottom: 6px; }
+.workload-rollup .wl {
+  flex: 1; text-align: center; padding: 4px 2px; border-radius: 4px;
+  background: var(--vscode-editorWidget-background, rgba(127,127,127,0.08));
+}
+.workload-rollup .wl-num { display: block; font-size: 1.15em; font-weight: 600; }
+.workload-rollup .wl-label {
+  display: block; font-size: 0.62em; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--vscode-descriptionForeground); opacity: 0.85;
+}
+.workload-rollup .wl-done .wl-num { color: var(--vscode-charts-green, #89d185); }
+/* Collapsible completed-work history (native <details>). */
+.completed-work { font-size: 0.8em; }
+.completed-work-summary {
+  cursor: pointer; user-select: none; font-weight: 600;
+  color: var(--vscode-descriptionForeground); padding: 2px 0;
+}
+.completed-work-summary .cw-count {
+  margin-left: 6px; font-weight: 400; font-size: 0.85em;
+  padding: 0 5px; border-radius: 8px; background: rgba(127,127,127,0.2);
+}
+.completed-work-list { list-style: none; margin: 4px 0 0; padding: 0; }
+.cw-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; flex-wrap: wrap; }
+.cw-row .cw-task { font-family: var(--vscode-editor-font-family, monospace); font-weight: 600; }
+.cw-row .cw-title { color: var(--vscode-foreground); opacity: 0.9; overflow: hidden; text-overflow: ellipsis; }
+.cw-row .cw-sprint { font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+.cw-row .cw-status { font-size: 0.82em; padding: 0 5px; border-radius: 8px; background: rgba(127,127,127,0.18); }
+.cw-row .cw-status.cw-approved { color: var(--vscode-charts-green, #89d185); }
+.cw-row .cw-status.cw-rejected { color: var(--vscode-charts-red, #f14c4c); }
+.cw-row .cw-status.cw-pending  { color: var(--vscode-charts-orange, #d7935d); }
+.cw-row .cw-age { margin-left: auto; font-size: 0.85em; color: var(--vscode-descriptionForeground); }
+.cw-more { font-size: 0.85em; font-style: italic; color: var(--vscode-descriptionForeground); margin: 4px 0 0; }
 .board-card-top { display: flex; align-items: center; gap: 6px; }
 .board-card .task-id {
   font-family: var(--vscode-editor-font-family, monospace);

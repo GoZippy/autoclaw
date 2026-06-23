@@ -308,28 +308,32 @@
     });
   }
 
-  // ── Pending agents tray (FF-3) ────────────────────────────────────
-  // Wire the "Invite agent…" button (always present in the section header).
+  // ── Agents tray (FF-3) ────────────────────────────────────────────
+  // Wire the section-header buttons (always present so the FIRST agent can be
+  // invited / handed a join prompt even when nobody is pending yet).
   document.getElementById('btn-invite-agent')?.addEventListener('click', (e) => {
     e.stopPropagation();
     vscode.postMessage({ command: 'inviteAgent' });
   });
+  document.getElementById('btn-join-prompt')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    vscode.postMessage({ command: 'generateJoinPrompt' });
+  });
 
-  // Render the pending tray. Shows the section only when there is at least one
-  // agent waiting to be admitted; otherwise it stays hidden.
+  // Render the pending tray. The section header (with Invite + Join-prompt
+  // buttons) stays visible always; the body shows a hint when nobody is waiting.
   function renderPending(pending) {
     const list = Array.isArray(pending) ? pending : [];
     const section = document.getElementById('pending-section');
     const el = document.getElementById('pending-content');
     if (!el) return;
     setBadge('pending-badge', String(list.length));
+    if (section) { section.style.display = ''; }
     if (!list.length) {
-      el.innerHTML = '';
-      if (section) section.style.display = 'none';
+      el.innerHTML = '<div class="pending-empty">No agents waiting. Use <b>Join prompt…</b> to onboard a tool (Codex, Claude Desktop, OpenClaw, Hermes…) or <b>Invite…</b> for a bare token.</div>';
       return;
     }
     if (section) {
-      section.style.display = '';
       // Auto-open when agents are waiting, unless the user toggled it shut.
       if (!Object.prototype.hasOwnProperty.call(uiState.sections, 'pending-section')) {
         section.classList.add('open');
