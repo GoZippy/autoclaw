@@ -37,6 +37,38 @@ export interface AgentWithLive extends RegisteredAgent {
   role?: string;
   /** All known session heartbeats for this agent (sidecar files). */
   sessions?: Heartbeat[];
+  /** Slice B: per-agent workload + completed-work history, built from the
+   *  durable task ledger + live claims/board (see src/taskLedger.ts
+   *  summarizeByAgent). Optional — absent ⇒ the card renders exactly as before
+   *  (no rollup line, no Completed-work section). The shape mirrors
+   *  AgentWorkload in taskLedger.ts; kept inline so this pure render module has
+   *  no cross-module import. */
+  workload?: AgentWorkload;
+}
+
+/** Per-agent workload rollup + recent completions, attached to a card model.
+ *  Structurally identical to `AgentWorkload` in src/taskLedger.ts. */
+export interface AgentWorkload {
+  agentId: string;
+  /** Open tasks the agent holds (claimed/in-flight/in-review, not yet merged). */
+  assigned: number;
+  /** Subset of `assigned` actively in flight on the board. */
+  inProgress: number;
+  /** All-time completed tasks recorded for this agent. */
+  doneTotal: number;
+  /** Completed today. */
+  doneToday: number;
+  /** Most-recent completions, newest first. */
+  recentCompleted: CompletedWorkItem[];
+}
+
+/** One completed-work row shown in the card's "Completed work" list. */
+export interface CompletedWorkItem {
+  task_id: string;
+  completed_at: string;
+  title?: string;
+  sprint?: number;
+  review_status?: string;
 }
 
 /** Resolve an agent's display host (CF-2): explicit host → machine_id → 'local'. */
@@ -329,6 +361,63 @@ export function renderSessionList(sessions: readonly Heartbeat[] | undefined, no
 }
 
 // ---------------------------------------------------------------------------
+// Workload + completed-work history (Slice B)
+// ---------------------------------------------------------------------------
+
+/** One review-status badge for a completed-work row. Empty status → no badge. */
+function completedStatusBadge(status?: string): string {
+  const s = (status ?? '').toLowerCase();
+  if (!s) { return ''; }
+  const cls = s === 'approved' ? 'cw-approved'
+    : (s === 'rejected' || s === 'needs_changes' || s === 'request_changes') ? 'cw-rejected'
+    : 'cw-pending';
+  return `<span class="cw-status ${cls}" title="review: ${esc(s)}">${esc(s.replace(/_/g, ' '))}</span>`;
+}
+
+/**
+ * Render the per-agent workload rollup line plus an expandable "Completed work"
+ * list, both sourced from the durable task ledger (see src/taskLedger.ts). The
+ * list uses a native <details> element so it collapses with zero client JS —
+ * the existing card-body toggle handles outer expand/collapse, and <details>
+ * handles this inner section independently. Returns '' when no workload data is
+ * attached, so the card is byte-identical to before for un-augmented models.
+ */
+export function renderAgentWorkload(wl: AgentWorkload | undefined, now: number = Date.now()): string {
+  if (!wl) { return ''; }
+  let h = '<div class="agent-workload" aria-label="Workload">';
+  // Rollup counters — same visual family as the inbox-summary counters.
+  h += '<div class="workload-rollup">';
+  h += `<div class="wl"><span class="wl-num">${wl.assigned}</span><span class="wl-label">Assigned</span></div>`;
+  h += `<div class="wl"><span class="wl-num">${wl.inProgress}</span><span class="wl-label">In progress</span></div>`;
+  h += `<div class="wl wl-done"><span class="wl-num">${wl.doneToday}</span><span class="wl-label">Done today</span></div>`;
+  h += `<div class="wl"><span class="wl-num">${wl.doneTotal}</span><span class="wl-label">Done total</span></div>`;
+  h += '</div>';
+  // Completed-work history — collapsible via native <details> (no client JS).
+  const items = wl.recentCompleted ?? [];
+  if (items.length > 0) {
+    h += '<details class="completed-work">';
+    h += `<summary class="completed-work-summary">Completed work<span class="cw-count">${wl.doneTotal}</span></summary>`;
+    h += '<ul class="completed-work-list">';
+    for (const it of items) {
+      h += '<li class="cw-row">';
+      h += `<span class="cw-task" title="${esc(it.task_id)}">${esc(it.task_id)}</span>`;
+      if (it.title) { h += `<span class="cw-title" title="${esc(it.title)}">${esc(it.title)}</span>`; }
+      if (typeof it.sprint === 'number') { h += `<span class="cw-sprint">sprint ${esc(it.sprint)}</span>`; }
+      h += completedStatusBadge(it.review_status);
+      if (it.completed_at) { h += `<span class="cw-age" title="${esc(it.completed_at)}">${esc(formatAge(it.completed_at, now))}</span>`; }
+      h += '</li>';
+    }
+    h += '</ul>';
+    if (wl.doneTotal > items.length) {
+      h += `<p class="cw-more">+${wl.doneTotal - items.length} earlier</p>`;
+    }
+    h += '</details>';
+  }
+  h += '</div>';
+  return h;
+}
+
+// ---------------------------------------------------------------------------
 // Agent card
 // ---------------------------------------------------------------------------
 
@@ -424,6 +513,18 @@ export function renderAgentCard(
   if (summary && summary.awaiting_response > 0) {
     head += `<span class="awaiting-pip" title="${summary.awaiting_response} awaiting your response">${summary.awaiting_response}</span>`;
   }
+  // Slice B: compact workload pip on the always-visible summary line — the
+  // "is this agent carrying work / has it shipped today" signal at a glance.
+  // Only rendered when a ledger-backed workload was attached to the model.
+  const wl = agent.workload;
+  if (wl && (wl.assigned > 0 || wl.inProgress > 0 || wl.doneTotal > 0)) {
+    const tip = `${wl.assigned} assigned · ${wl.inProgress} in progress · ${wl.doneToday} done today · ${wl.doneTotal} done total`;
+    head += `<span class="workload-pip" title="${esc(tip)}">`;
+    if (wl.inProgress > 0) { head += `<span class="wl-inflight" title="in progress">◐${wl.inProgress}</span>`; }
+    if (wl.assigned > 0) { head += `<span class="wl-assigned" title="assigned (open)">≡${wl.assigned}</span>`; }
+    if (wl.doneToday > 0) { head += `<span class="wl-donetoday" title="done today">●${wl.doneToday}</span>`; }
+    head += '</span>';
+  }
   head += '</div>';
 
   // ── Expanded body ────────────────────────────────────────────────────────
@@ -501,6 +602,11 @@ export function renderAgentCard(
     body += `<div class="ic"><span class="ic-num">${summary.archived}</span><span class="ic-label">Archived</span></div>`;
     body += '</div>';
   }
+
+  // Slice B: per-agent workload rollup + collapsible completed-work history,
+  // sourced from the durable task ledger. Renders nothing when no workload was
+  // attached to the model (backward-compatible).
+  body += renderAgentWorkload(agent.workload, now);
 
   body += '</div>';
 

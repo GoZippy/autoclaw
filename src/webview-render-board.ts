@@ -64,6 +64,20 @@ export interface BoardCapsuleItem {
   votes_count?: number;
   evaluated_at?: string;
 }
+/** A completed task sourced from the durable task ledger (task-ledger.jsonl).
+ *  Unlike the other lanes (live snapshots of board.json), Done is reconstructed
+ *  from the append-only ledger so finished work survives claim deletion. */
+export interface BoardDoneItem {
+  task_id: string;
+  /** Agent that completed it. */
+  agent_id: string;
+  title?: string;
+  sprint?: number;
+  /** ISO completion timestamp (drives the age label + most-recent ordering). */
+  completed_at?: string;
+  /** Review outcome at record time, e.g. "approved" / "pending". */
+  review_status?: string;
+}
 export interface BoardSnapshot {
   fleet_size?: number;
   live_count?: number;
@@ -72,6 +86,9 @@ export interface BoardSnapshot {
   awaiting_review?: BoardReviewItem[];
   stuck?: BoardStuckItem[];
   recent_capsules?: BoardCapsuleItem[];
+  /** Completed-work lane, newest-first, sourced from the task ledger. The
+   *  extension attaches this from task-ledger.jsonl; absent ⇒ empty Done lane. */
+  done?: BoardDoneItem[];
 }
 
 /** A single message in a per-task thread (a flattened comms-log entry). */
@@ -258,11 +275,30 @@ export function renderBoard(board: BoardSnapshot | null, ctx: BoardRenderContext
     extraClass: 'is-stuck',
   }));
 
+  // Done — reconstructed from the durable task ledger (claims/board.json drop
+  // completed work). Newest first; the caller passes them pre-sorted but we
+  // sort defensively so ordering never depends on the producer.
+  const doneSorted = [...(board.done ?? [])].sort((a, b) =>
+    new Date(b.completed_at ?? 0).getTime() - new Date(a.completed_at ?? 0).getTime());
+  const doneCards = doneSorted.map(t => {
+    const status = (t.review_status ?? '').toLowerCase();
+    const statusCls = status === 'approved' ? 'done-approved'
+      : (status === 'rejected' || status === 'needs_changes' || status === 'request_changes') ? 'done-rejected'
+      : status ? 'done-pending' : '';
+    const meta =
+      `<span class="meta-done-by">by ${participant(ctx, t.agent_id)}</span>` +
+      (typeof t.sprint === 'number' ? `<span class="meta-sprint">sprint ${esc(t.sprint)}</span>` : '') +
+      (status ? `<span class="meta-review ${statusCls}" title="review: ${esc(status)}">${esc(status.replace(/_/g, ' '))}</span>` : '') +
+      (t.completed_at ? `<span class="meta-age" title="${esc(t.completed_at)}">${esc(formatAge(t.completed_at, now))}</span>` : '');
+    return card({ ctx, taskId: t.task_id, title: t.title, meta, extraClass: 'is-done' });
+  });
+
   let h = '<div class="board-kanban" aria-label="Task board">';
   h += renderColumn({ key: 'backlog', label: 'Backlog', glyph: '○', cards: claimableCards, emptyHint: 'Nothing claimable.' });
   h += renderColumn({ key: 'inflight', label: 'In progress', glyph: '◐', cards: inFlightCards, emptyHint: 'No active work.' });
   h += renderColumn({ key: 'review', label: 'Review', glyph: '◔', cards: reviewCards, emptyHint: 'Nothing in review.' });
   h += renderColumn({ key: 'blocked', label: 'Blocked', glyph: '✕', cards: stuckCards, emptyHint: 'Nothing stuck.' });
+  h += renderColumn({ key: 'done', label: 'Done', glyph: '●', cards: doneCards, emptyHint: 'No completed work yet.' });
   h += '</div>';
   h += renderRecentEvidence(board.recent_capsules ?? []);
   return h;
