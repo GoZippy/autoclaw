@@ -32,6 +32,34 @@
     if (t) { t.textContent = presence && presence.text ? presence.text : 'No agents tracked'; }
   }
 
+  // ---- orchestrator (supervisor lease) chip — L4 --------------------------
+  function renderOrchestrator(sup) {
+    const node = byId('orchestrator-chip');
+    if (!node) { return; }
+    clear(node);
+    if (!sup) { return; }
+    const color = sup.state === 'active' ? 'green' : (sup.state === 'standby' ? 'amber' : 'red');
+    node.appendChild(el('span', 'dot ' + color));
+    node.appendChild(document.createTextNode(sup.text || ''));
+    node.title = sup.holder ? ('supervisor lease holder: ' + sup.holder) : 'no supervisor lease';
+    node.classList.remove('has-standbys');
+    // E2c: ranked standby roster recorded by the START LOOP (when fencing is on).
+    if (sup.standbys && sup.standbys.length) {
+      node.classList.add('has-standbys');
+      const list = el('div', 'standby-list');
+      if (typeof sup.quorumSize === 'number') {
+        list.appendChild(el('div', 'standby-quorum', 'quorum ' + sup.quorumSize));
+      }
+      sup.standbys.forEach(function (s) {
+        const row = el('div', 'standby-row');
+        row.appendChild(el('span', 'standby-rank', '#' + s.rank));
+        row.appendChild(document.createTextNode(' ' + s.instanceId + (s.isSelf ? ' (you)' : '')));
+        list.appendChild(row);
+      });
+      node.appendChild(list);
+    }
+  }
+
   // ---- health grid --------------------------------------------------------
   function renderHealthGrid(rows) {
     const body = byId('health-grid-body');
@@ -457,6 +485,7 @@
   function render(model) {
     if (!model) { return; }
     renderPresence(model.presence);
+    renderOrchestrator(model.supervisor);
     renderBoard(model.board);
     renderAwaiting(model.awaitingYou);
     renderHealthGrid(model.healthGrid);

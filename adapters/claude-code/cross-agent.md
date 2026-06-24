@@ -10,7 +10,7 @@ Check at the START of every task and AFTER completing work:
 Read any `.json` files found. Process and act on them before starting new work.
 
 ### Message Types
-- `task_assign` — The orchestrator has assigned a sprint to you; read `payload.assignment_file` for your work brief
+- `task_assignment` — The orchestrator has assigned a sprint to you; read `payload.assignment_file` for your work brief
 - `review_request` — Another agent wants you to review their work
 - `review_response` — Response to a review you requested
 - `consensus_vote` — A vote on task approval
@@ -33,13 +33,10 @@ Example: `2025-01-15T10-30-00-review_request-claude-code.json`
 Message structure:
 ```json
 {
-  "id": "msg-<uuid>",
   "from": "claude-code",
-  "session_id": "<your-session-uuid>",
   "to": "target-agent-id",
   "type": "review_request",
   "timestamp": "2025-01-15T10:30:00Z",
-  "requires_response": false,
   "payload": {}
 }
 ```
@@ -61,7 +58,6 @@ Vote structure:
 ```json
 {
   "voter": "claude-code",
-  "session_id": "<your-session-uuid>",
   "task_id": "task-123",
   "vote": "approve",
   "timestamp": "2025-01-15T10:30:00Z",
@@ -73,16 +69,6 @@ Valid votes: `approve`, `reject`, `request_changes`
 
 ## Scope Enforcement
 Check `.autoclaw/orchestrator/sprints/plan-summary.yaml` for your current assignments. Only modify files within your assigned scope patterns. If you need to modify files outside your scope, send a `question` message to the agent who owns that scope.
-
-## Required message envelope & safety rails
-
-`docs/AGENT_SESSION_PROTOCOL.md` is authoritative; this file is the always-loaded summary.
-
-**Every message and vote you write MUST include a unique `id` and your `session_id`** — a UUID you generate once per session and reuse on every message and heartbeat. The `session_id` is how two concurrent windows of the same agent are told apart; without it a second window is invisible and collides with you.
-
-- **Idempotency** — read each inbox message once. On first read, record it (write `inboxes/claude-code/_state/<msg-id>.json`), act on it, then move the file to `processed/`. Never re-process a message already handled.
-- **Claim with a mutex** — claim a task by a create-exclusive write to `comms/claims/<task-id>.json` (fail if it already exists — the filesystem is the lock). Only work a claim whose `session_id` is yours; a stale claim (expired + owner heartbeat dead) may be re-claimed.
-- **Bounded loop** — never loop forever. Stop on: the user said stop, a `scope_violation` against you, an unresolved conflict in your scope, or a cycle ceiling.
 
 ## Conflict Resolution
 If you detect a file conflict (another agent modified a file in your scope):

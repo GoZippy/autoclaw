@@ -26,6 +26,30 @@ import { listCapsules } from '../evidence';
 
 const fsp = fs.promises;
 
+/** Monotonic per-process counter so two writes in the same ms never collide. */
+let atomicSeq = 0;
+
+/**
+ * Write `data` to `targetPath` atomically (L1): write a sibling temp file in the
+ * SAME directory, then rename over the target. A reader polling `targetPath`
+ * therefore never observes a half-written file — it sees either the previous
+ * complete version or the new one. The temp must be a sibling so the rename
+ * stays on one filesystem (rename is only atomic within a volume; a cross-drive
+ * temp could fail EXDEV on Windows). `fs.promises.rename` replaces an existing
+ * regular file on every platform, so no unlink-then-rename dance is needed.
+ */
+async function writeFileAtomic(targetPath: string, data: string): Promise<void> {
+  const tmp = `${targetPath}.tmp-${process.pid}-${atomicSeq++}`;
+  try {
+    await fsp.writeFile(tmp, data, 'utf8');
+    await fsp.rename(tmp, targetPath);
+  } catch (err) {
+    // Best-effort cleanup so a failed publish never leaves an orphan temp.
+    try { await fsp.unlink(tmp); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Path helpers                                                              */
 /* -------------------------------------------------------------------------- */
@@ -340,8 +364,8 @@ export async function writeBoard(opts: WriteBoardOptions): Promise<WriteBoardRes
   await fsp.mkdir(orchestratorDir(workspaceRoot), { recursive: true });
   const jsonPath = boardJsonPath(workspaceRoot);
   const mdPath = boardMdPath(workspaceRoot);
-  await fsp.writeFile(jsonPath, JSON.stringify(board, null, 2), 'utf8');
-  await fsp.writeFile(mdPath, renderBoardMarkdown(board), 'utf8');
+  await writeFileAtomic(jsonPath, JSON.stringify(board, null, 2));
+  await writeFileAtomic(mdPath, renderBoardMarkdown(board));
 
   return { board, jsonPath, mdPath };
 }

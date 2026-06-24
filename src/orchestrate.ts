@@ -17,6 +17,8 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 // Fabric agent-type tags (AF-8 §4). Explicit subpath keeps the bus out of the planner.
 import { agentTypeProfile, type AgentType } from './fabric/agentTypes';
+// Materialized board task shape (type-only — erased at compile time, no runtime cycle).
+import type { CatalogTask } from './orchestrator/taskCatalog';
 
 const fsPromises = fs.promises;
 
@@ -195,6 +197,12 @@ export interface OrchestratorState {
     sprint: number | null;
     tasks: string[];
   }>;
+  /**
+   * Materialized task catalog the board reads (`boardWriter.readTasks`). Written
+   * by `ingestTaskCatalog` from manifests / sprint YAMLs / spec `tasks.md`; absent
+   * on legacy state files (the board then falls back to inferred tasks).
+   */
+  tasks?: CatalogTask[];
   last_updated: string;
 }
 
@@ -2008,11 +2016,7 @@ export function mergeFindings(votes: ValidationVote[]): {
   const findingMap = new Map<string, { finding: ValidationFinding; agents: string[] }>();
 
   for (const vote of votes) {
-    // Votes read from consensus/active/ are raw JSON and may omit `findings`
-    // (an agent can approve with no findings) or carry a malformed value. Guard
-    // so an absent/non-array field can't throw "vote.findings is not iterable".
-    const findings = Array.isArray(vote.findings) ? vote.findings : [];
-    for (const finding of findings) {
+    for (const finding of vote.findings) {
       const key = `${finding.file ?? ''}:${finding.line ?? 0}:${finding.category}:${finding.description}`;
       const existing = findingMap.get(key);
       if (existing) {

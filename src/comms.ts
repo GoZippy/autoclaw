@@ -83,7 +83,7 @@ export function detectAutoclawHostAgent(appName: string): string {
 export type MessageType =
   | 'review_request' | 'review_response'
   | 'consensus_vote' | 'consensus_result'
-  | 'task_claim' | 'task_complete' | 'task_assign'
+  | 'task_claim' | 'task_complete' | 'task_assignment'
   | 'finding_report' | 'question' | 'answer'
   | 'scope_conflict' | 'escalation' | 'handoff' | 'system'
   // Phase-3 capability discovery
@@ -97,7 +97,11 @@ export type MessageType =
   //   evict_notice : the graceful-evict quiesce doorbell (drain-then-release)
   //   pause/resume : ask a cooperating agent to stop / resume claiming work
   //   reassign     : a claim was released back to the board for re-dispatch
-  | 'evict_notice' | 'pause' | 'resume' | 'reassign';
+  | 'evict_notice' | 'pause' | 'resume' | 'reassign'
+  // LANE C — board-grounded wake nudges (L3). Written to a peer's per-agent inbox.
+  //   work_available  : an idle agent should claim a specific claimable board task
+  //   review_resolved : a task's author is told its consensus verdict landed
+  | 'work_available' | 'review_resolved';
 
 export interface Message {
   id: string;

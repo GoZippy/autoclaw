@@ -17,7 +17,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import type { FleetManifest, FleetAgentDecl } from './architecture';
-import type { BeaconRow } from './beacons';
+import { isDiscoveredUntrusted, type BeaconRow } from './beacons';
 import type { Invite } from './invites';
 
 const fsp = fs.promises;
@@ -57,6 +57,10 @@ export function computePendingAgents(
   const seen = new Set<string>();
   for (const b of beacons) {
     if (b.stale) { continue; }
+    // T0 trust ceiling: a LAN-DISCOVERED peer is observe-only telemetry, NOT an
+    // admittable agent — it is unauthenticated until T2. Never offer it in the
+    // pending-admit tray (discovery is informational, not an admission path).
+    if (isDiscoveredUntrusted(b)) { continue; }
     if (declared.has(b.agent_id)) { continue; }
     if (seen.has(b.agent_id)) { continue; }
     seen.add(b.agent_id);

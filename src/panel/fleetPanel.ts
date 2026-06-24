@@ -74,6 +74,11 @@ export interface FleetPanelOptions {
    */
   selfAgentId?: string;
   /**
+   * L4: this window's loop-instance id (LOOP_INSTANCE_ID). When the supervisor
+   * lease holder equals this, the orchestrator chip reads "this window".
+   */
+  selfInstanceId?: string;
+  /**
    * Optional supplier of a live LMD health snapshot. When provided, the panel
    * uses it instead of deriving health from heartbeat-file ages. Pass the
    * running LMD's `getHealthGrid()` here when extension.ts wires this up.
@@ -100,7 +105,11 @@ export class FleetPanelProvider implements vscode.WebviewViewProvider {
 
   private view?: vscode.WebviewView;
   private timer?: ReturnType<typeof setInterval>;
+  /** L2: refresh the instant board.json lands; the poll below is only a backstop. */
+  private boardWatcher?: vscode.FileSystemWatcher;
   private readonly selfAgentId: string;
+  /** L4: this window's loop-instance id, so the supervisor chip can read "you". */
+  private readonly selfInstanceId?: string;
   private readonly healthSupplier?: () => import('../lmd/types').AgentHealth[];
   private readonly refreshIntervalMs: number;
 
@@ -109,8 +118,12 @@ export class FleetPanelProvider implements vscode.WebviewViewProvider {
     opts: FleetPanelOptions = {}
   ) {
     this.selfAgentId = opts.selfAgentId ?? 'claude-code';
+    this.selfInstanceId = opts.selfInstanceId;
     this.healthSupplier = opts.healthSupplier;
-    this.refreshIntervalMs = opts.refreshIntervalMs ?? 5000;
+    // L2: the board.json file-watcher is the fast path (sub-second). This poll is
+    // now only the backstop for editors where fs-watch is unreliable (network
+    // drives), so it can be slow.
+    this.refreshIntervalMs = opts.refreshIntervalMs ?? 15000;
   }
 
   /** Directory holding the webview assets (`media/panel/`). */
@@ -146,11 +159,30 @@ export class FleetPanelProvider implements vscode.WebviewViewProvider {
 
     webviewView.onDidDispose(() => {
       this.stopPolling();
+      this.boardWatcher?.dispose();
+      this.boardWatcher = undefined;
       this.view = undefined;
     });
 
     this.startPolling();
+    this.startBoardWatch();
     void this.refresh();
+  }
+
+  /** L2 fast path: refresh the instant board.json is (re)written, when visible. */
+  private startBoardWatch(): void {
+    if (this.boardWatcher) { return; }
+    // Honor the same flag as the producer, and scope to THIS workspace so a
+    // nested/sibling project's board.json can't drive spurious refreshes.
+    const enabled = vscode.workspace.getConfiguration('autoclaw').get<boolean>('cluster.boardWatch', true);
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!enabled || !root) { return; }
+    this.boardWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(root, '.autoclaw/orchestrator/board.json'),
+    );
+    const onBoard = (): void => { if (this.view?.visible) { void this.refresh(); } };
+    this.boardWatcher.onDidChange(onBoard);
+    this.boardWatcher.onDidCreate(onBoard);
   }
 
   /** Begin the refresh-poll loop (idempotent). */
@@ -190,6 +222,7 @@ export class FleetPanelProvider implements vscode.WebviewViewProvider {
       const model = await gatherFleetData({
         workspaceRoot,
         selfAgentId: this.selfAgentId,
+        selfInstanceId: this.selfInstanceId,
         health: this.healthSupplier?.(),
       });
       // Attach the agendaboard snapshot if the orchestrator loop has written one.

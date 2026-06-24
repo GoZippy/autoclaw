@@ -30,9 +30,20 @@ import type { Heartbeat, Message } from './comms';
 import { promotePendingTaskCompletes } from './orchestrator/peerReviewWatcher';
 import { resolvePendingConsensus } from './orchestrator/consensusTally';
 import { writeBoard } from './orchestrator/boardWriter';
+import { ingestTaskCatalog } from './orchestrator/taskCatalogIngest';
+import {
+  wakeIdlePeers,
+  notifyReviewResolved,
+  readIdleAgentProfiles,
+  readRecentlyWoken,
+} from './orchestrator/wakeIdlePeers';
+import type { BoardModel } from './orchestrator/board';
 import { runHealPhase } from './orchestrator/heal';
 import { reapDeadClaims } from './orchestrator/claimReaper';
-import { acquireSupervisorRole } from './orchestrator/supervisorLease';
+import { acquireSupervisorRole, type AcquireResult, SUPERVISOR_TTL_MS, readClusterMap } from './orchestrator/supervisorLease';
+import { type Membership, projectMonitors, projectStandbys, computeQuorumSize, isStrictlyNewer } from './orchestrator/clusterMap';
+import { writeMonitorPresence, readMonitorRoster, pruneStaleMonitorPresence } from './orchestrator/monitorRoster';
+import { ClusterMapGossipBus, RemoteClusterMapTracker } from './lmd/clusterMapGossip';
 import { ingestWorkforceSignals } from './fleet/workforceIngest';
 import { runRecallSweep } from './fleet/recallDispatch';
 // Fabric governance (AF-8 §3) — gate + audit the real dispatch path. Explicit
@@ -191,6 +202,30 @@ export interface OrchestratorLoopOptions {
    * `autoclaw.selfHealing.reapDeadClaims` in extension.ts.
    */
   reapDeadClaims?: boolean;
+  /**
+   * L1 single-active manager. When TRUE (the default) only the active supervisor
+   * host runs the fleet WRITE phases each tick (gc, dispatch, promote, consensus
+   * tally, ingest, board write); standby hosts defer to it via the supervisor
+   * lease. When FALSE every ticking host runs them independently (legacy). A solo
+   * host always wins the lease, so the default preserves single-host behavior.
+   * Sourced from `autoclaw.cluster.singleActive` in extension.ts.
+   */
+  singleActive?: boolean;
+  /**
+   * E1c: opt into LIVE election semantics — the supervisor acquire serializes on a
+   * create-exclusive wx-lock and carries live epoch/term + deposed-holder fencing.
+   * Default FALSE (a solo host is byte-identical to E1b). Sourced from
+   * `autoclaw.cluster.fencing` in extension.ts.
+   */
+  fencing?: boolean;
+  /**
+   * E3b: opt into WAKE-ONLY cluster-map gossip — the host publishes its map for
+   * peers and reads peer map-beats (advisory: it journals a peer-newer signal but
+   * NEVER influences what is written; the wx-lock stays the sole authority). Builds
+   * on `fencing` (gated as fencing && gossip). Default FALSE. Sourced from
+   * `autoclaw.cluster.gossip` in extension.ts.
+   */
+  gossip?: boolean;
 }
 
 /** Per-tick options. Additive + defaulted so existing 2-arg callers are unchanged. */
@@ -204,6 +239,15 @@ export interface TickOptions {
   selfHealingEnabled?: boolean;
   /** Run the release-only dead-session claim reaper this tick (default FALSE). */
   reapDeadClaims?: boolean;
+  /**
+   * L1: gate the fleet WRITE phases behind the single active supervisor (default
+   * TRUE). See {@link OrchestratorLoopOptions.singleActive}.
+   */
+  singleActive?: boolean;
+  /** E1c: opt into wx-lock-serialized acquire + live epoch/term + fencing (default FALSE). */
+  fencing?: boolean;
+  /** E3b: opt into WAKE-ONLY cluster-map gossip (publish+read peer map-beats; advisory only). Default FALSE. */
+  gossip?: boolean;
 }
 
 export interface OrchestratorLoopHandle {
@@ -267,24 +311,8 @@ export async function readLoopJournal(
 
 export async function writeLoopState(workspaceRoot: string, state: LoopState): Promise<void> {
   const fp = loopStatePath(workspaceRoot);
-  const data = JSON.stringify(state, null, 2);
-  try {
-    await fsPromises.mkdir(path.dirname(fp), { recursive: true });
-    // Atomic + resilient: several windows may run a loop against the same
-    // workspace and write this file concurrently. Writing through a per-process
-    // temp file then renaming avoids a sharing-violation on the destination
-    // ("UNKNOWN: unknown error, open ...") on Windows. The rename is retried
-    // because it can transiently fail with EPERM when the target is held.
-    const tmp = `${fp}.${process.pid}.tmp`;
-    await fsPromises.writeFile(tmp, data, 'utf8');
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try { await fsPromises.rename(tmp, fp); return; }
-      catch { await new Promise(r => setTimeout(r, 20 * (attempt + 1))); }
-    }
-    // Rename kept failing — fall back to an in-place write and drop the temp.
-    try { await fsPromises.writeFile(fp, data, 'utf8'); }
-    finally { try { await fsPromises.rm(tmp, { force: true }); } catch { /* ignore */ } }
-  } catch { /* persistence is best-effort; never let a disk hiccup crash the loop */ }
+  await fsPromises.mkdir(path.dirname(fp), { recursive: true });
+  await fsPromises.writeFile(fp, JSON.stringify(state, null, 2), 'utf8');
 }
 
 export async function readPersistedLoopState(workspaceRoot: string): Promise<LoopState> {
@@ -792,6 +820,9 @@ export async function runTick(
 ): Promise<TickResult> {
   const selfHealingEnabled = opts.selfHealingEnabled ?? false;
   const reapEnabled = opts.reapDeadClaims ?? false;
+  const singleActive = opts.singleActive ?? true;
+  const fencing = opts.fencing ?? false;
+  const gossip = opts.gossip ?? false;
   const t0 = Date.now();
   state.tick++;
   state.totalTicks++;
@@ -815,9 +846,114 @@ export async function runTick(
     detail: { healthy: health.healthyCount, stalled: health.stalledIds.length, dead: health.deadIds.length },
   });
 
+  // L1 (single-active manager): acquire the supervisor lease ONCE per tick. The
+  // same lease arbitrates the fleet WRITE phases below (when `singleActive`, the
+  // default) AND the HEAL phase (always a single healer). Acquiring is a lease
+  // heartbeat — done outside the HALT guard so the lease keeps renewing while the
+  // fleet is paused (otherwise a HALT would let a standby steal supervision; this
+  // is a deliberate, benign deviation from the pre-L1 path, which let the lease go
+  // stale during a HALT — nothing depends on that). On a read/write error we
+  // degrade this host to a SAFE STANDBY for the tick: we prefer skipping the write
+  // phases (board may stale one tick) over risking a double-write under an
+  // uncertain lease. All skipped phases are idempotent re-derivations, so a solo
+  // host self-corrects fully on the next tick (~30 s).
+  // E2b-ii START LOOP (gated by `fencing`): write THIS loop instance's presence
+  // (the JOIN/keepalive — every ticking host, so standbys are discoverable) and
+  // DISCOVER the live monitor roster to project into the cluster map. The roster
+  // keys on the loop-instance id (same keyspace as active_manager), the FS-canonical
+  // fix for the agent-id/loop-instance keyspace gap. Single-FS only (no sockets).
+  // Best-effort: a roster error must never block election. The projection is passed
+  // INTO the acquire so it folds into the same wx-locked write (only the active
+  // manager persists it — a standby's acquire writes nothing). Standbys are scored
+  // by freshness alone (uniform need_score=1) until per-instance capability lands.
+  let membership: Membership | undefined;
+  if (workspaceRoot && fencing) {
+    try {
+      const nowIso = new Date(t0).toISOString();
+      await writeMonitorPresence(workspaceRoot, { instance_id: LOOP_INSTANCE_ID, timestamp: nowIso });
+      const roster = await readMonitorRoster(workspaceRoot, { now: t0, ttlMs: SUPERVISOR_TTL_MS });
+      const monitors = projectMonitors(roster.map((r) => ({ instance_id: r.instance_id, age_ms: r.age_ms })), SUPERVISOR_TTL_MS);
+      const standbys = projectStandbys(
+        roster.map((r) => ({ instance_id: r.instance_id, agent_id: r.agent_id, need_score: 1, age_ms: r.age_ms, last_seen: r.timestamp })),
+        LOOP_INSTANCE_ID, SUPERVISOR_TTL_MS,
+      );
+      membership = { monitors, standbys, quorum_size: computeQuorumSize(monitors.length) };
+      await pruneStaleMonitorPresence(workspaceRoot, { now: t0, ttlMs: SUPERVISOR_TTL_MS });
+    } catch {
+      membership = undefined; // never break the tick on a roster error
+    }
+  }
+
+  let sup: AcquireResult | null = null;
+  if (workspaceRoot) {
+    try {
+      sup = await acquireSupervisorRole(workspaceRoot, LOOP_INSTANCE_ID, { fencing, membership });
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'supervisor_acquire_failed', detail: { error: String(e) },
+      });
+    }
+  }
+  // When `singleActive` is on, only the active supervisor performs fleet writes
+  // (gc, dispatch, promote, tally, ingest, board). When off, every ticking host
+  // does (legacy). A solo host always wins the lease, so single-host behavior is
+  // unchanged. The board can briefly stale during a supervisor handoff — that is
+  // the intended trade for a single coherent writer.
+  const isActiveManager = !singleActive || (sup?.isSupervisor ?? false);
+
+  // E3b WAKE-ONLY gossip (gated by `gossip`, which builds on `fencing`): the ACTIVE
+  // manager publishes its current cluster map for peers, and every gossip host reads
+  // peer map-beats into the cross-tick tracker. CRITICAL — gossip is ADVISORY: it is
+  // NEVER merged into the acquire base, NEVER used for steal/renew, and the gossiped
+  // heartbeat is NEVER trusted for liveness (the adversarial review proved an
+  // epoch-dominant stale beat would otherwise resurrect a deposed active + drop the
+  // disk fence[] = split-brain). The wx-locked cluster-map.json the acquire ABOVE
+  // already wrote stays the SOLE authority. Gossip only journals a peer-newer signal
+  // so a standby learns of a takeover promptly; a stale beat can at most cause a
+  // wasted observation, never a write. Best-effort: gossip never breaks the tick.
+  if (workspaceRoot && fencing && gossip) {
+    try {
+      const bus = new ClusterMapGossipBus(workspaceRoot, { selfOrigin: LOOP_INSTANCE_ID });
+      const disk = await readClusterMap(workspaceRoot);
+      if (isActiveManager && disk) {
+        await bus.publish({ origin: LOOP_INSTANCE_ID, emittedAt: new Date(t0).toISOString(), map: disk });
+      }
+      // Use a PER-TICK tracker over the CURRENT fresh beats — not a monotonic
+      // cross-tick one. A wake signal must reflect the live bus: a dead peer's
+      // stale high-epoch beat must stop journalling once it ages out of readBeats,
+      // not be remembered forever. (RemoteClusterMapTracker stays the seam for a
+      // future stateful consumer / the T-track.)
+      const tracker = new RemoteClusterMapTracker();
+      tracker.mergeAll(await bus.readBeats(t0));
+      const peer = tracker.best();
+      if (peer && disk && isStrictlyNewer(peer, disk)
+        && peer.active_manager && peer.active_manager.instance_id !== LOOP_INSTANCE_ID) {
+        // A peer reports a strictly-newer map naming a DIFFERENT active — surface it
+        // (observability / a future board-refresh wake). The host does NOT act on it
+        // here: its next acquire reconciles from DISK, so a real takeover is honored
+        // and a stale beat is ignored.
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'log', action: 'gossip_peer_newer',
+          detail: {
+            peer_active: peer.active_manager.instance_id,
+            peer_epoch: peer.epoch, peer_term: peer.term,
+            disk_epoch: disk.epoch, disk_term: disk.term,
+          },
+        });
+      }
+      // GC long-dead orphan beats (a crashed window leaves a beat under a defunct
+      // LOOP_INSTANCE_ID that per-origin overwrite never reclaims).
+      await bus.pruneStale(t0);
+    } catch {
+      /* best-effort; gossip never breaks the tick */
+    }
+  }
+
   // Reap stale/duplicate dispatch placeholders before discovering new work, so
   // the shared inbox can't accumulate them unbounded.
-  if (workspaceRoot) {
+  if (workspaceRoot && isActiveManager) {
     try {
       const reaped = await gcStaleNextDispatches(workspaceRoot);
       if (reaped > 0) {
@@ -829,7 +965,10 @@ export async function runTick(
     } catch { /* GC is best-effort; never break the tick */ }
   }
 
-  const work = await discoverWork(workspaceRoot, health);
+  // Discovery + dispatch are fleet writes (next-dispatch placeholders + runner
+  // dispatch) — only the active manager runs them, so two windows sharing a
+  // project never double-dispatch the same task.
+  const work = isActiveManager ? await discoverWork(workspaceRoot, health) : [];
 
   if (work.length > 0) {
     for (const w of work.slice(0, 2)) {
@@ -841,7 +980,10 @@ export async function runTick(
   }
 
   // Auto-promote any new task_complete in shared/ into peer review_requests.
-  if (workspaceRoot) {
+  // L1: the promote/tally/ingest/board WRITE phases run only on the active
+  // manager (gated by `isActiveManager`); standby hosts skip them and defer to
+  // the supervisor. HEAL stays gated on the lease independently (single healer).
+  if (workspaceRoot && isActiveManager) {
     try {
       const promo = await promotePendingTaskCompletes({
         workspaceRoot,
@@ -875,6 +1017,11 @@ export async function runTick(
         action: 'peer_review_promotion_failed', detail: { error: String(e) },
       });
     }
+
+    // L3: the freshly-written board (claimable lane) drives the work_available
+    // wake pass after writeBoard below. review_resolved reconciles from
+    // consensus/resolved/ directly, so it needs no tick-scoped capture.
+    let boardThisTick: BoardModel | null = null;
 
     // Auto-tally any consensus/active/ vote sets that have reached a verdict:
     // write consensus/resolved/<task>.json and clear the active stub. Closes the
@@ -923,14 +1070,77 @@ export async function runTick(
       });
     }
 
+    // Materialize the task catalog into state.tasks[] BEFORE the board write, so
+    // the board surfaces claimable work instead of an empty lane (L0). Idempotent
+    // + digest-gated, so a steady-state tick is a cheap no-op.
+    try {
+      const ing = await ingestTaskCatalog({ workspaceRoot });
+      if (ing.changed) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'log',
+          action: 'task_catalog_ingested',
+          detail: { count: ing.count, sprints: ing.sources.sprints, markdown: ing.sources.markdown },
+        });
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'task_catalog_ingest_failed', detail: { error: String(e) },
+      });
+    }
+
     // Refresh the agendaboard (board.md + board.json).
     try {
-      await writeBoard({ workspaceRoot, generator: 'orchestrator-loop' });
+      boardThisTick = (await writeBoard({ workspaceRoot, generator: 'orchestrator-loop' })).board;
     } catch (e: any) {
       tickErrors++; state.totalErrors++;
       await writeLoopJournal(workspaceRoot, {
         at: new Date().toISOString(), tick: state.tick, phase: 'error',
         action: 'board_write_failed', detail: { error: String(e) },
+      });
+    }
+
+    // L3: WAKE IDLE PEERS. The active supervisor (this whole block is
+    // isActiveManager-gated, so a standby nudges nothing) writes board-grounded
+    // wake nudges to per-agent inboxes — the universal wake a chat-only IDE agent
+    // polls. (a) work_available: match each idle agent to a specific claimable
+    // task; (b) review_resolved: tell each task author its verdict landed. Both
+    // deduped (recent-nudge window + a _notified wx ledger). Best-effort.
+    try {
+      if (boardThisTick && boardThisTick.claimable.length > 0) {
+        const claimed = await readClaimedAgentIds(workspaceRoot);
+        const recentlyWoken = await readRecentlyWoken(workspaceRoot);
+        const idleIds = health.entries
+          .filter((e) => e.state === 'alive')
+          .map((e) => e.agentId)
+          .filter((id) => !claimed.has(id) && !recentlyWoken.has(id));
+        const idle = await readIdleAgentProfiles(workspaceRoot, idleIds);
+        const wake = await wakeIdlePeers({
+          workspaceRoot, claimable: boardThisTick.claimable, idle, recentlyWoken,
+        });
+        if (wake.nudged.length > 0) {
+          await writeLoopJournal(workspaceRoot, {
+            at: new Date().toISOString(), tick: state.tick, phase: 'dispatch',
+            action: 'work_available_nudged',
+            detail: { nudged: wake.nudged.map((m) => ({ agent: m.agentId, task: m.task.task_id })) },
+          });
+        }
+      }
+      // review_resolved: reconcile consensus/resolved/ vs _notified/ and tell any
+      // not-yet-notified author its verdict (self-healing; cheap no-op when none).
+      const notify = await notifyReviewResolved({ workspaceRoot });
+      if (notify.notified.length > 0) {
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: state.tick, phase: 'work',
+          action: 'review_resolved_notified', detail: { authors: notify.notified },
+        });
+      }
+    } catch (e: any) {
+      tickErrors++; state.totalErrors++;
+      await writeLoopJournal(workspaceRoot, {
+        at: new Date().toISOString(), tick: state.tick, phase: 'error',
+        action: 'wake_idle_peers_failed', detail: { error: String(e) },
       });
     }
 
@@ -948,25 +1158,26 @@ export async function runTick(
     // supervisor behavior is unchanged whether or not self-healing is enabled.
     try {
       if (!isFleetHalted(workspaceRoot)) {
-        const sup = await acquireSupervisorRole(workspaceRoot, LOOP_INSTANCE_ID);
-        if (sup.isSupervisor) {
+        // Reuse the lease acquired once at the top of the tick (no re-acquire —
+        // that would double the heartbeat write and open a TOCTOU window).
+        if (sup?.isSupervisor) {
           if (selfHealingEnabled) {
             const heal = await runHealPhase(workspaceRoot, { mode: 'act' });
-            if (heal.actions.length > 0 || sup.stole) {
+            if (heal.actions.length > 0 || sup?.stole) {
               await writeLoopJournal(workspaceRoot, {
                 at: new Date().toISOString(), tick: state.tick, phase: 'work',
                 action: 'heal', detail: {
                   summary: heal.summary, stolen: heal.stolen,
-                  findings: heal.findingsEmitted, took_over: sup.stole,
+                  findings: heal.findingsEmitted, took_over: sup?.stole,
                 },
               });
             }
-          } else if (sup.stole) {
+          } else if (sup?.stole) {
             // Self-healing disabled: do NOT act/report. Still record the lease
             // takeover for audit (internal journal only — not a fleet finding).
             await writeLoopJournal(workspaceRoot, {
               at: new Date().toISOString(), tick: state.tick, phase: 'work',
-              action: 'heal_disabled', detail: { took_over: sup.stole },
+              action: 'heal_disabled', detail: { took_over: sup?.stole },
             });
           }
           // CL-3: dead-session claim reaper — RELEASE-ONLY and gated SEPARATELY
@@ -1000,7 +1211,7 @@ export async function runTick(
         } else {
           await writeLoopJournal(workspaceRoot, {
             at: new Date().toISOString(), tick: state.tick, phase: 'work',
-            action: 'heal_standby', detail: { supervisor: sup.holder },
+            action: 'heal_standby', detail: { supervisor: sup?.holder ?? 'unknown' },
           });
         }
       }
@@ -1011,6 +1222,15 @@ export async function runTick(
         action: 'heal_failed', detail: { error: String(e) },
       });
     }
+  }
+
+  // L1: record when this host stood by (single-active gated it off this tick) so
+  // the deferral to the active supervisor is auditable.
+  if (workspaceRoot && !isActiveManager) {
+    await writeLoopJournal(workspaceRoot, {
+      at: new Date().toISOString(), tick: state.tick, phase: 'log',
+      action: 'manager_standby', detail: { supervisor: sup?.holder ?? null },
+    });
   }
 
   state.lastTickAt = new Date().toISOString();
@@ -1042,6 +1262,14 @@ export function startOrchestratorLoop(opts: OrchestratorLoopOptions = {}): Orche
   // CL-3: OFF by default — release-only dead-session claim reaping when the
   // operator opts in (`autoclaw.selfHealing.reapDeadClaims`).
   const reapDeadClaimsEnabled = opts.reapDeadClaims ?? false;
+  // L1: ON by default — only the active supervisor host runs the fleet WRITE
+  // phases each tick (`autoclaw.cluster.singleActive`).
+  const singleActive = opts.singleActive ?? true;
+  // E1c: OFF by default — wx-lock-serialized acquire + live epoch/term + fencing
+  // only when the operator opts in (`autoclaw.cluster.fencing`).
+  const fencing = opts.fencing ?? false;
+  // E3b: OFF by default — WAKE-ONLY cluster-map gossip (`autoclaw.cluster.gossip`).
+  const gossip = opts.gossip ?? false;
   let running = true;
   let timerId: NodeJS.Timeout | null = null;
   const state = freshLoopState();
@@ -1052,7 +1280,7 @@ export function startOrchestratorLoop(opts: OrchestratorLoopOptions = {}): Orche
   const kick = async (): Promise<TickResult | void> => {
     if (!running) return;
     try {
-      const result = await runTick(workspaceRoot, state, { selfHealingEnabled, reapDeadClaims: reapDeadClaimsEnabled });
+      const result = await runTick(workspaceRoot, state, { selfHealingEnabled, reapDeadClaims: reapDeadClaimsEnabled, singleActive, fencing, gossip });
       if (workspaceRoot) await writeLoopState(workspaceRoot, state);
       opts.onTick?.(result);
     } catch (e) {
