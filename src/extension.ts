@@ -67,12 +67,15 @@ import {
   broadcastCapabilityQueries,
   resolveCapabilityOffers,
 } from './orchestrate';
-import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
+import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult, AcceptanceCheck } from './orchestrate';
 import { classifyConsensusActive, type ConsensusActiveEntry } from './orchestrator/consensusActiveScan';
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
 import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
 import { startIndexWatchService, loadConfig as loadIntelligenceConfig, type IndexWatchHandle } from './intelligence';
+import { writeAgentOrientation } from './intelligence/orientation';
+import { renderOrientationBlock } from './intelligence/contract';
+import { registerFleetStatusBar } from './statusbar/statusBar';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
@@ -411,6 +414,21 @@ export function activate(context: vscode.ExtensionContext) {
   // failure never blocks activation.
   void initFabricBus();
 
+  // Fleet presence in the status bar ("N agents working, 1 needs review").
+  // The implementation shipped earlier but was never wired into activate();
+  // one call lights it up. Best-effort — never block activation on it.
+  if (currentWorkspace) {
+    try {
+      registerFleetStatusBar(context, {
+        workspaceRoot: currentWorkspace,
+        selfAgentId: activeHostAgentId() ?? 'claude-code',
+        command: 'autoclaw.manager.open',
+      });
+    } catch (err) {
+      console.error('AutoClaw: fleet status bar failed to start', err);
+    }
+  }
+
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.enableAll', () => {
       if (shouldShowNotification('info')) {
@@ -674,6 +692,13 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('autoclaw.orchestrate.merge', () =>
       withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateMergeCommand),
     )
+  );
+
+  // Run the manifest-declared acceptance gates on their own (read-only; ungated
+  // like status). A discrete "Run Gates" so an agent or user can check the gates
+  // without driving a full consensus review.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.orchestrate.runGates', () => orchestrateRunGatesCommand())
   );
 
   // Bridge commands
@@ -2968,7 +2993,9 @@ task_complete, finding_report, question, answer.
 
 ## Send Messages
 
-Write JSON to target inbox. Filename: \`{timestamp}-{type}-${agentId}.json\`
+Write one JSON file per message to the target inbox. Filename: \`{timestamp}-{type}-${agentId}.json\`.
+Every message MUST include: \`id\` (unique), \`from\`, \`session_id\` (yours, stable for the session),
+\`to\`, \`type\`, and \`timestamp\`. The \`session_id\` is how two concurrent windows of one agent are told apart.
 ${inboxLines}
 - Broadcast: \`.autoclaw/orchestrator/comms/inboxes/shared/\`
 
@@ -2987,6 +3014,8 @@ Write votes to \`consensus/active/{task_id}-${agentId}.json\`.
 
 Check \`.autoclaw/orchestrator/sprints/plan-summary.yaml\` for assignments.
 Stay in your assigned scope. Coordinate via messages for cross-scope changes.
+
+${renderOrientationBlock()}
 `;
 }
 
@@ -3407,6 +3436,14 @@ async function provisionCrossAgentComms(): Promise<void> {
     }
   }
 
+  // Drop AutoClaw's authoritative self-description into the tree (AGENT-ORIENTATION.md
+  // + per-store READMEs) so any agent — in any tool, even one without the AutoClaw
+  // extension — reads accurate facts instead of reverse-engineering (and mis-describing)
+  // the layout. Best-effort and churn-free; never blocks provisioning.
+  try {
+    await writeAgentOrientation(workspaceRoot);
+  } catch { /* best-effort */ }
+
   // Write registry
   const registry = {
     agents: detectedAgents.map(a => ({
@@ -3690,6 +3727,66 @@ async function orchestrateAssignNextCommand(): Promise<void> {
     vscode.window.showInformationMessage(
       'Orchestrate: use /orchestrate next in chat to assign the next sprint.'
     );
+  }
+}
+
+/**
+ * Run every acceptance check declared across the manifest tasks, on its own,
+ * and report pass/fail. Read-only: it runs the declared checks and prints
+ * results — it does not vote, gate a merge, or change any state. Reuses the same
+ * `readManifestTaskGates` + `runAcceptanceChecks` the consensus review uses.
+ */
+async function orchestrateRunGatesCommand(): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    vscode.window.showErrorMessage('Orchestrate: open a workspace first.');
+    return;
+  }
+
+  const channel = getOrchestrateOutputChannel();
+  channel.show(true);
+  channel.appendLine('[orchestrate] Running acceptance gates...');
+
+  const manifestDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'manifests');
+  const { tasks, warnings } = await readManifestTaskGates(manifestDir);
+  for (const w of warnings) {
+    channel.appendLine(`[orchestrate] Manifest warning: ${w}`);
+  }
+
+  // Collect every distinct acceptance check across tasks (dedup by command).
+  const seen = new Set<string>();
+  const checks: AcceptanceCheck[] = [];
+  for (const [, def] of tasks) {
+    for (const c of def.acceptance ?? []) {
+      if (!seen.has(c.command)) {
+        seen.add(c.command);
+        checks.push(c);
+      }
+    }
+  }
+
+  if (checks.length === 0) {
+    channel.appendLine('[orchestrate] No acceptance checks declared in any manifest task.');
+    vscode.window.showInformationMessage('Orchestrate: no acceptance gates declared in manifests.');
+    return;
+  }
+
+  channel.appendLine(`[orchestrate] Running ${checks.length} acceptance check(s)...`);
+  const results = await runAcceptanceChecks(checks, { cwd: workspaceRoot });
+  let passed = 0;
+  for (const g of results) {
+    if (g.passed) {
+      passed++;
+    }
+    channel.appendLine(`   ${g.passed ? '✅' : '❌'} ${g.command} → exit ${g.exit_code} (${g.duration_ms}ms)`);
+  }
+  const failed = results.length - passed;
+  const summary = `Acceptance gates: ${passed}/${results.length} passed${failed ? `, ${failed} failed` : ''}.`;
+  channel.appendLine(`[orchestrate] ${summary}`);
+  if (failed > 0) {
+    vscode.window.showWarningMessage(`Orchestrate — ${summary} See the AutoClaw Orchestrate output for details.`);
+  } else {
+    vscode.window.showInformationMessage(`Orchestrate — ${summary}`);
   }
 }
 

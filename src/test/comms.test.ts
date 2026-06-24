@@ -104,7 +104,7 @@ suite('Comms — messages', () => {
   test('readSharedInbox reads the shared/ directory', async () => {
     const dir = makeTmpDir();
     await sendMessage(dir, {
-      id: '', from: 'orchestrator', to: 'shared', type: 'task_assignment',
+      id: '', from: 'orchestrator', to: 'shared', type: 'task_assign',
       timestamp: '', payload: { sprint: 1 }, requires_response: false,
     });
     const shared = await readSharedInbox(dir);

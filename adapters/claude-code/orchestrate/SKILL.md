@@ -12,6 +12,7 @@ description: Multi-agent parallel development orchestrator. Reads task manifests
 3. **Idempotency.** `plan` with an existing manifest re-generates sprints in place. `assign` on an already-assigned sprint updates the assignment.
 4. **Scope isolation is sacred.** Never assign overlapping file scopes to parallel agents in the same sprint. The planner MUST detect and prevent conflicts.
 5. **Output discipline.** Confirm in ≤5 lines: what changed, sprint count, agent assignments, next action. No reasoning narration.
+6. **Read, don't reinvent, AutoClaw context.** Before working, read `.autoclaw/AGENT-ORIENTATION.md` and `.autoclaw/agent-style.md`. Never hand-author your own AutoClaw steering file — AutoClaw generates and refreshes its own; a manual copy drifts and tends to get command/store facts wrong.
 
 ## On Invocation
 
@@ -38,8 +39,30 @@ Determine the sub-command from the user's message:
    - `.autoclaw/orchestrator/sprints/` — directory for generated sprint plans
    - `.autoclaw/orchestrator/reviews/` — directory for review reports
    - `.autoclaw/orchestrator/logs/` — directory for execution logs
-3. If a spec `tasks.md` exists (e.g., `.kiro/specs/*/tasks.md`), offer to generate a manifest from it.
-4. Confirm: "Orchestrator initialized. Create a manifest in `.autoclaw/orchestrator/manifests/` or run `/orchestrate plan` to generate sprints."
+3. Write AutoClaw's self-description so every agent (any IDE/tool) reads accurate facts instead of reverse-engineering the tree. If `.autoclaw/AGENT-ORIENTATION.md` is missing, create it with EXACTLY this canonical content — do not paraphrase or invent; wrong command/store facts are the #1 cross-agent error (keep in sync with `src/intelligence/contract.ts`):
+
+   ```markdown
+   # Working in an AutoClaw project
+
+   > Authoritative AutoClaw self-description. Do not hand-author a competing steering file — read this one.
+
+   AutoClaw coordinates multiple AI agents on one repo, gives the project durable memory, and serves distilled context back to cut token waste. It works through files under `.autoclaw/` plus host-native rule/steering files — there is no hidden server to call.
+
+   **Before work:** read `.autoclaw/agent-style.md` (learned patterns), `.autoclaw/orchestrator/board.json` (tasks/assignments), and your mailbox `.autoclaw/orchestrator/comms/inboxes/<your-agent-id>/` plus `.../inboxes/shared/`.
+
+   **Commands and exactly what each writes:**
+   - `/learn` → `.autoclaw/learnings/insight-<ts>.md`, regenerates `.autoclaw/agent-style.md`, and records coordination facts to `.autoclaw/kg/kg.db`.
+   - `/index-code` → the VECTOR store `.autoclaw/vector/db.sqlite` ONLY. It does NOT write the knowledge graph.
+   - `/retrieve <q>` and `/search <q>` → read-only semantic retrieval.
+
+   **Do not confuse the stores:** `.autoclaw/vector/db.sqlite` holds code + learning embeddings for semantic search; `.autoclaw/kg/kg.db` holds multi-agent COORDINATION facts (consensus verdicts, review findings), NOT code symbols/dependencies. `/index-code` never writes the KG.
+
+   **Every coordination message** needs a unique `id`, your `session_id`, `from`, `to`, `type`, and `timestamp`. The `session_id` is how concurrent windows of one agent are told apart.
+   ```
+
+   When the AutoClaw extension is installed it regenerates the full version of this file automatically; never hand-author a competing steering file.
+4. If a spec `tasks.md` exists (e.g., `.kiro/specs/*/tasks.md`), offer to generate a manifest from it.
+5. Confirm: "Orchestrator initialized. Create a manifest in `.autoclaw/orchestrator/manifests/` or run `/orchestrate plan` to generate sprints."
 
 ---
 

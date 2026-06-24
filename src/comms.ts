@@ -83,7 +83,7 @@ export function detectAutoclawHostAgent(appName: string): string {
 export type MessageType =
   | 'review_request' | 'review_response'
   | 'consensus_vote' | 'consensus_result'
-  | 'task_claim' | 'task_complete' | 'task_assignment'
+  | 'task_claim' | 'task_complete' | 'task_assign'
   | 'finding_report' | 'question' | 'answer'
   | 'scope_conflict' | 'escalation' | 'handoff' | 'system'
   // Phase-3 capability discovery
