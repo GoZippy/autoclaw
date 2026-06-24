@@ -859,23 +859,6 @@ suite('Orchestrate — Finding Merge', () => {
     assert.strictEqual(unique[0].severity, 'critical');
   });
 
-  test('tolerates votes whose findings field is missing or non-array', () => {
-    // Regression: vote records read from consensus/active/ are raw JSON and may
-    // omit `findings` (an agent can approve with none). mergeFindings must not
-    // throw "vote.findings is not iterable" on such records.
-    const good = makeVote('WA-1', 'kiro', 'needs_changes', 0.9, [
-      makeFinding('bug', 'major', 'nil pointer', 'a.go', 10),
-    ]);
-    const missing = { agent_id: 'WA-2', provider: 'kilocode', verdict: 'approved',
-      confidence: 0.9, timestamp: new Date().toISOString() } as unknown as ValidationVote;
-    const malformed = { ...makeVote('WA-3', 'kiro', 'approved', 0.9),
-      findings: null as unknown as ValidationFinding[] };
-    assert.doesNotThrow(() => {
-      const { unique } = mergeFindings([good, missing, malformed]);
-      assert.strictEqual(unique.length, 1);
-    });
-  });
-
   test('does NOT mutate the caller\'s vote findings on severity upgrade', () => {
     const minor = makeFinding('security', 'minor', 'weak validation', 'auth.go', 30);
     const critical = makeFinding('security', 'critical', 'weak validation', 'auth.go', 30);

@@ -29,6 +29,7 @@ import {
   buildCostLedger,
   buildPresence,
   buildPending,
+  buildSupervisorStatus,
   buildFleetDashboard,
   mergeFleetHeartbeats,
   fleetKey,
@@ -50,9 +51,7 @@ import {
   readCostLedger,
   appendCostLedgerEntry,
   recordDispatchCost,
-  unionPresenceSources,
 } from '../panel/fleetData';
-import type { BeaconRow } from '../fleet/beacons';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -603,6 +602,103 @@ function writeJson(filePath: string, obj: unknown): void {
   fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), 'utf8');
 }
 
+suite('Fleet panel — supervisor status (L4)', () => {
+  const TTL = 90_000;
+  function lease(holder: string, hbSec: number): { holder: string; acquired_at: string; heartbeat: string; expires: string } {
+    return { holder, acquired_at: iso(-120), heartbeat: iso(hbSec), expires: iso(hbSec + 90) };
+  }
+
+  test('null lease → none', () => {
+    const s = buildSupervisorStatus(null, 'me', NOW);
+    assert.strictEqual(s.state, 'none');
+    assert.strictEqual(s.holder, null);
+    assert.strictEqual(s.isSelf, false);
+    assert.strictEqual(s.expiresInMs, null);
+  });
+
+  test('fresh lease held by THIS instance → active', () => {
+    const s = buildSupervisorStatus(lease('me', -5), 'me', NOW);
+    assert.strictEqual(s.state, 'active');
+    assert.strictEqual(s.isSelf, true);
+    assert.ok((s.expiresInMs ?? 0) > 0, 'positive countdown');
+  });
+
+  test('fresh lease held by ANOTHER instance → standby (text interpolates the holder)', () => {
+    const s = buildSupervisorStatus(lease('other-loop', -5), 'me', NOW);
+    assert.strictEqual(s.state, 'standby');
+    assert.strictEqual(s.isSelf, false);
+    assert.strictEqual(s.holder, 'other-loop');
+    assert.strictEqual(s.text, 'Standby — active: other-loop', 'chip label carries the holder');
+  });
+
+  test('stale lease → none, isSelf reflects the lapsed holder, countdown is negative', () => {
+    const s = buildSupervisorStatus(lease('me', -200), 'me', NOW, TTL);
+    assert.strictEqual(s.state, 'none');
+    assert.strictEqual(s.isSelf, true, 'was us, just lapsed (not renewed)');
+    assert.ok((s.expiresInMs ?? 0) < 0, 'negative countdown when lapsed');
+  });
+
+  test('unparseable timestamps do not throw; expiresInMs null', () => {
+    const s = buildSupervisorStatus(
+      { holder: 'x', acquired_at: 'nope', heartbeat: 'nope', expires: 'nope' }, 'me', NOW);
+    assert.strictEqual(s.state, 'none', 'unparseable heartbeat is not fresh');
+    assert.strictEqual(s.expiresInMs, null);
+  });
+
+  test('the load-bearing trap: comparing to an AGENT id never reads "you"', () => {
+    // holder is a loop-instance id; selfAgentId ('claude-code') must NOT match it.
+    const s = buildSupervisorStatus(lease('orchestrator-loop-ab12', -5), 'claude-code', NOW);
+    assert.strictEqual(s.state, 'standby');
+    assert.strictEqual(s.isSelf, false);
+  });
+
+  test('E2c: no roster → no standbys/quorum fields (backward-compat with L4 hand-built literals)', () => {
+    const s = buildSupervisorStatus(lease('me', -5), 'me', NOW);
+    assert.strictEqual(s.standbys, undefined);
+    assert.strictEqual(s.quorumSize, undefined);
+  });
+
+  test('E2c: a roster attaches a ranked standby list (1-based rank, isSelf, capability score, quorum)', () => {
+    const roster = {
+      standbys: [
+        { instance_id: 'loop-a', score: 1, last_seen: iso(-5) },
+        { instance_id: 'me', score: 1, last_seen: iso(-5) },
+        { instance_id: 'loop-c', score: 0.5, last_seen: iso(-5) },
+      ],
+      quorumSize: 2,
+    };
+    const s = buildSupervisorStatus(lease('orchestrator-active', -5), 'me', NOW, TTL, roster);
+    assert.strictEqual(s.quorumSize, 2);
+    assert.deepStrictEqual(s.standbys?.map((x) => x.instanceId), ['loop-a', 'me', 'loop-c'], 'preserves the roster promotion order');
+    assert.deepStrictEqual(s.standbys?.map((x) => x.rank), [1, 2, 3], '1-based rank');
+    assert.strictEqual(s.standbys?.find((x) => x.instanceId === 'me')?.isSelf, true, 'self flagged');
+    assert.strictEqual(s.standbys?.find((x) => x.instanceId === 'loop-a')?.isSelf, false);
+    assert.strictEqual(s.standbys?.[2].score, 0.5, 'capability score carried through');
+  });
+
+  test('E2c: the roster is independent of the lease state (attaches even when none)', () => {
+    const s = buildSupervisorStatus(null, 'me', NOW, TTL,
+      { standbys: [{ instance_id: 'loop-a', score: 1, last_seen: iso(-5) }], quorumSize: 1 });
+    assert.strictEqual(s.state, 'none', 'lease-derived state unchanged by the roster');
+    assert.strictEqual(s.standbys?.length, 1, 'roster still attached');
+  });
+
+  test('E2c: the builder PRESERVES the input order verbatim (does NOT re-rank — the writer is the source of truth)', () => {
+    // Feed an order that is NOT rankStandbys-canonical (loop-c has the LOWER score
+    // but comes first). A correct pure-render builder keeps it; a hidden re-sort
+    // would move loop-a (score 1) to rank 1 — this asserts it does not.
+    const s = buildSupervisorStatus(lease('orchestrator-active', -5), 'me', NOW, TTL, {
+      standbys: [
+        { instance_id: 'loop-c', score: 0.5, last_seen: iso(-5) },
+        { instance_id: 'loop-a', score: 1.0, last_seen: iso(-5) },
+      ],
+      quorumSize: 2,
+    });
+    assert.deepStrictEqual(s.standbys?.map((x) => [x.rank, x.instanceId]), [[1, 'loop-c'], [2, 'loop-a']],
+      'rank follows the persisted array order, not a re-sort by score');
+  });
+});
+
 suite('Fleet panel — fleetData read layer', () => {
   test('deriveHealthFromHeartbeats maps age to states', () => {
     const hbs = new Map<string, RawHeartbeat>([
@@ -775,117 +871,96 @@ suite('Fleet panel — fleetData read layer', () => {
       assert.strictEqual(model.cards.length, 0);
       assert.strictEqual(model.awaitingYou.length, 0);
       assert.strictEqual(model.presence.total, 0);
+      assert.strictEqual(model.supervisor?.state, 'none', 'no lease → none');
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }
   });
 
-  // A joined agent (e.g. Kiro) that checked in but was never written into
-  // registry.json must still appear in the fleet — presence is the source of
-  // truth, not the registry roster.
-  test('gatherFleetData surfaces an unregistered agent from a heartbeat alone', async () => {
+  test('gatherFleetData surfaces the supervisor lease (active for self, standby for another)', async () => {
     const ws = makeWorkspace();
     try {
       const comms = path.join(ws, '.autoclaw', 'orchestrator', 'comms');
-      // No registry.json at all — Kiro only wrote a heartbeat.
-      writeJson(path.join(comms, 'heartbeats', 'kiro.json'), {
-        agent_id: 'kiro', timestamp: iso(-4), current_task: 'wiring up', session_id: 's-kiro',
+      writeJson(path.join(comms, 'supervisor.lock.json'), {
+        holder: 'orchestrator-loop-self', acquired_at: iso(-60), heartbeat: iso(-3), expires: iso(87),
       });
-      const model = await gatherFleetData({ workspaceRoot: ws, selfAgentId: 'claude-code', now: NOW });
-      const kiro = model.cards.find(c => c.agentId === 'kiro');
-      assert.ok(kiro, 'kiro surfaces as a card with no registry row');
-      assert.strictEqual(kiro!.state, 'alive');
-      assert.strictEqual(kiro!.currentTask, 'wiring up');
-      assert.strictEqual(model.presence.total, 1);
+      const mine = await gatherFleetData({
+        workspaceRoot: ws, selfAgentId: 'claude-code', selfInstanceId: 'orchestrator-loop-self', now: NOW,
+      });
+      assert.strictEqual(mine.supervisor?.state, 'active');
+      assert.strictEqual(mine.supervisor?.isSelf, true);
+      assert.strictEqual(mine.supervisor?.holder, 'orchestrator-loop-self');
+
+      const other = await gatherFleetData({
+        workspaceRoot: ws, selfAgentId: 'claude-code', selfInstanceId: 'orchestrator-loop-other', now: NOW,
+      });
+      assert.strictEqual(other.supervisor?.state, 'standby');
+      assert.strictEqual(other.supervisor?.isSelf, false);
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }
   });
 
-  test('gatherFleetData surfaces an unregistered agent from a workspace beacon', async () => {
+  test('gatherFleetData treats a present-but-STALE lease as none (readSupervisorLease does not filter stale)', async () => {
     const ws = makeWorkspace();
     try {
       const comms = path.join(ws, '.autoclaw', 'orchestrator', 'comms');
-      // Kiro checked in only via a workspace-scoped beacon, no heartbeat/registry.
-      writeJson(path.join(comms, 'beacons', 'kiro.json'), {
-        agent_id: 'kiro', timestamp: iso(-10), role: 'Reviewer', host: 'kiro', workspace: ws,
+      // heartbeat ~200s old, well past the 90s TTL → stale on disk.
+      writeJson(path.join(comms, 'supervisor.lock.json'), {
+        holder: 'orchestrator-loop-self', acquired_at: iso(-260), heartbeat: iso(-200), expires: iso(-110),
       });
-      const model = await gatherFleetData({ workspaceRoot: ws, selfAgentId: 'claude-code', now: NOW });
-      const kiro = model.cards.find(c => c.agentId === 'kiro');
-      assert.ok(kiro, 'kiro surfaces as a card from its beacon');
-      assert.strictEqual(kiro!.role, 'Reviewer', 'role carried off the beacon');
-      assert.ok(model.presence.total >= 1);
+      const model = await gatherFleetData({
+        workspaceRoot: ws, selfAgentId: 'claude-code', selfInstanceId: 'orchestrator-loop-self', now: NOW,
+      });
+      assert.strictEqual(model.supervisor?.state, 'none', 'a stale lease is not an active orchestrator');
+      assert.strictEqual(model.supervisor?.isSelf, true, 'still us, just lapsed');
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }
   });
-});
 
-// ---------------------------------------------------------------------------
-// Presence union (pure)
-// ---------------------------------------------------------------------------
-
-function beaconRow(agentId: string, ageSec: number, extra: Partial<BeaconRow> = {}): BeaconRow {
-  return {
-    agent_id: agentId,
-    timestamp: iso(-ageSec),
-    origin: 'beacon',
-    workspace_id: '',
-    age_ms: ageSec * 1000,
-    stale: false,
-    ...extra,
-  };
-}
-
-suite('Fleet panel — presence union (FleetData.unionPresenceSources)', () => {
-  test('synthesizes a profile for a heartbeat-only agent missing from the registry', () => {
-    const { profiles, heartbeats } = unionPresenceSources({
-      profiles: [],
-      heartbeats: new Map<string, RawHeartbeat>([['kiro', { agent_id: 'kiro', timestamp: iso(-5) }]]),
-      beacons: [],
-    });
-    assert.deepStrictEqual(profiles.map(p => p.id), ['kiro']);
-    assert.ok(heartbeats.has('kiro'));
+  test('E2c: gatherFleetData surfaces the START LOOP ranked standbys + quorum from cluster-map.json', async () => {
+    const ws = makeWorkspace();
+    try {
+      const comms = path.join(ws, '.autoclaw', 'orchestrator', 'comms');
+      writeJson(path.join(comms, 'cluster-map.json'), {
+        version: 1, epoch: 3, term: 2,
+        active_manager: { instance_id: 'orchestrator-loop-self', acquired_at: iso(-60), lease_heartbeat: iso(-3), lease_expires: iso(87) },
+        standbys: [
+          { instance_id: 'orchestrator-loop-peer', score: 1, last_seen: iso(-4) },
+          { instance_id: 'orchestrator-loop-self', score: 1, last_seen: iso(-3) },
+        ],
+        monitors: ['orchestrator-loop-peer', 'orchestrator-loop-self'],
+        quorum_size: 2, fenced: [],
+      });
+      const model = await gatherFleetData({
+        workspaceRoot: ws, selfAgentId: 'claude-code', selfInstanceId: 'orchestrator-loop-self', now: NOW,
+      });
+      assert.strictEqual(model.supervisor?.state, 'active', 'self holds the active lease');
+      assert.strictEqual(model.supervisor?.quorumSize, 2);
+      assert.deepStrictEqual(model.supervisor?.standbys?.map((s) => s.instanceId), ['orchestrator-loop-peer', 'orchestrator-loop-self']);
+      assert.deepStrictEqual(model.supervisor?.standbys?.map((s) => s.rank), [1, 2]);
+      assert.strictEqual(model.supervisor?.standbys?.find((s) => s.instanceId === 'orchestrator-loop-self')?.isSelf, true, 'self flagged in the roster');
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
   });
 
-  test('folds a beacon into the heartbeat map and carries its role onto the profile', () => {
-    const { profiles, heartbeats } = unionPresenceSources({
-      profiles: [],
-      heartbeats: new Map<string, RawHeartbeat>(),
-      beacons: [beaconRow('kiro', 5, { role: 'Reviewer', host: 'kiro' })],
-    });
-    assert.strictEqual(profiles.length, 1);
-    assert.strictEqual(profiles[0].role, 'Reviewer');
-    assert.strictEqual(heartbeats.get('kiro')?.host, 'kiro');
-  });
-
-  test('keeps a registered agent single and preserves its registry profile', () => {
-    const { profiles } = unionPresenceSources({
-      profiles: [{ id: 'claude-code', name: 'Claude Code', role: 'Panel' }],
-      heartbeats: new Map<string, RawHeartbeat>([['claude-code', { agent_id: 'claude-code', timestamp: iso(-2) }]]),
-      beacons: [beaconRow('claude-code', 1, { role: 'ShouldNotWin' })],
-    });
-    const cc = profiles.filter(p => p.id === 'claude-code');
-    assert.strictEqual(cc.length, 1, 'not duplicated');
-    assert.strictEqual(cc[0].name, 'Claude Code');
-    assert.strictEqual(cc[0].role, 'Panel', 'registry role preserved over the beacon');
-  });
-
-  test('the in-tree heartbeat wins over a beacon for the same agent', () => {
-    const hbTs = iso(-30);
-    const { heartbeats } = unionPresenceSources({
-      profiles: [],
-      heartbeats: new Map<string, RawHeartbeat>([['kiro', { agent_id: 'kiro', timestamp: hbTs }]]),
-      beacons: [beaconRow('kiro', 1)],
-    });
-    assert.strictEqual(heartbeats.get('kiro')?.timestamp, hbTs, 'heartbeat not overwritten by the beacon');
-  });
-
-  test('does not mutate the caller inputs', () => {
-    const profiles: RawAgentProfile[] = [];
-    const heartbeats = new Map<string, RawHeartbeat>();
-    unionPresenceSources({ profiles, heartbeats, beacons: [beaconRow('kiro', 2)] });
-    assert.strictEqual(profiles.length, 0, 'input profiles untouched');
-    assert.strictEqual(heartbeats.size, 0, 'input heartbeats untouched');
+  test('E2c: a legacy-lease-only workspace (no roster) omits the standby list', async () => {
+    const ws = makeWorkspace();
+    try {
+      const comms = path.join(ws, '.autoclaw', 'orchestrator', 'comms');
+      writeJson(path.join(comms, 'supervisor.lock.json'), {
+        holder: 'orchestrator-loop-self', acquired_at: iso(-60), heartbeat: iso(-3), expires: iso(87),
+      });
+      const model = await gatherFleetData({
+        workspaceRoot: ws, selfAgentId: 'claude-code', selfInstanceId: 'orchestrator-loop-self', now: NOW,
+      });
+      assert.strictEqual(model.supervisor?.state, 'active', 'legacy lease still drives the active chip');
+      assert.strictEqual(model.supervisor?.standbys, undefined, 'no standbys → list omitted (degrades to L4)');
+      assert.strictEqual(model.supervisor?.quorumSize, undefined);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
   });
 });

@@ -17,6 +17,7 @@ import {
   NEXT_DISPATCH_TTL_MS,
   buildWorkLoopPrompt,
   runTick,
+  LOOP_INSTANCE_ID,
   getAgentRegistry,
   startOrchestratorLoop,
   COMMS_DIR_REL,
@@ -460,6 +461,391 @@ suite('runTick', () => {
 // ---------------------------------------------------------------------------
 // startOrchestratorLoop lifecycle
 // ---------------------------------------------------------------------------
+
+function writeForeignLease(ws: string, holder = 'other-loop'): void {
+  const now = Date.now();
+  const lease = {
+    holder,
+    acquired_at: new Date(now - 5_000).toISOString(),
+    heartbeat: new Date(now).toISOString(),       // fresh ⇒ not stale ⇒ we stand by
+    expires: new Date(now + 90_000).toISOString(),
+  };
+  fs.writeFileSync(
+    path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'supervisor.lock.json'),
+    JSON.stringify(lease, null, 2), 'utf8',
+  );
+}
+function boardJsonPath(ws: string): string {
+  return path.join(ws, '.autoclaw', 'orchestrator', 'board.json');
+}
+function freshLoopStateForTest(): LoopState {
+  return {
+    tick: 0, startedAt: new Date().toISOString(), lastTickAt: null,
+    totalAgentsSeen: 0, totalTicks: 0, totalErrors: 0, totalDispatches: 0, vendorStats: {},
+  };
+}
+
+suite('L1: single-active manager gate', () => {
+  test('a standby host (foreign fresh lease) does NOT write the board when singleActive', async () => {
+    const root = makeTmp('l1-standby');
+    try {
+      writeForeignLease(root);
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true });
+      assert.strictEqual(r.errors, 0);
+      assert.strictEqual(fs.existsSync(boardJsonPath(root)), false, 'standby must not write board.json');
+      const journal = fs.readFileSync(
+        path.join(root, '.autoclaw', 'orchestrator', 'comms', 'loop-journal.jsonl'), 'utf8');
+      assert.ok(journal.includes('manager_standby'), 'standby deferral is journalled');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('the same standby DOES write the board when singleActive is off (legacy)', async () => {
+    const root = makeTmp('l1-legacy');
+    try {
+      writeForeignLease(root);
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: false });
+      assert.strictEqual(r.errors, 0);
+      assert.strictEqual(fs.existsSync(boardJsonPath(root)), true, 'legacy mode writes board on every host');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('a solo host wins the lease and writes the board (default singleActive=true), no orphan temps', async () => {
+    const root = makeTmp('l1-solo');
+    try {
+      const r = await runTick(root, freshLoopStateForTest(), {}); // default singleActive: true
+      assert.strictEqual(r.errors, 0);
+      assert.strictEqual(fs.existsSync(boardJsonPath(root)), true, 'solo host is supervisor → writes board');
+      const orchDir = path.join(root, '.autoclaw', 'orchestrator');
+      const leftovers = fs.readdirSync(orchDir).filter(f => f.includes('.tmp-'));
+      assert.deepStrictEqual(leftovers, [], 'atomic publish leaves no orphan temp files');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // The HEADLINE fix: a standby must DISCOVER nothing, so two windows sharing a
+  // project can't double-dispatch the same idle agent. Proven spawn-free: a
+  // positive control shows the idle live agent IS discoverable, then the standby
+  // tick gates `workFound` to [] anyway. (We assert on discovery, not real
+  // dispatch — dispatchWork opens a KG handle and is exercised elsewhere.)
+  // Deleting the `isActiveManager ? discoverWork(...) : []` guard fails this test.
+  test('a standby gates discovery to [] even when an idle live agent is discoverable', async () => {
+    const root = makeTmp('l1-disp-standby');
+    try {
+      writeHeartbeat(root, 'agent-a', 5_000); // fresh ⇒ alive + idle ⇒ discoverable
+      // Positive control: prove the fixture really is discoverable (not an empty
+      // result that would make the standby assertion vacuous).
+      const health = await healthCheck(root);
+      const discoverable = await discoverWork(root, health);
+      assert.ok(discoverable.length >= 1, 'fixture sanity: an idle live agent is discoverable');
+      // Standby: runTick must gate discovery to [] despite the discoverable agent.
+      writeForeignLease(root);
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true });
+      assert.strictEqual(r.errors, 0);
+      assert.strictEqual(r.workFound.length, 0, 'standby gates discovery to [] despite a discoverable agent');
+      assert.strictEqual(r.dispatched, 0, 'standby dispatches nothing');
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+
+  // Proves a SECOND gated write phase (L0 task-catalog ingest) is also single-active:
+  // a standby leaves state.json untouched; a solo supervisor materializes the catalog.
+  test('a standby does NOT ingest the task catalog; a solo supervisor does', async () => {
+    const SPRINT = [
+      'sprint: 1', 'status: assigned', 'assignments:', '  - agent: WA-1', '    tasks:',
+      '      - id: B1', '        name: "x"', '        status: pending', '    branch: b',
+    ].join('\n');
+    const statePath = (ws: string): string => path.join(ws, '.autoclaw', 'orchestrator', 'state.json');
+
+    const standby = makeTmp('l1-ingest-standby');
+    try {
+      fs.writeFileSync(path.join(standby, '.autoclaw', 'orchestrator', 'sprints', 'sprint-1.yaml'), SPRINT, 'utf8');
+      writeForeignLease(standby);
+      await runTick(standby, freshLoopStateForTest(), { singleActive: true });
+      assert.strictEqual(fs.existsSync(statePath(standby)), false, 'standby must not materialize state.tasks');
+    } finally { fs.rmSync(standby, { recursive: true, force: true }); }
+
+    const solo = makeTmp('l1-ingest-solo');
+    try {
+      fs.writeFileSync(path.join(solo, '.autoclaw', 'orchestrator', 'sprints', 'sprint-1.yaml'), SPRINT, 'utf8');
+      await runTick(solo, freshLoopStateForTest(), { singleActive: true });
+      const state = JSON.parse(fs.readFileSync(statePath(solo), 'utf8'));
+      assert.deepStrictEqual(state.tasks.map((t: any) => t.id), ['B1'], 'solo supervisor materializes the catalog');
+    } finally { fs.rmSync(solo, { recursive: true, force: true }); }
+  });
+});
+
+suite('L3: wake idle peers (runTick integration)', () => {
+  test('a solo supervisor writes a work_available nudge to an idle agent for a claimable task', async () => {
+    const root = makeTmp('l3-wake');
+    try {
+      const orch = path.join(root, '.autoclaw', 'orchestrator');
+      // A claimable task — seeded via a sprint YAML so the L0 catalog ingest (which
+      // runs before writeBoard and would otherwise wipe a hand-seeded state.tasks)
+      // materializes it into board.claimable.
+      fs.writeFileSync(path.join(orch, 'sprints', 'sprint-1.yaml'), [
+        'sprint: 1', 'status: assigned', 'assignments:', '  - agent: WA-1', '    tasks:',
+        '      - id: T1', '        name: "Do T1"', '        status: pending', '    branch: b',
+      ].join('\n'), 'utf8');
+      fs.writeFileSync(path.join(orch, 'comms', 'registry.json'), JSON.stringify({
+        agents: [{ id: 'kiro', agent_type: 'coder', capabilities: ['code'], trust_level: 'high' }],
+      }, null, 2), 'utf8');
+      writeHeartbeat(root, 'kiro', 5_000); // fresh ⇒ alive + idle
+
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true });
+      assert.strictEqual(r.errors, 0);
+
+      const inbox = path.join(orch, 'comms', 'inboxes', 'kiro');
+      const msgs = (fs.existsSync(inbox) ? fs.readdirSync(inbox) : [])
+        .filter((f) => f.endsWith('.json'))
+        .map((f) => JSON.parse(fs.readFileSync(path.join(inbox, f), 'utf8')));
+      const wa = msgs.find((m: any) => m.type === 'work_available');
+      assert.ok(wa, 'idle agent got a work_available nudge');
+      assert.strictEqual(wa.task_id, 'T1');
+      assert.strictEqual(wa.payload.board_grounded, true);
+      assert.ok(wa.expires_at, 'nudge carries an expiry');
+
+      const journal = fs.readFileSync(path.join(orch, 'comms', 'loop-journal.jsonl'), 'utf8');
+      assert.ok(journal.includes('work_available_nudged'), 'the nudge is journalled');
+    } finally {
+      // dispatchWork opens a KG handle that can briefly lock the temp dir on Windows.
+      try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  });
+});
+
+suite('E2b-ii: START LOOP monitor roster (runTick, fencing)', () => {
+  function clusterMap(ws: string): any {
+    return JSON.parse(fs.readFileSync(path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'cluster-map.json'), 'utf8'));
+  }
+  function monitorsDir(ws: string): string {
+    return path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'monitors');
+  }
+  function seedPeerMonitor(ws: string, id: string): void {
+    fs.mkdirSync(monitorsDir(ws), { recursive: true });
+    // Fresh wall-clock timestamp so it is live when runTick reads at its own now.
+    fs.writeFileSync(path.join(monitorsDir(ws), `${id}.json`), JSON.stringify({ instance_id: id, timestamp: new Date().toISOString() }), 'utf8');
+  }
+
+  test('a solo fenced host records ITSELF as the sole monitor (quorum-of-one)', async () => {
+    const root = makeTmp('e2b-solo');
+    try {
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true });
+      assert.strictEqual(r.errors, 0);
+      const m = clusterMap(root);
+      assert.strictEqual(m.monitors.length, 1, 'self is the sole monitor');
+      assert.strictEqual(m.monitors[0], m.active_manager.instance_id, 'the monitor IS self (the active manager)');
+      assert.deepStrictEqual(m.standbys, [], 'no peers → no standbys');
+      assert.strictEqual(m.quorum_size, 1, 'lone agent = quorum-of-one');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('a fenced active DISCOVERS a peer monitor and records it as a ranked standby (quorum 2)', async () => {
+    const root = makeTmp('e2b-peer');
+    try {
+      seedPeerMonitor(root, 'loop-peer');
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true });
+      assert.strictEqual(r.errors, 0);
+      const m = clusterMap(root);
+      const self = m.active_manager.instance_id;
+      assert.deepStrictEqual([...m.monitors].sort(), [self, 'loop-peer'].sort(), 'both monitors recorded (self + peer)');
+      assert.deepStrictEqual(m.standbys.map((s: any) => s.instance_id), ['loop-peer'], 'the peer is a standby; self (active) is excluded');
+      assert.strictEqual(m.quorum_size, 2, 'majority quorum of 2 monitors = floor(2/2)+1 = 2');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('with fencing OFF the START LOOP is inert — no monitor presence, empty roster (E2b opt-in)', async () => {
+    const root = makeTmp('e2b-off');
+    try {
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true }); // no fencing
+      assert.strictEqual(r.errors, 0);
+      assert.deepStrictEqual(clusterMap(root).monitors, [], 'fencing off → no monitors projected');
+      assert.ok(!fs.existsSync(monitorsDir(root)), 'no presence written when fencing off');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('a STALE peer presence is EXCLUDED from the roster through runTick (quorum stays 1)', async () => {
+    const root = makeTmp('e2b-stale');
+    try {
+      fs.mkdirSync(monitorsDir(root), { recursive: true });
+      // 200s old ≫ the 90s presence TTL → must be dropped before projection.
+      fs.writeFileSync(path.join(monitorsDir(root), 'loop-stale.json'),
+        JSON.stringify({ instance_id: 'loop-stale', timestamp: new Date(Date.now() - 200_000).toISOString() }), 'utf8');
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true });
+      assert.strictEqual(r.errors, 0);
+      const m = clusterMap(root);
+      assert.deepStrictEqual(m.monitors, [m.active_manager.instance_id], 'stale peer absent → only self is a monitor');
+      assert.deepStrictEqual(m.standbys, [], 'stale peer is not a standby');
+      assert.strictEqual(m.quorum_size, 1, 'a stale peer does not inflate the quorum');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('runTick GCs a long-dead presence file (prune is wired into the loop)', async () => {
+    const root = makeTmp('e2b-prune');
+    try {
+      fs.mkdirSync(monitorsDir(root), { recursive: true });
+      const deadFile = path.join(monitorsDir(root), 'loop-crashed.json');
+      // 1000s old ≫ the 10×TTL = 900s reaping threshold → runTick must unlink it.
+      fs.writeFileSync(deadFile, JSON.stringify({ instance_id: 'loop-crashed', timestamp: new Date(Date.now() - 1_000_000).toISOString() }), 'utf8');
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true });
+      assert.strictEqual(r.errors, 0);
+      assert.ok(!fs.existsSync(deadFile), 'the long-dead presence file was reaped by runTick');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('a fenced STANDBY (behind a fresh foreign lease) still writes its OWN presence but persists NO roster', async () => {
+    const root = makeTmp('e2b-standby');
+    try {
+      writeForeignLease(root); // a fresh foreign supervisor.lock.json → this host stands by
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true });
+      assert.strictEqual(r.errors, 0);
+      // Presence IS written on a standby (so the active manager can discover it).
+      const presFiles = fs.existsSync(monitorsDir(root)) ? fs.readdirSync(monitorsDir(root)).filter((f) => f.endsWith('.json')) : [];
+      assert.strictEqual(presFiles.length, 1, 'the standby wrote its own presence (discoverable)');
+      // But a standby persists NO cluster map / roster (its fenced acquire stands by).
+      assert.ok(!fs.existsSync(path.join(root, '.autoclaw', 'orchestrator', 'comms', 'cluster-map.json')), 'standby wrote no cluster map');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('a steady fenced roster does NOT churn the epoch across two ticks (the load-bearing no-churn property)', async () => {
+    const root = makeTmp('e2b-nochurn');
+    try {
+      seedPeerMonitor(root, 'loop-peer');
+      const state = freshLoopStateForTest();
+      await runTick(root, state, { singleActive: true, fencing: true });
+      const e1 = clusterMap(root).epoch;
+      await runTick(root, state, { singleActive: true, fencing: true }); // same roster, peer still live
+      const e2 = clusterMap(root).epoch;
+      assert.strictEqual(e2, e1, 'a stable two-host roster must not advance the epoch every tick');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('multiple peers are recorded as standbys in a deterministic order (instance_id ASC under uniform score)', async () => {
+    const root = makeTmp('e2b-multi');
+    try {
+      seedPeerMonitor(root, 'loop-peer-b');
+      seedPeerMonitor(root, 'loop-peer-a');
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true });
+      assert.strictEqual(r.errors, 0);
+      const m = clusterMap(root);
+      assert.deepStrictEqual(m.standbys.map((s: any) => s.instance_id), ['loop-peer-a', 'loop-peer-b'], 'deterministic ASC order');
+      assert.strictEqual(m.quorum_size, 2, 'self + 2 peers = 3 monitors → majority 2');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+});
+
+suite('E3b: WAKE-ONLY cluster-map gossip (runTick)', () => {
+  function gossipDir(ws: string): string {
+    return path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'gossip', 'cluster-map');
+  }
+  function clusterMap(ws: string): any {
+    return JSON.parse(fs.readFileSync(path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'cluster-map.json'), 'utf8'));
+  }
+  function seedPeerBeat(ws: string, peerId: string, epoch: number, term: number, activeId = peerId): void {
+    fs.mkdirSync(gossipDir(ws), { recursive: true });
+    const now = new Date().toISOString();
+    const map = {
+      version: 1, epoch, term,
+      active_manager: { instance_id: activeId, acquired_at: now, lease_heartbeat: now, lease_expires: new Date(Date.now() + 90_000).toISOString() },
+      standbys: [], monitors: [activeId], quorum_size: 1, fenced: [],
+    };
+    fs.writeFileSync(path.join(gossipDir(ws), `${peerId}.json`), JSON.stringify({ origin: peerId, emittedAt: now, map }), 'utf8');
+  }
+  function journalOf(ws: string): string {
+    const p = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'loop-journal.jsonl');
+    return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+  }
+
+  test('a gossip-enabled active host PUBLISHES its map beat to the gossip bus', async () => {
+    const root = makeTmp('e3-pub');
+    try {
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true, gossip: true });
+      assert.strictEqual(r.errors, 0);
+      const files = fs.existsSync(gossipDir(root)) ? fs.readdirSync(gossipDir(root)).filter((f) => f.endsWith('.json')) : [];
+      assert.strictEqual(files.length, 1, 'the active manager published exactly one map beat');
+      const b = JSON.parse(fs.readFileSync(path.join(gossipDir(root), files[0]), 'utf8'));
+      assert.strictEqual(b.map.active_manager.instance_id, b.origin, 'the beat carries this host as the active');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('gossip OFF is INERT — no gossip dir is written (byte-identical to E2b)', async () => {
+    const root = makeTmp('e3-off');
+    try {
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true }); // no gossip
+      assert.strictEqual(r.errors, 0);
+      assert.ok(!fs.existsSync(path.join(root, '.autoclaw', 'orchestrator', 'comms', 'gossip')), 'no gossip dir when off');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('a STRICTLY-NEWER peer beat is journalled but does NOT change what the host writes (single-active preserved)', async () => {
+    const root = makeTmp('e3-peer');
+    try {
+      // A fake peer beat claims a DIFFERENT active at a much higher epoch (e.g. a dead window).
+      seedPeerBeat(root, 'loop-peer', 99, 9);
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true, gossip: true });
+      assert.strictEqual(r.errors, 0);
+      const journal = fs.readFileSync(path.join(root, '.autoclaw', 'orchestrator', 'comms', 'loop-journal.jsonl'), 'utf8');
+      assert.ok(journal.includes('gossip_peer_newer'), 'the peer-newer discrepancy is journalled (observability)');
+      // CRITICAL: gossip is advisory — the host (solo active) still wrote ITSELF, from DISK.
+      const m = clusterMap(root);
+      assert.notStrictEqual(m.active_manager.instance_id, 'loop-peer', 'gossip did NOT resurrect the (dead) peer as active');
+      assert.ok(m.epoch < 99, 'the gossiped epoch 99 did NOT leak into the authoritative cluster map');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('no epoch churn across two steady gossip ticks (publish/read never bumps the cluster-map epoch)', async () => {
+    const root = makeTmp('e3-nochurn');
+    try {
+      const state = freshLoopStateForTest();
+      await runTick(root, state, { singleActive: true, fencing: true, gossip: true });
+      const e1 = clusterMap(root).epoch;
+      await runTick(root, state, { singleActive: true, fencing: true, gossip: true });
+      assert.strictEqual(clusterMap(root).epoch, e1, 'gossip publish/read must not churn the cluster-map epoch');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('an EQUAL-or-OLDER peer beat is NOT journalled (only a STRICTLY-newer one is a takeover)', async () => {
+    const root = makeTmp('e3-older');
+    try {
+      seedPeerBeat(root, 'loop-peer', 1, 1); // older than the solo host's own map (epoch >= 2 under fencing)
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true, gossip: true });
+      assert.strictEqual(r.errors, 0);
+      assert.ok(!journalOf(root).includes('gossip_peer_newer'), 'an older/equal peer beat is not a takeover signal');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('a strictly-newer peer beat naming THIS host as active is NOT journalled (self is not a takeover)', async () => {
+    const root = makeTmp('e3-selfnamed');
+    try {
+      // A peer gossips a FRESHER map that still names US as the active — not a takeover.
+      seedPeerBeat(root, 'loop-peer', 99, 9, LOOP_INSTANCE_ID);
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true, gossip: true });
+      assert.strictEqual(r.errors, 0);
+      assert.ok(!journalOf(root).includes('gossip_peer_newer'), 'a fresher map that still names self as active is not a takeover');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('a STANDBY (foreign fresh lease) with gossip ON publishes NO beat (only the active manager does)', async () => {
+    const root = makeTmp('e3-standby-pub');
+    try {
+      writeForeignLease(root); // a fresh foreign lease → this host stands by
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true, gossip: true });
+      assert.strictEqual(r.errors, 0);
+      const files = fs.existsSync(gossipDir(root)) ? fs.readdirSync(gossipDir(root)).filter((f) => f.endsWith('.json')) : [];
+      assert.strictEqual(files.length, 0, 'a standby publishes no map beat');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+
+  test('a gossip failure is SWALLOWED (best-effort) — r.errors stays 0 and the acquire still wrote the map', async () => {
+    const root = makeTmp('e3-besteffort');
+    try {
+      // Pre-create comms/gossip as a FILE so the gossip publish mkdir throws ENOTDIR.
+      const comms = path.join(root, '.autoclaw', 'orchestrator', 'comms');
+      fs.mkdirSync(comms, { recursive: true });
+      fs.writeFileSync(path.join(comms, 'gossip'), 'not a dir', 'utf8');
+      const r = await runTick(root, freshLoopStateForTest(), { singleActive: true, fencing: true, gossip: true });
+      assert.strictEqual(r.errors, 0, 'a gossip failure must not leak into r.errors');
+      assert.ok(fs.existsSync(path.join(comms, 'cluster-map.json')), 'the acquire still wrote the authoritative map');
+    } finally { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  });
+});
 
 suite('startOrchestratorLoop lifecycle', () => {
   test('starts and stops cleanly', () => {

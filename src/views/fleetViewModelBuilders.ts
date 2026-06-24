@@ -28,9 +28,14 @@ import type {
   CostRollupRow,
   PresenceSummary,
   PendingAgentView,
+  SupervisorStatus,
+  SupervisorStandby,
   FleetDashboardModel,
 } from './fleetViewModel';
 import type { PendingAgent } from '../fleet/pending';
+import type { Standby } from '../orchestrator/clusterMap';
+// fs-only module (no vscode); the const + type keep this builder a pure transform.
+import { SUPERVISOR_TTL_MS, type SupervisorLease } from '../orchestrator/supervisorLease';
 import { isActionableForMe, type CommsMessage } from '../orchestrator/coordination';
 
 // ---------------------------------------------------------------------------
@@ -487,8 +492,7 @@ export function buildAwaitingYou(
 export function activityKindForMessage(type: string): ActivityKind {
   switch (type) {
     case 'task_claim':       return 'task_started';
-    case 'task_assign':      return 'task_started';
-    case 'task_assignment':  return 'task_started'; // legacy alias for pre-unification messages on disk
+    case 'task_assignment':  return 'task_started';
     case 'task_complete':    return 'task_complete';
     case 'finding_report':   return 'finding_raised';
     case 'consensus_result': return 'consensus_passed';
@@ -657,6 +661,62 @@ export function buildPresence(
 }
 
 // ---------------------------------------------------------------------------
+// Supervisor (single-active orchestrator) status — L4
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the orchestrator chip from the supervisor lease. Pure: freshness is the
+ * same `heartbeat + TTL` rule the lease's own `isStale` uses, and the countdown
+ * is `expires - now`. `selfInstanceId` MUST be the local loop-instance id
+ * (LOOP_INSTANCE_ID) — NOT an agent id — or the chip never reads "you".
+ *
+ * NOTE: this reflects the supervisor LEASE (the single-writer arbiter). It equals
+ * the effective write topology only when `autoclaw.cluster.singleActive` is on
+ * (the default); in legacy multi-writer mode (singleActive off) every ticking host
+ * writes regardless, so the lease holder shown here is the arbiter, not the sole writer.
+ */
+export function buildSupervisorStatus(
+  lease: SupervisorLease | null,
+  selfInstanceId: string | undefined,
+  now: number = Date.now(),
+  ttlMs: number = SUPERVISOR_TTL_MS,
+  roster?: { standbys: Standby[]; quorumSize?: number },
+): SupervisorStatus {
+  const base = ((): SupervisorStatus => {
+    if (!lease) {
+      return { state: 'none', holder: null, isSelf: false, expiresInMs: null, text: 'No active orchestrator' };
+    }
+    const hb = Date.parse(lease.heartbeat);
+    const fresh = Number.isFinite(hb) && now - hb <= ttlMs;
+    const isSelf = !!selfInstanceId && lease.holder === selfInstanceId;
+    const exp = Date.parse(lease.expires);
+    const expiresInMs = Number.isFinite(exp) ? exp - now : null;
+
+    if (!fresh) {
+      return {
+        state: 'none', holder: lease.holder, isSelf, expiresInMs,
+        text: isSelf ? 'Orchestrator: this window (lapsed)' : 'No active orchestrator (lease stale)',
+      };
+    }
+    return isSelf
+      ? { state: 'active', holder: lease.holder, isSelf: true, expiresInMs, text: 'Active orchestrator (this window)' }
+      : { state: 'standby', holder: lease.holder, isSelf: false, expiresInMs, text: `Standby — active: ${lease.holder}` };
+  })();
+
+  // E2c: attach the ranked standby roster (cluster-map `standbys[]`, already in
+  // promotion order) when the START LOOP provided one. Omitted otherwise so the
+  // chip is backward-compatible with the L4 active-only view + hand-built literals.
+  if (!roster) { return base; }
+  const standbys: SupervisorStandby[] = roster.standbys.map((s, i) => ({
+    instanceId: s.instance_id,
+    isSelf: !!selfInstanceId && s.instance_id === selfInstanceId,
+    rank: i + 1,
+    score: s.score,
+  }));
+  return { ...base, standbys, quorumSize: roster.quorumSize };
+}
+
+// ---------------------------------------------------------------------------
 // Top-level assembly
 // ---------------------------------------------------------------------------
 
@@ -678,6 +738,14 @@ export interface FleetDashboardInputs {
   healthEvents?: Array<{ agentId: string; kind: ActivityKind; timestamp: string; text: string }>;
   /** FF-3: agents seen via a fresh beacon but not yet admitted to fleet.json. */
   pending?: PendingAgent[];
+  /** L4: the current supervisor lease (single-active orchestrator), or null. */
+  supervisorLease?: SupervisorLease | null;
+  /** L4: this window's loop-instance id, to decide "you are the orchestrator". */
+  selfInstanceId?: string;
+  /** E2c: the ranked standby roster from the cluster map (START LOOP), in promotion order. */
+  clusterStandbys?: Standby[];
+  /** E2c: advisory majority quorum size from the cluster map (display only). */
+  quorumSize?: number;
 }
 
 /**
@@ -737,6 +805,10 @@ export function buildFleetDashboard(
     healthGrid: buildHealthGrid(inputs.health, now),
     cost: buildCostLedger(inputs.cost),
     presence: buildPresence(cards, awaitingByAgent),
+    supervisor: buildSupervisorStatus(
+      inputs.supervisorLease ?? null, inputs.selfInstanceId, now, undefined,
+      inputs.clusterStandbys ? { standbys: inputs.clusterStandbys, quorumSize: inputs.quorumSize } : undefined,
+    ),
     pending: buildPending(inputs.pending),
   };
 }

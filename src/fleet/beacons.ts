@@ -21,8 +21,8 @@ import * as path from 'path';
 
 const fsp = fs.promises;
 
-/** Where presence reached the panel from. */
-export type BeaconOrigin = 'local' | 'relay' | 'beacon';
+/** Where presence reached the panel from. `lan` = LAN-discovered (T0), DISCOVERED but NOT authenticated. */
+export type BeaconOrigin = 'local' | 'relay' | 'beacon' | 'lan';
 
 /** On-disk beacon document (superset-compatible with Heartbeat). */
 export interface Beacon {
@@ -104,6 +104,23 @@ function safeFrag(s: string): string {
 // ---------------------------------------------------------------------------
 // Normalize
 // ---------------------------------------------------------------------------
+
+/**
+ * True when a beacon is DISCOVERED-but-UNTRUSTED presence — currently any
+ * LAN-discovered peer (origin 'lan'). Such a peer is unauthenticated until T2
+ * (mTLS/SVID/biscuit) and MUST be excluded from every trust / admit / joined /
+ * census sink: the pending-admit tray (fleet/pending.ts), the panel fleet roster
+ * (extension.ts beaconToAgent merge), and the role-coverage census
+ * (fleet/needs.ts). It is observe-only telemetry — the roster never
+ * executes / dispatches / hires on it.
+ *
+ * This is the SINGLE source of truth for "which beacon origins are untrusted":
+ * grep `isDiscoveredUntrusted` to find every trust sink, and add a new untrusted
+ * origin HERE (not at each call site) so a future sink can never silently leak.
+ */
+export function isDiscoveredUntrusted(b: { origin?: BeaconOrigin }): boolean {
+  return b.origin === 'lan';
+}
 
 /** True if `b` has the minimum fields to be a usable beacon. */
 export function isValidBeacon(b: unknown): b is Beacon {

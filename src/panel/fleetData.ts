@@ -28,17 +28,11 @@ import {
 } from '../views/fleetViewModelBuilders';
 import type { CostLedgerEntry, FleetDashboardModel } from '../views/fleetViewModel';
 import type { DispatchResult } from '../runners/types';
-import {
-  readAllBeacons,
-  readBeacons,
-  machineBeaconDir,
-  workspaceBeaconDir,
-  workspaceSlug,
-  type BeaconRow,
-} from '../fleet/beacons';
+import { readAllBeacons } from '../fleet/beacons';
 import { parseFleetManifest } from '../fleet/architecture';
 import { listInvites } from '../fleet/invites';
 import { computePendingAgents, type PendingAgent } from '../fleet/pending';
+import { readSupervisorLease, readClusterMap } from '../orchestrator/supervisorLease';
 
 const fsp = fs.promises;
 
@@ -520,110 +514,6 @@ export async function readPendingAgents(
 }
 
 // ---------------------------------------------------------------------------
-// Presence union (heartbeat / beacon → card, no registry row required)
-// ---------------------------------------------------------------------------
-
-/** Normalize an absolute workspace path for cross-OS, case-insensitive compare. */
-function normalizeWorkspacePath(p: string): string {
-  return p.replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
-}
-
-/**
- * Read every beacon that belongs to THIS workspace: all beacons written to the
- * workspace beacon dir (inherently this workspace), plus machine-global beacons
- * whose `workspace` / `workspace_id` resolves to this root. A machine beacon
- * that names no workspace is left out so a different project's agents on the
- * same machine never leak into this fleet. Best-effort: a read failure on either
- * home degrades to `[]` so the panel never throws.
- */
-export async function readWorkspacePresenceBeacons(
-  workspaceRoot: string,
-  now: number = Date.now(),
-): Promise<BeaconRow[]> {
-  const comms = commsDir(workspaceRoot);
-  const [wsBeacons, machineBeacons] = await Promise.all([
-    readBeacons(workspaceBeaconDir(comms), { now }).catch(() => []),
-    readBeacons(machineBeaconDir(), { now }).catch(() => []),
-  ]);
-  const wsNorm = normalizeWorkspacePath(workspaceRoot);
-  const wsSlug = workspaceSlug(workspaceRoot);
-  const relevantMachine = machineBeacons.filter(b => {
-    if (b.workspace) { return normalizeWorkspacePath(b.workspace) === wsNorm; }
-    if (b.workspace_id) { return b.workspace_id === wsSlug; }
-    return false;
-  });
-  return [...wsBeacons, ...relevantMachine];
-}
-
-/** Project a presence beacon onto the heartbeat shape (a beacon is a superset). */
-function beaconToHeartbeat(b: BeaconRow): RawHeartbeat {
-  return {
-    agent_id: b.agent_id,
-    timestamp: b.timestamp,
-    status: b.status,
-    current_task: b.current_task ?? null,
-    session_id: b.session_id,
-    host: b.host,
-    // FleetOrigin has no 'beacon' member: a local-tool check-in reads as 'local';
-    // only relay-forwarded presence is remote.
-    origin: b.origin === 'relay' ? 'relay' : 'local',
-  };
-}
-
-/**
- * Union the registry profiles with any agent that is present only via a fresh
- * heartbeat or this-workspace beacon, so the panel surfaces — and counts — an
- * agent the moment it checks in, even before it is written into `registry.json`.
- *
- * This is the fix for "a joined agent (e.g. Kiro) wrote a heartbeat/beacon but
- * shows 0 in the fleet count": the card builder iterates `profiles`, which used
- * to come from `registry.json` alone.
- *
- * Pure — callers pass already-read inputs (`beacons` already filtered to this
- * workspace). Inputs are not mutated; new objects are returned.
- */
-export function unionPresenceSources(args: {
-  profiles: RawAgentProfile[];
-  heartbeats: Map<string, RawHeartbeat>;
-  beacons: BeaconRow[];
-}): { profiles: RawAgentProfile[]; heartbeats: Map<string, RawHeartbeat> } {
-  const heartbeats = new Map(args.heartbeats);
-
-  // Collapse beacons (deduped per session upstream) to the freshest per agent.
-  const beaconByAgent = new Map<string, BeaconRow>();
-  for (const b of args.beacons) {
-    const prev = beaconByAgent.get(b.agent_id);
-    if (!prev || b.age_ms < prev.age_ms) { beaconByAgent.set(b.agent_id, b); }
-  }
-
-  // Fill in any agent the in-tree heartbeats don't already cover. The heartbeat
-  // file stays authoritative; a beacon only stands in when there is no heartbeat.
-  for (const [agentId, b] of beaconByAgent) {
-    if (!heartbeats.has(agentId)) { heartbeats.set(agentId, beaconToHeartbeat(b)); }
-  }
-
-  // Synthesize a minimal profile for every present agent missing from the
-  // registry so presence no longer requires a registry.json row.
-  const profiles = [...args.profiles];
-  const known = new Set(profiles.map(p => p.id));
-  for (const agentId of heartbeats.keys()) {
-    if (known.has(agentId)) { continue; }
-    const b = beaconByAgent.get(agentId);
-    profiles.push({
-      id: agentId,
-      name: agentId,
-      role: b?.role ?? '',
-      machine_id: b?.machine_id,
-      capabilities: [],
-      parent_id: null,
-    });
-    known.add(agentId);
-  }
-
-  return { profiles, heartbeats };
-}
-
-// ---------------------------------------------------------------------------
 // Top-level gather
 // ---------------------------------------------------------------------------
 
@@ -633,6 +523,12 @@ export interface GatherOptions {
   workspaceRoot: string;
   /** The agent id this panel renders "for" (drives Awaiting You). */
   selfAgentId: string;
+  /**
+   * L4: this window's loop-instance id (LOOP_INSTANCE_ID), used to decide whether
+   * THIS window is the active orchestrator. Distinct from {@link selfAgentId}.
+   * Omitted ⇒ the supervisor chip shows holder/standby but never "you".
+   */
+  selfInstanceId?: string;
   /**
    * Live LMD health snapshot. When omitted, health is derived from heartbeat
    * file ages via {@link deriveHealthFromHeartbeats}.
@@ -652,27 +548,18 @@ export async function gatherFleetData(
   const now = opts.now ?? Date.now();
   const { workspaceRoot, selfAgentId } = opts;
 
-  const [
-    rawProfiles, rawHeartbeats, located, claims, sprintAssignments, cost, pending, presenceBeacons,
-  ] = await Promise.all([
-    readAgentProfiles(workspaceRoot),
-    readHeartbeats(workspaceRoot),
-    readAllMessages(workspaceRoot),
-    readClaims(workspaceRoot),
-    readSprintAssignments(workspaceRoot),
-    readCostLedger(workspaceRoot),
-    readPendingAgents(workspaceRoot, now),
-    readWorkspacePresenceBeacons(workspaceRoot, now),
-  ]);
-
-  // Surface every agent that has checked in via a heartbeat OR a this-workspace
-  // beacon, even before it is registered — so the count and cards reflect who is
-  // actually present, not just who is in registry.json.
-  const { profiles, heartbeats } = unionPresenceSources({
-    profiles: rawProfiles,
-    heartbeats: rawHeartbeats,
-    beacons: presenceBeacons,
-  });
+  const [profiles, heartbeats, located, claims, sprintAssignments, cost, pending, supervisorLease, clusterMap] =
+    await Promise.all([
+      readAgentProfiles(workspaceRoot),
+      readHeartbeats(workspaceRoot),
+      readAllMessages(workspaceRoot),
+      readClaims(workspaceRoot),
+      readSprintAssignments(workspaceRoot),
+      readCostLedger(workspaceRoot),
+      readPendingAgents(workspaceRoot, now),
+      readSupervisorLease(workspaceRoot).catch(() => null),
+      readClusterMap(workspaceRoot).catch(() => null),
+    ]);
 
   const allMessages: RawMessage[] = located.map(l => l.msg);
 
@@ -729,6 +616,12 @@ export async function gatherFleetData(
     cost,
     healthEvents,
     pending,
+    supervisorLease,
+    selfInstanceId: opts.selfInstanceId,
+    // E2c: surface the START LOOP roster ONLY when there are actual standbys (a
+    // solo/legacy host has none → the chip degrades to the L4 active-only view).
+    clusterStandbys: clusterMap?.standbys?.length ? clusterMap.standbys : undefined,
+    quorumSize: clusterMap?.standbys?.length ? clusterMap.quorum_size : undefined,
   };
 
   return buildFleetDashboard(inputs, now);
