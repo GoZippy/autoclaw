@@ -5163,6 +5163,15 @@ async function fleetJoinPromptCommand(): Promise<void> {
       ...(scope.length ? { scope } : {}),
       transports: ['fs', 'mcp', 'http'],
     });
+    // Pre-create the comms tree + a registry row so the joining agent arrives to a
+    // writable inbox even in a project that has never run orchestrate (fixes the
+    // "comms/claims does not exist" case). Idempotent + best-effort: a failure must
+    // never block handing over the prompt — the fs-lane prompt also tells the agent
+    // to create the tree itself.
+    try {
+      const commsRoot = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+      await scaffoldAgent(commsRoot, { agentId: target.agentId });
+    } catch { /* non-fatal — the prompt's own ensure-tree step covers it */ }
     const prompt = renderJoinPromptForInvite(targetKey, invite, bridgeUrl ? { bridgeUrl } : {});
     await vscode.env.clipboard.writeText(prompt);
     const pick = await vscode.window.showInformationMessage(
@@ -5240,10 +5249,12 @@ async function fleetAddTeamCommand(): Promise<void> {
   // 4. Fan out: one scoped invite per seat, render its tailored join prompt.
   const project = path.basename(wr);
   const issuedBy = activeHostAgentId() ?? 'claude-code';
+  const commsRoot = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
   const sections: string[] = [];
   let minted = 0;
   for (let i = 0; i < tpl.seats.length; i++) {
     const seat = tpl.seats[i];
+    const seatAgentId = JOIN_TARGETS[seat.tool]?.agentId ?? seat.tool;
     try {
       const invite = await createInvite({
         issued_by: issuedBy,
@@ -5255,6 +5266,9 @@ async function fleetAddTeamCommand(): Promise<void> {
         preapproved_types: seat.admit === 'auto-preapproved' ? [seat.agentType] : undefined,
         transports: ['fs', 'mcp', 'http'],
       });
+      // Pre-create the comms tree + a roster row per seat so each teammate arrives
+      // to a writable inbox even in a never-orchestrated project. Idempotent + best-effort.
+      try { await scaffoldAgent(commsRoot, { agentId: seatAgentId }); } catch { /* non-fatal */ }
       const prompt = renderJoinPromptForInvite(seat.tool, invite);
       const toolLabel = JOIN_TARGETS[seat.tool]?.label ?? seat.tool;
       sections.push(
