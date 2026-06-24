@@ -121,6 +121,9 @@ function degradedHandle(signature: EmbeddingSignature): VectorDB {
     async semanticVectorSearch(): Promise<VectorSearchResult[]> {
       return [];
     },
+    async setStale(): Promise<void> {
+      // no-op — nothing to persist without a backend
+    },
     close(): void {
       // nothing to release
     },
@@ -134,13 +137,35 @@ function degradedHandle(signature: EmbeddingSignature): VectorDB {
 class PostgresVectorDB implements VectorDB {
   readonly degraded = false;
 
+  // Live stale signal — mutable so {@link setStale} keeps it honest after open.
+  private _staleIndex: boolean;
+
   constructor(
     private readonly client: PgClient,
     readonly model: string,
     readonly dimension: number,
-    readonly staleIndex: boolean,
+    staleIndex: boolean,
     private readonly warn: LogFn,
-  ) {}
+  ) {
+    this._staleIndex = staleIndex;
+  }
+
+  get staleIndex(): boolean {
+    return this._staleIndex;
+  }
+
+  async setStale(stale: boolean): Promise<void> {
+    try {
+      await this.client.query(
+        `INSERT INTO ${META_TABLE} (key, value) VALUES ($1, $2) ` +
+          `ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        ['stale_index', stale ? '1' : '0'],
+      );
+      this._staleIndex = stale;
+    } catch (err) {
+      this.warn(`vector: could not persist stale_index flag: ${(err as Error).message}`);
+    }
+  }
 
   async storeEmbedding(record: VectorRecord): Promise<void> {
     await this.storeEmbeddings([record]);

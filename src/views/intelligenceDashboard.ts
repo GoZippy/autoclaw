@@ -27,6 +27,7 @@ import * as path from 'path';
 
 import { getDashboardData } from '../intelligence/metrics/store';
 import { resolvePanelBackendStatus } from '../intelligence/installBackend';
+import { getIntelligenceHealth, HEALTH_ACTIONS, IntelligenceHealth } from '../intelligence/health';
 
 // ---------------------------------------------------------------------------
 // Command ids the dashboard buttons drive (existing intelligence commands).
@@ -50,6 +51,14 @@ const ACTION_COMMANDS: Record<string, string> = {
 /** Settings query the ⚙ button opens (the Intelligence settings). */
 const SETTINGS_QUERY = 'autoclaw.intelligence';
 
+/**
+ * Whitelist of command ids the health-card nudge buttons may execute. Derived
+ * verbatim from {@link HEALTH_ACTIONS} so it stays in lockstep with the health
+ * contract. A `run-action` message whose `commandId` is not in this set is
+ * rejected — the webview can never drive an arbitrary command.
+ */
+const HEALTH_ACTION_COMMANDS: ReadonlySet<string> = new Set(Object.values(HEALTH_ACTIONS));
+
 /** Generate a 32-char alphanumeric nonce for the Content-Security-Policy. */
 function makeNonce(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -66,9 +75,11 @@ function makeNonce(): string {
 
 /** Inbound messages the webview posts to the host. */
 interface InboundMessage {
-  command?: 'ready' | 'refresh' | 'run';
+  command?: 'ready' | 'refresh' | 'run' | 'run-action';
   /** For `run`: the button action (`learn` | `index` | `search` | `rag-generate`). */
   action?: string;
+  /** For `run-action`: a VS Code command id (validated against the health whitelist). */
+  commandId?: string;
 }
 
 /**
@@ -84,7 +95,16 @@ export class IntelligenceDashboardProvider implements vscode.WebviewViewProvider
 
   private view?: vscode.WebviewView;
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  /**
+   * The extension's global-storage path, forwarded to the health snapshot as the
+   * backend-resolution fallback (`globalStorageUri.fsPath`). Optional so callers
+   * that only have an `extensionUri` still work.
+   */
+  private readonly globalStoragePath?: string;
+
+  constructor(private readonly extensionUri: vscode.Uri, globalStoragePath?: string) {
+    this.globalStoragePath = globalStoragePath;
+  }
 
   /** Directory holding the webview assets (`media/intelligence/`). */
   private mediaDir(): vscode.Uri {
@@ -115,6 +135,10 @@ export class IntelligenceDashboardProvider implements vscode.WebviewViewProvider
       }
       if (msg.command === 'run' && typeof msg.action === 'string') {
         void this.runAction(msg.action);
+        return;
+      }
+      if (msg.command === 'run-action' && typeof msg.commandId === 'string') {
+        void this.runHealthAction(msg.commandId);
       }
     });
 
@@ -146,26 +170,52 @@ export class IntelligenceDashboardProvider implements vscode.WebviewViewProvider
         type: 'data',
         data: { empty: true, noWorkspace: true },
       });
+      this.view.webview.postMessage({ type: 'health', health: null });
       return;
     }
-    try {
-      const data = getDashboardData(workspaceRoot);
-      // Backend presence drives the "online" pill + conditional Deploy CTA in the
-      // webview. Best-effort — a detection hiccup must not blank the metrics.
-      let backend: { installed: boolean; path: string } | undefined;
+
+    const view = this.view;
+    const intelCfg = vscode.workspace.getConfiguration('autoclaw.intelligence');
+    const backendDir = intelCfg.get<string>('backendDir') || undefined;
+    const systemDir = intelCfg.get<string>('systemDir') || undefined;
+
+    // Metrics (synchronous store read) and the health snapshot (async probes)
+    // are posted as TWO independent messages so a failure in one never blanks
+    // the other. Run them in parallel; each path swallows its own error.
+    const metricsTask = Promise.resolve().then(() => {
       try {
-        const override = vscode.workspace
-          .getConfiguration('autoclaw.intelligence')
-          .get<string>('backendDir');
-        backend = resolvePanelBackendStatus(workspaceRoot, override);
-      } catch { /* leave backend undefined; panel falls back to showing the CTA */ }
-      this.view.webview.postMessage({ type: 'data', data: { ...data, backend } });
-    } catch (err) {
-      this.view.webview.postMessage({
-        type: 'error',
-        message: `Intelligence metrics error: ${String(err)}`,
-      });
-    }
+        const data = getDashboardData(workspaceRoot);
+        // Backend presence drives the "online" pill + conditional Deploy CTA in the
+        // webview. Best-effort — a detection hiccup must not blank the metrics.
+        let backend: { installed: boolean; path: string } | undefined;
+        try {
+          backend = resolvePanelBackendStatus(workspaceRoot, backendDir);
+        } catch { /* leave backend undefined; panel falls back to showing the CTA */ }
+        view.webview.postMessage({ type: 'data', data: { ...data, backend } });
+      } catch (err) {
+        view.webview.postMessage({
+          type: 'error',
+          message: `Intelligence metrics error: ${String(err)}`,
+        });
+      }
+    });
+
+    const healthTask = (async () => {
+      try {
+        const health: IntelligenceHealth = await getIntelligenceHealth(workspaceRoot, {
+          probe: true,
+          backendDirOverride: backendDir,
+          globalStorageFallback: this.globalStoragePath,
+          systemDir,
+        });
+        view.webview.postMessage({ type: 'health', health });
+      } catch {
+        // A health-probe failure (e.g. provider timeout) must not affect metrics.
+        view.webview.postMessage({ type: 'health', health: null });
+      }
+    })();
+
+    void Promise.all([metricsTask, healthTask]);
   }
 
   /**
@@ -195,6 +245,35 @@ export class IntelligenceDashboardProvider implements vscode.WebviewViewProvider
     } catch (err) {
       void vscode.window.showErrorMessage(`Failed to run ${commandId}: ${String(err)}`);
     }
+  }
+
+  /**
+   * Execute a health-card nudge's one-click remediation. The `commandId` MUST be
+   * one of the whitelisted {@link HEALTH_ACTIONS} values — an arbitrary command
+   * id from the webview is refused with a warning, never executed. Re-refreshes
+   * after a successful run so the health card reflects the new state.
+   */
+  private async runHealthAction(commandId: string): Promise<void> {
+    if (!HEALTH_ACTION_COMMANDS.has(commandId)) {
+      void vscode.window.showWarningMessage(
+        `Refused to run non-whitelisted health action: ${commandId}`,
+      );
+      return;
+    }
+    const registered = await vscode.commands.getCommands(true);
+    if (!registered.includes(commandId)) {
+      void vscode.window.showWarningMessage(
+        `Command "${commandId}" is not available in this build.`,
+      );
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand(commandId);
+    } catch (err) {
+      void vscode.window.showErrorMessage(`Failed to run ${commandId}: ${String(err)}`);
+      return;
+    }
+    this.refresh();
   }
 
   /** Build the CSP-locked HTML shell from `media/intelligence/dashboard.html`. */
@@ -267,7 +346,10 @@ export class IntelligenceDashboardProvider implements vscode.WebviewViewProvider
 export function registerIntelligenceDashboard(
   context: vscode.ExtensionContext,
 ): IntelligenceDashboardProvider {
-  const provider = new IntelligenceDashboardProvider(context.extensionUri);
+  const provider = new IntelligenceDashboardProvider(
+    context.extensionUri,
+    context.globalStorageUri?.fsPath,
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(

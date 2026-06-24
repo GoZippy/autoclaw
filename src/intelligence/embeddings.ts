@@ -86,6 +86,41 @@ const DEFAULT_ROUTER_HOST = 'http://127.0.0.1:20128';
 const EMBED_TIMEOUT_MS = 30000;
 const DETECT_TIMEOUT_MS = 1500;
 
+/**
+ * Hard wall-clock deadline so Windows socket-level timeouts (which can fail
+ * to fire when a server accepts but never writes) cannot stall a detect call.
+ */
+function hardDeadline<T>(ms: number, p: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const tid = setTimeout(() => {
+      if (!done) {
+        done = true;
+        reject(new Error('detect deadline'));
+      }
+    }, ms);
+    if (typeof (tid as NodeJS.Timeout).unref === 'function') {
+      (tid as NodeJS.Timeout).unref();
+    }
+    p.then(
+      (v) => {
+        if (!done) {
+          done = true;
+          clearTimeout(tid);
+          resolve(v);
+        }
+      },
+      (e) => {
+        if (!done) {
+          done = true;
+          clearTimeout(tid);
+          reject(e);
+        }
+      },
+    );
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -206,7 +241,7 @@ export async function detectRouter(routerHost?: string): Promise<boolean> {
   const host = resolveRouterHost(routerHost);
   for (const probe of [`${host}/v1/models`, `${host}/api/health`]) {
     try {
-      await httpGetJson(probe, DETECT_TIMEOUT_MS, routerHeaders());
+      await hardDeadline(DETECT_TIMEOUT_MS, httpGetJson(probe, DETECT_TIMEOUT_MS, routerHeaders()));
       return true;
     } catch {
       // try the next probe path
@@ -246,7 +281,7 @@ async function getOllamaEmbedding(text: string, config: EmbeddingConfig): Promis
 export async function detectOllama(ollamaHost?: string): Promise<boolean> {
   const host = normalizeHost(ollamaHost) ?? normalizeHost(process.env.OLLAMA_HOST) ?? DEFAULT_OLLAMA_HOST;
   try {
-    await httpGetJson(`${host}/api/version`, DETECT_TIMEOUT_MS);
+    await hardDeadline(DETECT_TIMEOUT_MS, httpGetJson(`${host}/api/version`, DETECT_TIMEOUT_MS));
     return true;
   } catch {
     return false;

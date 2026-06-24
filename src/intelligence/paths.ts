@@ -38,6 +38,8 @@ export interface IntelligencePaths {
   historyDir: string;
   /** `<root>/.autoclaw/vector/last-index.json` */
   lastIndexPath: string;
+  /** `<root>/.autoclaw/vector/index-health.json` — at-a-glance index health snapshot. */
+  indexHealthPath: string;
   /** `<root>/.autoclaw/kg` — Knowledge Graph store directory. */
   kgDir: string;
   /** `<root>/.autoclaw/kg/kg.db` — Knowledge Graph SQLite file. */
@@ -63,6 +65,7 @@ export function intelligencePaths(workspaceRoot: string): IntelligencePaths {
     locksDir: toForwardSlash(path.join(root, '.locks')),
     historyDir: toForwardSlash(path.join(root, 'history')),
     lastIndexPath: toForwardSlash(path.join(vectorDir, 'last-index.json')),
+    indexHealthPath: toForwardSlash(path.join(vectorDir, 'index-health.json')),
     kgDir: toForwardSlash(path.join(root, 'kg')),
     kgDbPath: toForwardSlash(path.join(root, 'kg', 'kg.db')),
     // Owned by KDream (skills/kdream); the layer appends, never overwrites.

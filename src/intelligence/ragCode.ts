@@ -34,7 +34,8 @@ import { IntelligenceConfig } from './types';
 import { intelligencePaths, ensureDir, toForwardSlash } from './paths';
 import { resolveProjectKey } from './project';
 import { redactSecrets } from './redact';
-import { getEmbedding } from './embeddings';
+import { getEmbedding, detectRouter, detectOllama } from './embeddings';
+import { resolveEmbeddingConfig } from './embeddingResolve';
 import { acquireLock } from './fileLock';
 import { initVectorDB, initVectorBackend, VectorRecord } from './vector';
 
@@ -102,6 +103,49 @@ export interface IndexResult {
   staleIndex: boolean;
   /** Current HEAD commit recorded for the project, when resolvable. */
   commit?: string;
+  /**
+   * True when a `--force` rebuild was REFUSED up front because the configured
+   * embedding provider was not serving embeddings — rebuilding would have cleared
+   * the stale signal and poisoned the store with basic `none` vectors. The
+   * existing index is left untouched. The command layer turns this into an
+   * actionable "fix or switch the provider" prompt.
+   */
+  abortedProviderDown?: boolean;
+}
+
+/**
+ * At-a-glance index health, persisted to `.autoclaw/vector/index-health.json`
+ * (keyed by project) at the end of every index run. Lets panels/commands read
+ * index status instantly WITHOUT opening + re-initializing the vector DB (which
+ * is what made the stale signal invisible to the dashboard before).
+ */
+export interface IndexHealthSnapshot {
+  schemaVersion: 1;
+  project: string;
+  /** Configured provider at index time (may be `auto`). */
+  provider: string;
+  /** Active embedding model the store was written with. */
+  model: string;
+  /** Vector dimension the store was provisioned with. */
+  dimension: number;
+  /** Total chunks stored for this project namespace after the run. */
+  chunkCount: number;
+  /** Persisted/effective stale signal (model boundary or mid-pass degrade). */
+  staleIndex: boolean;
+  /** True when a real provider fell back to `none` on some chunks this run. */
+  embeddingDegraded: boolean;
+  /** ISO timestamp of this snapshot. */
+  indexedAt: string;
+  /** HEAD commit at index time, when resolvable. */
+  commit?: string;
+  /** Compact stats from the run that produced this snapshot. */
+  lastRun: {
+    filesIndexed: number;
+    chunksIndexed: number;
+    chunksDeleted: number;
+    incremental: boolean;
+    cancelled: boolean;
+  };
 }
 
 /** Options for {@link retrieveCode}. */
@@ -307,22 +351,128 @@ function lastCommitFor(lastIndexPath: string, project: string): string | null {
   return entry && typeof entry.commit === 'string' && entry.commit !== '' ? entry.commit : null;
 }
 
-/** Merge + persist the current commit for `project`, lock-protected. */
+/** Merge + persist the current commit for `project`, lock-protected. Best-effort. */
 async function writeLastIndex(
   lastIndexPath: string,
   vectorDir: string,
   project: string,
   commit: string,
 ): Promise<void> {
-  await ensureDir(vectorDir);
-  const release = await acquireLock(lastIndexPath);
+  let release: (() => void) | undefined;
   try {
+    await ensureDir(vectorDir);
+    release = await acquireLock(lastIndexPath);
     const data = readLastIndex(lastIndexPath);
     data[project] = { commit, indexedAt: new Date().toISOString() };
     fs.writeFileSync(lastIndexPath, JSON.stringify(data, null, 2), 'utf8');
+  } catch {
+    // best-effort — a contended/stale lock or write failure must never throw out
+    // of indexCodebase and discard an already-completed index.
   } finally {
-    release();
+    release?.();
   }
+}
+
+// ---------------------------------------------------------------------------
+// index-health.json (per-project namespace, lock-protected)
+// ---------------------------------------------------------------------------
+
+/** A tiny, fixed string embedded to verify a provider is serving embeddings. */
+const HEALTH_PROBE_TEXT = 'autoclaw embedding provider probe';
+
+type IndexHealthFile = Record<string, IndexHealthSnapshot>;
+
+/**
+ * Read the persisted index-health snapshot for `project` (or all projects when
+ * `project` is omitted). Returns `undefined`/`{}` when absent or malformed —
+ * never throws, so a missing snapshot reads as "never indexed".
+ */
+export function readIndexHealth(indexHealthPath: string): IndexHealthFile;
+export function readIndexHealth(
+  indexHealthPath: string,
+  project: string,
+): IndexHealthSnapshot | undefined;
+export function readIndexHealth(
+  indexHealthPath: string,
+  project?: string,
+): IndexHealthFile | IndexHealthSnapshot | undefined {
+  let file: IndexHealthFile = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(indexHealthPath, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      file = parsed as IndexHealthFile;
+    }
+  } catch {
+    // absent / malformed — treat as no prior snapshot
+  }
+  return project === undefined ? file : file[project];
+}
+
+/** Merge + persist the health snapshot for `project`, lock-protected. */
+async function writeIndexHealth(
+  indexHealthPath: string,
+  vectorDir: string,
+  project: string,
+  snapshot: IndexHealthSnapshot,
+): Promise<void> {
+  let release: (() => void) | undefined;
+  try {
+    await ensureDir(vectorDir);
+    release = await acquireLock(indexHealthPath);
+    const data = readIndexHealth(indexHealthPath);
+    data[project] = snapshot;
+    fs.writeFileSync(indexHealthPath, JSON.stringify(data, null, 2), 'utf8');
+  } catch {
+    // best-effort — a health snapshot is advisory; a contended/stale lock or a
+    // write failure must never throw out of indexCodebase and lose a completed
+    // index result.
+  } finally {
+    release?.();
+  }
+}
+
+/**
+ * Cheap, bounded reachability probe for the force pre-flight. For network
+ * providers it uses the ~1.5s liveness detectors — NOT the 30s embed path, which
+ * would stall the whole `/index-code → Full re-index` command on a host that
+ * accepts the socket but hangs. In-process providers (transformers) cannot hang
+ * on a socket, so a probe embed there is local + fast. Returns true when a
+ * rebuild would degrade to `none` and thus poison the store.
+ */
+async function providerUnreachableForRebuild(
+  config: IntelligenceConfig,
+  log: LogFn,
+): Promise<boolean> {
+  const e = config.embedding;
+  try {
+    if (e.provider === 'router') {
+      return !(await detectRouter(e.routerHost));
+    }
+    if (e.provider === 'ollama') {
+      return !(await detectOllama(e.ollamaHost));
+    }
+    let degraded = false;
+    await getEmbedding(HEALTH_PROBE_TEXT, e, log, () => {
+      degraded = true;
+    });
+    return degraded;
+  } catch {
+    return true;
+  }
+}
+
+/** A zeroed {@link IndexResult} for the early-return paths (cancel / abort). */
+function emptyResult(over: Partial<IndexResult>): IndexResult {
+  return {
+    filesIndexed: 0,
+    chunksIndexed: 0,
+    incremental: false,
+    degraded: false,
+    chunksDeleted: 0,
+    cancelled: false,
+    staleIndex: false,
+    ...over,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -338,10 +488,38 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
   const { workspaceRoot, force = false } = options;
   const log: LogFn = options.log ?? (() => undefined);
   const gitRunner = options.gitRunner ?? defaultGitRunner;
-  const config = options.config ?? loadConfig(workspaceRoot, log);
+  let config = options.config ?? loadConfig(workspaceRoot, log);
+  // Resolve an unresolved `auto` provider to a concrete one up front. The embed
+  // calls below (and the force pre-flight) cannot run against `auto` — it throws
+  // "must be resolved" — so a direct caller passing the default config would
+  // otherwise degrade EVERY chunk to none. The command layer pre-resolves, so
+  // this is a no-op there; it only fires for direct `auto` callers.
+  if (config.embedding.provider === 'auto') {
+    config = (await resolveEmbeddingConfig(config, workspaceRoot, { log })).config;
+  }
   const project = resolveProjectKey(workspaceRoot);
   const paths = intelligencePaths(workspaceRoot);
   const signature = getActiveEmbeddingSignature(config);
+
+  // Pre-flight (force only): a `--force` open CLEARS the persisted stale signal
+  // and replaces the corpus. If the configured real provider is down, every
+  // chunk degrades to `none` — clearing the signal AND poisoning geometry, which
+  // is the "force re-index keeps failing / stays stale" loop. Probe once up front
+  // and refuse the destructive rebuild, leaving the existing store untouched.
+  if (force && config.embedding.provider !== 'none') {
+    if (options.isCancelled?.()) {
+      return emptyResult({ cancelled: true });
+    }
+    if (await providerUnreachableForRebuild(config, log)) {
+      log(
+        `rag: ABORTED force rebuild — the "${config.embedding.provider}" embedding provider is ` +
+          `not serving embeddings right now, so a rebuild would clear the index and refill it with ` +
+          `basic 'none' vectors. The existing index was left untouched. Fix the provider (or pick ` +
+          `another via "AutoClaw: Intelligence — Set Embedding Provider"), then re-run a full re-index.`,
+      );
+      return emptyResult({ abortedProviderDown: true });
+    }
+  }
 
   const db = await initVectorBackend(config, paths.dbPath, signature, log, { forceRebuild: force });
   if (db.degraded) {
@@ -457,6 +635,10 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
     }
 
     if (embeddingDegraded) {
+      // Persist the signal honestly: a forced open cleared `stale_index`, but the
+      // rebuild stored mixed-geometry vectors, so the index is NOT clean. Without
+      // this, the dashboard/next-open would falsely report a fresh index.
+      await db.setStale(true);
       log(
         `rag: WARNING — the "${config.embedding.provider}" embedding provider failed on some ` +
           `chunks mid-index; those fell back to basic 'none' vectors, so this index now MIXES ` +
@@ -464,6 +646,39 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
           `/index-code --force for a clean rebuild.`,
       );
     }
+
+    const staleIndex = db.staleIndex || embeddingDegraded;
+
+    // Persist the at-a-glance health snapshot so panels/commands read index state
+    // instantly without re-opening the DB. Count is namespace-scoped + best-effort.
+    let chunkCount = chunksIndexed;
+    try {
+      // SQL-filtered to this project's code chunks (WHERE project = ? AND source = ?)
+      // — never a full scan of the shared store (which also holds learn vectors
+      // and other projects). Mirrors the sweepDeletedFiles call above.
+      chunkCount = (await db.listIds({ project, source: SOURCE_TAG })).length;
+    } catch {
+      // fall back to this pass's count if listing fails
+    }
+    await writeIndexHealth(paths.indexHealthPath, paths.vectorDir, project, {
+      schemaVersion: 1,
+      project,
+      provider: config.embedding.provider,
+      model: db.model,
+      dimension: db.dimension,
+      chunkCount,
+      staleIndex,
+      embeddingDegraded,
+      indexedAt: new Date().toISOString(),
+      commit: currentCommit ?? undefined,
+      lastRun: {
+        filesIndexed: filesToIndex.length,
+        chunksIndexed,
+        chunksDeleted,
+        incremental: usedIncremental,
+        cancelled,
+      },
+    });
 
     return {
       filesIndexed: filesToIndex.length,
@@ -474,7 +689,7 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
       cancelled,
       // A mid-pass degradation poisons geometry under an unchanged signature, so
       // surface it through the same staleIndex channel as a model change.
-      staleIndex: db.staleIndex || embeddingDegraded,
+      staleIndex,
       commit: currentCommit ?? undefined,
     };
   } finally {

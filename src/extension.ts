@@ -74,6 +74,7 @@ import { registerIntelligenceCommands } from './intelligence-commands';
 import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
 import { startIndexWatchService, loadConfig as loadIntelligenceConfig, type IndexWatchHandle } from './intelligence';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
+import { registerIntelligenceHealthSurface } from './intelligence/healthSurface';
 import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
 import { registerLicensing } from './licensing/licensing';
@@ -1256,6 +1257,15 @@ export function activate(context: vscode.ExtensionContext) {
   // Intelligence metrics dashboard (webview view + refresh command + metrics
   // file watcher). Registration only — no I/O until the view is opened.
   registerIntelligenceDashboard(context);
+
+  // Always-on Intelligence health surface (Theme 3): a status-bar rollup, a
+  // one-shot toast when the layer is in a red state, and the auto-detect
+  // "learn from other tools' sessions" consent prompt. Registration only; the
+  // probe + detection are deferred + best-effort (never block activation).
+  registerIntelligenceHealthSurface(
+    context,
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+  );
 
   // Full-tab Manager Surface (autoclaw.manager.open) — roomy single pane for
   // overseeing the fleet. Command registration only; no I/O until opened.

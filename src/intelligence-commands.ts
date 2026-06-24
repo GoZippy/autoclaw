@@ -31,9 +31,14 @@ import {
 import {
   installEmbeddingsProvider,
   isEmbeddingsInstalled,
+  resolveInstalledTransformersEntry,
   TRANSFORMERS_DIR_ENV,
   TRANSFORMERS_CACHE_ENV,
 } from './intelligence/installEmbeddings';
+import {
+  buildProviderOptions,
+  ProviderProbe,
+} from './intelligence/providerChoice';
 import {
   resolveBackendDir,
   gatherStorageStatus,
@@ -261,6 +266,26 @@ async function runIndexCode(workspaceRoot: string): Promise<void> {
     void vscode.window.showWarningMessage(
       'Intelligence: vector backend unavailable, codebase was not indexed.',
     );
+    return;
+  }
+
+  if (result.abortedProviderDown) {
+    logLine(
+      `index-code: full re-index refused — "${config.embedding.provider}" provider not serving ` +
+        'embeddings; existing index left untouched (no stale/none poisoning).',
+    );
+    const choice = await vscode.window.showWarningMessage(
+      `Intelligence: full re-index skipped — the "${config.embedding.provider}" embedding provider ` +
+        'is not responding, so your existing index was left intact instead of being refilled with ' +
+        'low-quality vectors. Fix the provider or pick another, then re-run.',
+      'Set Provider…',
+      'Show Log',
+    );
+    if (choice === 'Set Provider…') {
+      await vscode.commands.executeCommand('autoclaw.intelligence.setEmbeddingProvider');
+    } else if (choice === 'Show Log') {
+      getChannel().show(true);
+    }
     return;
   }
 
@@ -1507,36 +1532,36 @@ async function runSetEmbeddingProvider(
   }
   const pin = readEmbeddingPin(workspaceRoot);
   const current = pin ? `${pin.provider} (${pin.model}, ${pin.dimension}-dim)` : 'auto';
+  const log: LogFn = logLine;
+
+  // Probe every rung IN PARALLEL (each detector is ~1.5s) so the picker can
+  // explain itself with LIVE status instead of static labels. The Ollama embed
+  // model only matters when Ollama is actually up, so guard the model lookup.
+  const probe = await probeEmbeddingProviders(context, workspaceRoot);
+  const options = buildProviderOptions(probe, current);
   const pick = await vscode.window.showQuickPick(
-    [
-      { label: 'Auto-detect (recommended)', description: 'Probe Router → Ollama → offline → basic and pin the best', value: 'auto' as const },
-      { label: 'Zippy Mesh router', description: 'OpenAI-compatible /v1/embeddings — one install for chat + embeddings, team-shareable', value: 'router' as const },
-      { label: 'Ollama (local)', description: 'A local Ollama embedding model (e.g. nomic-embed-text)', value: 'ollama' as const },
-      { label: 'Offline (in-process)', description: 'Install @xenova/transformers (~135 MB) — fully offline, no service', value: 'transformers' as const },
-      { label: "Basic ('none')", description: 'Deterministic keyword vectors — always works, lower quality', value: 'none' as const },
-    ],
-    { placeHolder: `Embedding provider (current: ${current})` },
+    options.map((o) => ({ label: o.label, description: o.description, id: o.id })),
+    { placeHolder: `Embedding provider (current: ${current})`, matchOnDescription: true },
   );
   if (!pick) {
     return;
   }
-  const log: LogFn = logLine;
   getChannel().show(true);
 
   // Offline install has its own flow (and sets the provider on success).
-  if (pick.value === 'transformers') {
+  if (pick.id === 'transformers') {
     await runInstallEmbeddings(context, workspaceRoot);
     return;
   }
 
   let embedding: EmbeddingConfig;
-  if (pick.value === 'auto') {
+  if (pick.id === 'auto') {
     embedding = { provider: 'auto', model: 'Xenova/nomic-embed-text-v1.5', dimension: 768 };
-  } else if (pick.value === 'none') {
+  } else if (pick.id === 'none') {
     embedding = { provider: 'none', model: 'none-hashed-bow', dimension: 768 };
-  } else if (pick.value === 'router') {
+  } else if (pick.id === 'router') {
     const routerHost = resolveRouterHost();
-    if (!(await detectRouter(routerHost))) {
+    if (!probe.router.reachable && !(await detectRouter(routerHost))) {
       const go = await vscode.window.showWarningMessage(
         `No Zippy Mesh router reachable at ${routerHost}. Set it anyway (it will work once the router is up)?`,
         'Set Anyway',
@@ -1550,13 +1575,13 @@ async function runSetEmbeddingProvider(
     embedding = { provider: 'router', model: DEFAULT_EMBED_MODEL, dimension: dim ?? 768, routerHost };
   } else {
     // ollama
-    if (!(await detectOllama())) {
+    if (!probe.ollama.reachable && !(await detectOllama())) {
       void vscode.window.showWarningMessage(
         'No Ollama server reachable (default http://localhost:11434). Start Ollama, then retry.',
       );
       return;
     }
-    const model = pickOllamaEmbedModel(await listOllamaModels()) ?? DEFAULT_EMBED_MODEL;
+    const model = probe.ollama.embedModel ?? pickOllamaEmbedModel(await listOllamaModels()) ?? DEFAULT_EMBED_MODEL;
     const dim = await probeProviderDimension({ provider: 'ollama', model, dimension: 768 }, log);
     if (dim === undefined) {
       const go = await vscode.window.showWarningMessage(
@@ -1572,10 +1597,50 @@ async function runSetEmbeddingProvider(
   }
 
   setEmbeddingProvider(workspaceRoot, embedding, log);
+
+  // Closing the loop: a new provider only takes effect once the store is
+  // rebuilt under its geometry, so offer an immediate full re-index. `auto`/
+  // `none` keep the passive hint — there is no fresh geometry to rebuild for.
+  if (embedding.provider === 'router' || embedding.provider === 'ollama') {
+    const go = await vscode.window.showInformationMessage(
+      `Provider set to "${embedding.provider}" (${embedding.model}, ${embedding.dimension}-dim). ` +
+        'Re-index now to rebuild under it?',
+      'Full re-index',
+      'Later',
+    );
+    if (go === 'Full re-index') {
+      await vscode.commands.executeCommand('autoclaw.intelligence.indexCode');
+    }
+    return;
+  }
   void vscode.window.showInformationMessage(
     `Embedding provider set to "${embedding.provider}" (${embedding.model}, ${embedding.dimension}-dim). ` +
       `Run "Index Codebase" → Full re-index to rebuild under the new provider.`,
   );
+}
+
+/**
+ * Probe every embedding rung IN PARALLEL so the picker can explain itself with
+ * live status. Router/Ollama use the network detectors; the offline rung is an
+ * on-disk install check. The Ollama embed-model lookup only runs when Ollama is
+ * actually reachable. Never throws — a failed probe degrades to "not available".
+ */
+async function probeEmbeddingProviders(
+  context: vscode.ExtensionContext,
+  workspaceRoot: string,
+): Promise<ProviderProbe> {
+  const routerHost = resolveRouterHost();
+  const transformersDir = process.env[TRANSFORMERS_DIR_ENV] || embeddingsDir(context, workspaceRoot);
+  const [router, ollamaUp, ollamaModels] = await Promise.all([
+    detectRouter(routerHost),
+    detectOllama(),
+    listOllamaModels(),
+  ]);
+  return {
+    router: { reachable: router },
+    ollama: { reachable: ollamaUp, embedModel: ollamaUp ? pickOllamaEmbedModel(ollamaModels) : undefined },
+    transformers: { installed: resolveInstalledTransformersEntry(transformersDir) !== undefined },
+  };
 }
 
 /**

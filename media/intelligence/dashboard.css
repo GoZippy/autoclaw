@@ -83,6 +83,153 @@ body {
   background: var(--vscode-sideBar-background, transparent);
 }
 
+/* ---- Intelligence Health card (Theme 2) ---------------------------------- */
+
+.health-card {
+  margin-bottom: var(--gap);
+  padding: var(--acw-space-4);
+  border-radius: var(--radius);
+  background: var(--acw-card-bg);
+  border: 1px solid var(--acw-card-border);
+}
+
+.health-head {
+  display: flex;
+  align-items: center;
+  gap: var(--acw-space-3);
+  margin-bottom: var(--acw-space-3);
+}
+
+.health-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--vscode-descriptionForeground);
+  box-shadow: 0 0 0 2px rgba(127, 127, 127, 0.15);
+}
+
+.health-dot-green { background: var(--acw-status-active); }
+.health-dot-amber { background: var(--acw-status-idle); }
+.health-dot-red { background: var(--acw-status-error); }
+.health-dot-unknown { background: var(--vscode-descriptionForeground); }
+
+.health-status {
+  font-weight: 600;
+}
+
+.health-title {
+  margin-left: auto;
+  font-size: 0.82em;
+  color: var(--acw-header-fg);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.health-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--acw-space-2);
+  margin-bottom: var(--acw-space-3);
+}
+
+.health-row {
+  display: flex;
+  gap: var(--acw-space-3);
+  font-size: 0.88em;
+  line-height: 1.35;
+}
+
+.health-row-label {
+  flex: 0 0 64px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.health-row-value {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.health-stale-badge,
+.health-degraded-badge {
+  display: inline-block;
+  font-size: 0.78em;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: var(--acw-radius-sm);
+  margin-left: 4px;
+  vertical-align: baseline;
+}
+
+.health-stale-badge {
+  color: var(--vscode-inputValidation-errorBackground, #fff);
+  background: var(--acw-status-error);
+}
+
+.health-degraded-badge {
+  border: 1px solid var(--acw-status-warn);
+  color: var(--acw-status-warn);
+}
+
+.health-nudges {
+  display: flex;
+  flex-direction: column;
+  gap: var(--acw-space-2);
+}
+
+.health-nudge {
+  display: flex;
+  align-items: center;
+  gap: var(--acw-space-3);
+  padding: var(--acw-space-3);
+  border-radius: var(--acw-radius-sm);
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.06));
+  border-left: 3px solid var(--vscode-descriptionForeground);
+}
+
+.health-nudge.nudge-info { border-left-color: var(--acw-status-info); }
+.health-nudge.nudge-warn { border-left-color: var(--acw-status-warn); }
+.health-nudge.nudge-error { border-left-color: var(--acw-status-error); }
+
+.health-nudge .nudge-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.health-nudge .nudge-title {
+  font-weight: 600;
+  font-size: 0.88em;
+}
+
+.health-nudge .nudge-detail {
+  font-size: 0.82em;
+  color: var(--vscode-descriptionForeground);
+  margin-top: 2px;
+}
+
+button.nudge-action {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 5px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: var(--radius);
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  cursor: pointer;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+button.nudge-action:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+button.nudge-action:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+
 /* ---- Toolbar -------------------------------------------------------------- */
 
 .toolbar {
@@ -355,5 +502,25 @@ canvas.chart {
   .legend {
     flex-wrap: wrap;
     gap: 8px;
+  }
+
+  /* Health card: stack the row label above its value, and let a nudge's
+   * action button drop below its text instead of colliding at narrow widths. */
+  .health-row {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .health-row-label {
+    flex: initial;
+  }
+
+  .health-nudge {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  button.nudge-action {
+    align-self: flex-start;
   }
 }
