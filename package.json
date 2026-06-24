@@ -154,6 +154,10 @@
         "title": "AutoClaw: Orchestrate — Advanced Plan (optimising planner, Pro)"
       },
       {
+        "command": "autoclaw.orchestrate.runGates",
+        "title": "AutoClaw: Orchestrate — Run Acceptance Gates"
+      },
+      {
         "command": "autoclaw.intelligence.learn",
         "title": "AutoClaw: Intelligence — Learn from Sessions"
       },
