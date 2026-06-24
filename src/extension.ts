@@ -68,6 +68,7 @@ import {
   resolveCapabilityOffers,
 } from './orchestrate';
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
+import { classifyConsensusActive, type ConsensusActiveEntry } from './orchestrator/consensusActiveScan';
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
 import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
@@ -3710,24 +3711,41 @@ async function orchestrateReviewCommand(): Promise<void> {
     return;
   }
 
-  // Load all vote files, group by task_id
-  const voteFiles = fs.readdirSync(consensusDir).filter(f => f.endsWith('.json'));
-  if (voteFiles.length === 0) {
-    channel.appendLine('[orchestrate] No vote files in consensus/active/.');
-    return;
-  }
-
-  const votesByTask = new Map<string, ValidationVote[]>();
-  for (const f of voteFiles) {
+  // consensus/active holds TWO file kinds: review STUBS (`<task>.json`, no
+  // top-level `vote`) and per-agent VOTES (`<task>-<voter>.json`, string `vote`).
+  // Classify by CONTENT and take task_id from the file — filenames can't be
+  // split on '-' because ids like `RV-1` contain dashes (this was the perennial
+  // "No vote files in consensus/active/" bug). See consensusActiveScan.ts.
+  const allFiles = fs.readdirSync(consensusDir).filter(f => f.endsWith('.json'));
+  const entries: ConsensusActiveEntry[] = [];
+  for (const f of allFiles) {
     try {
       const raw = await fsPromises.readFile(path.join(consensusDir, f), 'utf8');
-      const vote = JSON.parse(raw) as ValidationVote;
-      const taskId = f.split('-')[0] ?? 'unknown';
-      if (!votesByTask.has(taskId)) { votesByTask.set(taskId, []); }
-      votesByTask.get(taskId)!.push(vote);
+      entries.push({ name: f, json: JSON.parse(raw) });
     } catch {
-      channel.appendLine(`[orchestrate] Warning: could not parse vote file ${f}`);
+      channel.appendLine(`[orchestrate] Warning: could not parse ${f}`);
     }
+  }
+  const scan = classifyConsensusActive(entries);
+  const votesByTask = scan.votesByTask as unknown as Map<string, ValidationVote[]>;
+  const awaitingReview = scan.awaitingReview;
+
+  if (votesByTask.size === 0) {
+    if (awaitingReview.length > 0) {
+      channel.appendLine(
+        `[orchestrate] ${awaitingReview.length} task(s) in peer review, awaiting agent votes: ${awaitingReview.join(', ')}.`,
+      );
+      vscode.window.showInformationMessage(
+        `Orchestrate: ${awaitingReview.length} task(s) in review, awaiting votes. Agents must vote (consensus.vote / vote files) to resolve.`,
+      );
+    } else {
+      channel.appendLine('[orchestrate] No consensus activity in consensus/active/ (no review stubs or votes yet).');
+      vscode.window.showInformationMessage('Orchestrate: no consensus activity yet.');
+    }
+    return;
+  }
+  if (awaitingReview.length > 0) {
+    channel.appendLine(`[orchestrate] Note: ${awaitingReview.length} task(s) still awaiting votes: ${awaitingReview.join(', ')}.`);
   }
 
   const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
@@ -4046,32 +4064,60 @@ async function bridgeStopCommand(): Promise<void> {
 }
 
 async function kgHealthCheckCommand(): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
-  const configuredPort = cfg.get<number>('port', 9877);
-  // Probe the port the daemon actually bound to (may differ after fallback).
-  const livePid = activeKg?.child && activeKg.child.exitCode === null ? activeKg.child.pid : null;
-  const port = activeKg && livePid !== undefined && livePid !== null
-    ? activeKg.port
-    : configuredPort;
   const channel = getKgOutputChannel();
-  if (port !== configuredPort) {
-    channel.appendLine(`[kg] (configured port ${configuredPort} unavailable; daemon bound to ${port})`);
+  const livePid = activeKg?.child && activeKg.child.exitCode === null ? activeKg.child.pid : null;
+  const daemonLive = !!(activeKg && livePid !== undefined && livePid !== null && activeKg.port > 0);
+
+  // Only probe over HTTP when the OPTIONAL standalone daemon is genuinely
+  // running on a real port. The default is the IN-PROCESS KG (node:sqlite) —
+  // probing a non-existent daemon on port 0 just spams ECONNREFUSED:80.
+  if (daemonLive) {
+    const port = activeKg!.port;
+    channel.appendLine(`[kg] healthCheck (daemon) → http://127.0.0.1:${port}/api/v1/health`);
+    const result = await fetchKgHealth(port);
+    if (result.ok) {
+      const summary = typeof result.body === 'object' ? JSON.stringify(result.body) : String(result.body);
+      channel.appendLine(`[kg] ${result.status} ${summary}`);
+      vscode.window.showInformationMessage(`AutoClaw KG (daemon): ${result.status} OK — ${summary.slice(0, 120)}`);
+    } else {
+      const detail = result.error ?? `status=${result.status ?? 'n/a'}`;
+      channel.appendLine(`[kg!] daemon healthCheck failed: ${detail}`);
+      vscode.window.showWarningMessage(`AutoClaw KG: daemon health check failed (${detail}).`, 'Open KG Output')
+        .then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+    }
+    return;
   }
-  channel.appendLine(`[kg] healthCheck → http://127.0.0.1:${port}/api/v1/health`);
-  const result = await fetchKgHealth(port);
-  if (result.ok) {
-    const summary = typeof result.body === 'object'
-      ? JSON.stringify(result.body)
-      : String(result.body);
-    channel.appendLine(`[kg] ${result.status} ${summary}`);
-    vscode.window.showInformationMessage(`AutoClaw KG: ${result.status} OK — ${summary.slice(0, 120)}`);
-  } else {
-    const detail = result.error ?? `status=${result.status ?? 'n/a'}`;
-    channel.appendLine(`[kg!] healthCheck failed: ${detail}`);
-    vscode.window.showWarningMessage(
-      `AutoClaw KG: health check failed (${detail}). Is the daemon running on port ${port}?`,
-      'Open KG Output'
-    ).then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+
+  // In-process KG: report status directly from the store handle — no HTTP.
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    channel.appendLine('[kg] healthCheck: no workspace open.');
+    return;
+  }
+  try {
+    const h = getKnowledgeGraph({ workspaceRoot });
+    const summary = {
+      mode: 'in-process',
+      ok: !h.degraded,
+      degraded: h.degraded,
+      sqlite: h.caps.sqlite, vec: h.caps.vec, fts: h.caps.fts,
+      driver: h.driverKind,
+      embedding: `${h.embedding.provider}/${h.embedding.model}@${h.embedding.dimension}`,
+    };
+    channel.appendLine(`[kg] healthCheck (in-process) → ${JSON.stringify(summary)}`);
+    if (h.degraded) {
+      vscode.window.showWarningMessage(
+        'AutoClaw KG: in-process store is DEGRADED (no SQLite driver). Run "AutoClaw: Intelligence — Install Vector Backend" or check Diagnostics.',
+        'Open KG Output',
+      ).then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+    } else {
+      vscode.window.showInformationMessage(
+        `AutoClaw KG: in-process OK — sqlite=${h.caps.sqlite} vec=${h.caps.vec} fts=${h.caps.fts} (${summary.embedding}).`,
+      );
+    }
+  } catch (e) {
+    channel.appendLine(`[kg!] in-process health check failed: ${(e as Error).message}`);
+    vscode.window.showWarningMessage(`AutoClaw KG: health check failed — ${(e as Error).message}`);
   }
 }
 
