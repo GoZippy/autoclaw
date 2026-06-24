@@ -267,8 +267,24 @@ export async function readLoopJournal(
 
 export async function writeLoopState(workspaceRoot: string, state: LoopState): Promise<void> {
   const fp = loopStatePath(workspaceRoot);
-  await fsPromises.mkdir(path.dirname(fp), { recursive: true });
-  await fsPromises.writeFile(fp, JSON.stringify(state, null, 2), 'utf8');
+  const data = JSON.stringify(state, null, 2);
+  try {
+    await fsPromises.mkdir(path.dirname(fp), { recursive: true });
+    // Atomic + resilient: several windows may run a loop against the same
+    // workspace and write this file concurrently. Writing through a per-process
+    // temp file then renaming avoids a sharing-violation on the destination
+    // ("UNKNOWN: unknown error, open ...") on Windows. The rename is retried
+    // because it can transiently fail with EPERM when the target is held.
+    const tmp = `${fp}.${process.pid}.tmp`;
+    await fsPromises.writeFile(tmp, data, 'utf8');
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { await fsPromises.rename(tmp, fp); return; }
+      catch { await new Promise(r => setTimeout(r, 20 * (attempt + 1))); }
+    }
+    // Rename kept failing — fall back to an in-place write and drop the temp.
+    try { await fsPromises.writeFile(fp, data, 'utf8'); }
+    finally { try { await fsPromises.rm(tmp, { force: true }); } catch { /* ignore */ } }
+  } catch { /* persistence is best-effort; never let a disk hiccup crash the loop */ }
 }
 
 export async function readPersistedLoopState(workspaceRoot: string): Promise<LoopState> {

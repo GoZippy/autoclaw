@@ -1097,12 +1097,25 @@ export function readRegistry(workspaceRoot: string): Registry {
 export function writeRegistry(workspaceRoot: string, reg: Registry): void {
   const p = getRegistryPath(workspaceRoot);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  // Single-process ownership — temp+rename is overkill, but we still write
-  // through a temp path to avoid leaving a partially-written registry.json
+  // Write through a temp path to avoid leaving a partially-written registry.json
   // if the host crashes mid-write.
+  const json = JSON.stringify(reg, null, 2);
   const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(reg, null, 2));
-  fs.renameSync(tmp, p);
+  try {
+    fs.writeFileSync(tmp, json);
+  } catch {
+    // Couldn't stage the temp file — write in place as a last resort.
+    try { fs.writeFileSync(p, json); } catch { /* best-effort */ }
+    return;
+  }
+  // renameSync can transiently fail with EPERM on Windows when the destination
+  // is briefly held open (a reader, an indexer, or AV). Retry, then fall back to
+  // an in-place write so a transient lock can't crash the extension host.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try { fs.renameSync(tmp, p); return; } catch { /* retry */ }
+  }
+  try { fs.writeFileSync(p, json); } catch { /* best-effort */ }
+  try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
 }
 
 function upsertRegistry(reg: Registry, entry: RegistryEntry): Registry {
