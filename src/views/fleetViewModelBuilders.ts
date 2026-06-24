@@ -487,7 +487,8 @@ export function buildAwaitingYou(
 export function activityKindForMessage(type: string): ActivityKind {
   switch (type) {
     case 'task_claim':       return 'task_started';
-    case 'task_assignment':  return 'task_started';
+    case 'task_assign':      return 'task_started';
+    case 'task_assignment':  return 'task_started'; // legacy alias for pre-unification messages on disk
     case 'task_complete':    return 'task_complete';
     case 'finding_report':   return 'finding_raised';
     case 'consensus_result': return 'consensus_passed';
