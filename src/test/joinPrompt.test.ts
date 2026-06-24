@@ -176,3 +176,66 @@ suite('joinPrompt — edges + invite convenience', () => {
     }
   });
 });
+
+suite('joinPrompt — role != agent_type is announced distinctly (regression)', () => {
+  // A `reviewer` ROLE must announce the `auditor` TYPE, not "reviewer". Before the
+  // fix the renderer wrote the role string into BOTH fields, so a reviewer never
+  // got the auditor (read-only / unanimous) posture downstream.
+  const REVIEWER = { ...BASE, role: 'reviewer', agentType: undefined as string | undefined };
+
+  test('mcp lane: derived auditor type, role stays reviewer', () => {
+    const p = renderJoinPrompt({ ...REVIEWER, host: 'codex' });
+    assert.ok(p.includes('role: "reviewer"'), 'role must remain reviewer');
+    assert.ok(p.includes('agent_type: "auditor"'), 'agent_type must derive to auditor');
+    assert.ok(!p.includes('agent_type: "reviewer"'), 'must NOT collapse role into agent_type');
+  });
+
+  test('http lane: derived auditor type announced on heartbeat', () => {
+    const p = renderJoinPrompt({ ...REVIEWER, host: 'hermes' });
+    assert.ok(p.includes('agent_type: "auditor"'), 'http heartbeat must announce auditor');
+    assert.ok(!p.includes('agent_type: "reviewer"'));
+  });
+
+  test('fs lane: beacon JSON carries distinct role + agent_type', () => {
+    const p = renderJoinPrompt({ ...REVIEWER, host: 'openclaw' });
+    assert.ok(/"role":\s*"reviewer"/.test(p), 'fs beacon role = reviewer');
+    assert.ok(/"agent_type":\s*"auditor"/.test(p), 'fs beacon agent_type = auditor');
+  });
+
+  test('slash lane (Claude Code) now emits agent_type (previously omitted)', () => {
+    const p = renderJoinPrompt({ ...REVIEWER, host: 'claude-code' });
+    assert.ok(p.includes('agent_type: "auditor"'), 'slash heartbeat must now announce the derived type');
+    assert.ok(p.includes('role: "reviewer"'));
+  });
+
+  test('explicit agentType override wins over role derivation', () => {
+    const p = renderJoinPrompt({ ...BASE, host: 'codex', role: 'docs', agentType: 'assistant' });
+    assert.ok(p.includes('agent_type: "assistant"'), 'explicit override must be announced');
+    assert.ok(!p.includes('agent_type: "coder"'), 'must not use the role-derived default when overridden');
+  });
+
+  test('the header surfaces the behavioral type line', () => {
+    const p = renderJoinPrompt({ ...REVIEWER, host: 'codex' });
+    assert.ok(/Behavioral type:\s*auditor/.test(p), 'header must state the derived behavioral type');
+  });
+
+  test('renderJoinPromptForInvite threads suggested_agent_type distinctly', () => {
+    const invite: Invite = {
+      token: 'join-rt-001',
+      issued_by: 'claude-code',
+      project: 'demo',
+      workspace: 'K:/Projects/demo',
+      suggested_role: 'reviewer',
+      suggested_agent_type: 'auditor',
+      scope: ['src/**'],
+      trust: 'off',
+      admit_policy: 'auto-preapproved',
+      issued_at: '2026-06-23T00:00:00.000Z',
+      expires: '2026-06-24T00:00:00.000Z',
+      consumed_by: null,
+    };
+    const p = renderJoinPromptForInvite('claude-desktop', invite);
+    assert.ok(p.includes('role: "reviewer"'), 'invite role threaded');
+    assert.ok(p.includes('agent_type: "auditor"'), 'invite suggested_agent_type threaded distinctly');
+  });
+});

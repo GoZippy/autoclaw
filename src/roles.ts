@@ -38,6 +38,17 @@ export interface RoleMeta {
   glyph: string;
   /** CSS class carrying the role color (defined in kdream-dashboard.css). */
   cssClass: string;
+  /**
+   * One-line plain-language explanation of the role, shown as the wrapped help
+   * (`item.detail`) in the role picker so a new user can tell, e.g., product from
+   * architect or designer from creative without reading docs.
+   */
+  description: string;
+  /**
+   * A 2-3 word routing hint shown inline (`item.description`) next to the label —
+   * a glanceable summary, NOT the raw role id.
+   */
+  hint: string;
 }
 
 /** Stable display order — leadership first, then build/verify, then support. */
@@ -49,19 +60,19 @@ export const ROLE_ORDER: readonly CanonicalRole[] = [
 ];
 
 export const ROLE_META: Record<CanonicalRole, RoleMeta> = {
-  orchestrator: { id: 'orchestrator', label: 'Orchestrator', abbrev: 'ORC', glyph: '◎', cssClass: 'role-orchestrator' },
-  architect:    { id: 'architect',    label: 'Architect',    abbrev: 'ARC', glyph: '◇', cssClass: 'role-architect' },
-  product:      { id: 'product',      label: 'Product',      abbrev: 'PRD', glyph: '★', cssClass: 'role-product' },
-  coder:        { id: 'coder',        label: 'Coder',        abbrev: 'COD', glyph: '⌨', cssClass: 'role-coder' },
-  reviewer:     { id: 'reviewer',     label: 'Reviewer',     abbrev: 'REV', glyph: '✓', cssClass: 'role-reviewer' },
-  tester:       { id: 'tester',       label: 'Test/QA',      abbrev: 'QA',  glyph: '⚗', cssClass: 'role-tester' },
-  security:     { id: 'security',     label: 'Security',     abbrev: 'SEC', glyph: '⛨', cssClass: 'role-security' },
-  designer:     { id: 'designer',     label: 'UI/UX',        abbrev: 'UIX', glyph: '✎', cssClass: 'role-designer' },
-  creative:     { id: 'creative',     label: 'Creative',     abbrev: 'CRE', glyph: '✦', cssClass: 'role-creative' },
-  docs:         { id: 'docs',         label: 'Docs',         abbrev: 'DOC', glyph: '¶', cssClass: 'role-docs' },
-  researcher:   { id: 'researcher',   label: 'Research',     abbrev: 'RES', glyph: '◌', cssClass: 'role-researcher' },
-  ops:          { id: 'ops',          label: 'Ops/Release',  abbrev: 'OPS', glyph: '⚙', cssClass: 'role-ops' },
-  generalist:   { id: 'generalist',   label: 'Generalist',   abbrev: 'GEN', glyph: '•', cssClass: 'role-generalist' },
+  orchestrator: { id: 'orchestrator', label: 'Orchestrator', abbrev: 'ORC', glyph: '◎', cssClass: 'role-orchestrator', hint: 'coordinates the team', description: "Coordinates the other agents — splits the work, hands it out, and pulls the results together." },
+  architect:    { id: 'architect',    label: 'Architect',    abbrev: 'ARC', glyph: '◇', cssClass: 'role-architect',    hint: 'system design',        description: 'Tech lead for system design and structure before and during the build.' },
+  product:      { id: 'product',      label: 'Product',      abbrev: 'PRD', glyph: '★', cssClass: 'role-product',      hint: 'owns requirements',    description: "Owns the requirements and what 'done' means; approves the direction." },
+  coder:        { id: 'coder',        label: 'Coder',        abbrev: 'COD', glyph: '⌨', cssClass: 'role-coder',        hint: 'writes code',          description: 'Implements the changes in the repo under a given scope.' },
+  reviewer:     { id: 'reviewer',     label: 'Reviewer',     abbrev: 'REV', glyph: '✓', cssClass: 'role-reviewer',     hint: 'reviews & gates',      description: "Reviews peers' work and flags issues before it merges." },
+  tester:       { id: 'tester',       label: 'Test/QA',      abbrev: 'QA',  glyph: '⚗', cssClass: 'role-tester',       hint: 'tests & QA',           description: 'Writes and runs tests and checks the work actually behaves.' },
+  security:     { id: 'security',     label: 'Security',     abbrev: 'SEC', glyph: '⛨', cssClass: 'role-security',     hint: 'security audit',       description: 'Hardens the code and audits it for security problems.' },
+  designer:     { id: 'designer',     label: 'UI/UX',        abbrev: 'UIX', glyph: '✎', cssClass: 'role-designer',     hint: 'UI / UX',              description: 'Handles the look, layout, and user experience.' },
+  creative:     { id: 'creative',     label: 'Creative',     abbrev: 'CRE', glyph: '✦', cssClass: 'role-creative',     hint: 'copy & ideas',         description: 'Copy, naming, and idea generation.' },
+  docs:         { id: 'docs',         label: 'Docs',         abbrev: 'DOC', glyph: '¶', cssClass: 'role-docs',         hint: 'documentation',        description: 'Writes and keeps the documentation in sync with the code.' },
+  researcher:   { id: 'researcher',   label: 'Research',     abbrev: 'RES', glyph: '◌', cssClass: 'role-researcher',   hint: 'investigation',        description: 'Investigates and analyzes — gathers what the team needs to know.' },
+  ops:          { id: 'ops',          label: 'Ops/Release',  abbrev: 'OPS', glyph: '⚙', cssClass: 'role-ops',          hint: 'release & infra',      description: 'Handles release, infrastructure, and running jobs.' },
+  generalist:   { id: 'generalist',   label: 'Generalist',   abbrev: 'GEN', glyph: '•', cssClass: 'role-generalist',   hint: "whatever's needed",    description: 'No specific lane — picks up whatever the project needs next.' },
 };
 
 /** Exact-match synonyms (after lowercasing + stripping separators). */
