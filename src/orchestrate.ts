@@ -2008,7 +2008,11 @@ export function mergeFindings(votes: ValidationVote[]): {
   const findingMap = new Map<string, { finding: ValidationFinding; agents: string[] }>();
 
   for (const vote of votes) {
-    for (const finding of vote.findings) {
+    // Votes read from consensus/active/ are raw JSON and may omit `findings`
+    // (an agent can approve with no findings) or carry a malformed value. Guard
+    // so an absent/non-array field can't throw "vote.findings is not iterable".
+    const findings = Array.isArray(vote.findings) ? vote.findings : [];
+    for (const finding of findings) {
       const key = `${finding.file ?? ''}:${finding.line ?? 0}:${finding.category}:${finding.description}`;
       const existing = findingMap.get(key);
       if (existing) {
