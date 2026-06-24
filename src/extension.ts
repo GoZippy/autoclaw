@@ -71,6 +71,7 @@ import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistry
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
 import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
+import { startIndexWatchService, loadConfig as loadIntelligenceConfig, type IndexWatchHandle } from './intelligence';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
@@ -301,6 +302,49 @@ function stopRefreshService(): void {
   if (activeRefreshService) {
     try { activeRefreshService.stop(); } catch { /* ignore */ }
     activeRefreshService = null;
+  }
+}
+
+let activeIndexWatch: { handle: IndexWatchHandle; watcher: vscode.FileSystemWatcher } | null = null;
+
+/**
+ * Start the always-on incremental code re-index watcher when
+ * `autoclaw.intelligence.watch.enabled` is true. Best-effort, idempotent. The
+ * service's path filter excludes `.autoclaw/` + ignored dirs, so the index's own
+ * writes can't re-trigger it.
+ */
+function maybeStartIndexWatch(): void {
+  const cfg = vscode.workspace.getConfiguration('autoclaw.intelligence.watch');
+  if (!cfg.get<boolean>('enabled', false)) { return; }
+  if (activeIndexWatch) { return; }
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { return; }
+  const seconds = cfg.get<number>('debounceSeconds', 5);
+  try {
+    const intelConfig = loadIntelligenceConfig(workspaceRoot);
+    const handle = startIndexWatchService({
+      workspaceRoot,
+      debounceMs: Math.max(1, seconds) * 1000,
+      config: intelConfig,
+      log: (m) => console.log(`AutoClaw intelligence: ${m}`),
+    });
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*');
+    const onChange = (uri: vscode.Uri) => handle.notifyChange(uri.fsPath);
+    watcher.onDidChange(onChange);
+    watcher.onDidCreate(onChange);
+    watcher.onDidDelete(onChange);
+    activeIndexWatch = { handle, watcher };
+  } catch (e) {
+    console.error('AutoClaw intelligence index watch failed to start:', e);
+  }
+}
+
+/** Stop the index watch service + dispose its watcher. Best-effort. */
+function stopIndexWatch(): void {
+  if (activeIndexWatch) {
+    try { activeIndexWatch.handle.stop(); } catch { /* ignore */ }
+    try { activeIndexWatch.watcher.dispose(); } catch { /* ignore */ }
+    activeIndexWatch = null;
   }
 }
 
@@ -1007,6 +1051,63 @@ export function activate(context: vscode.ExtensionContext) {
           .getConfiguration('autoclaw.intelligence.autoRefresh')
           .get<boolean>('enabled', false);
         if (enabled) { maybeStartRefreshService(); } else { stopRefreshService(); }
+      }
+    }),
+  );
+
+  // Intelligence index watch: incremental re-index as you work
+  // (gated on autoclaw.intelligence.watch.enabled, default off).
+  maybeStartIndexWatch();
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.intelligence.startWatch', () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        void vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.');
+        return;
+      }
+      if (activeIndexWatch) {
+        void vscode.window.showInformationMessage('AutoClaw: intelligence index watch is already running.');
+        return;
+      }
+      const seconds = vscode.workspace
+        .getConfiguration('autoclaw.intelligence.watch')
+        .get<number>('debounceSeconds', 5);
+      const intelConfig = loadIntelligenceConfig(workspaceRoot);
+      const handle = startIndexWatchService({
+        workspaceRoot,
+        debounceMs: Math.max(1, seconds) * 1000,
+        config: intelConfig,
+        log: (m) => console.log(`AutoClaw intelligence: ${m}`),
+      });
+      const watcher = vscode.workspace.createFileSystemWatcher('**/*');
+      const onChange = (uri: vscode.Uri) => handle.notifyChange(uri.fsPath);
+      watcher.onDidChange(onChange);
+      watcher.onDidCreate(onChange);
+      watcher.onDidDelete(onChange);
+      activeIndexWatch = { handle, watcher };
+      void vscode.window.showInformationMessage(
+        `AutoClaw: intelligence index watch started (incremental re-index, ${Math.max(1, seconds)}s debounce).`,
+      );
+    }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.intelligence.stopWatch', () => {
+      if (!activeIndexWatch) {
+        void vscode.window.showInformationMessage('AutoClaw: intelligence index watch is not running.');
+        return;
+      }
+      stopIndexWatch();
+      void vscode.window.showInformationMessage('AutoClaw: intelligence index watch stopped.');
+    }),
+  );
+  // Honor live toggling of the setting without a reload.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('autoclaw.intelligence.watch.enabled')) {
+        const enabled = vscode.workspace
+          .getConfiguration('autoclaw.intelligence.watch')
+          .get<boolean>('enabled', false);
+        if (enabled) { maybeStartIndexWatch(); } else { stopIndexWatch(); }
       }
     }),
   );
@@ -5812,6 +5913,7 @@ export function deactivate() {
     activeBridge = null;
   }
   stopRefreshService();
+  stopIndexWatch();
   unregisterWorker(process.pid, currentIde);
   if (currentWorkspace) {
     releasePorts(currentIde, currentWorkspace);

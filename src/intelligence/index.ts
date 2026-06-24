@@ -239,6 +239,16 @@ export {
   recordOrchestrationEventsToKg,
 } from './kgRecord';
 
+// watch-service: always-on incremental code re-index (Intelligence watch)
+export {
+  IndexWatchOptions,
+  IndexWatchHandle,
+  DEFAULT_WATCH_DEBOUNCE_MS,
+  MIN_WATCH_DEBOUNCE_MS,
+  makeShouldIndex,
+  startIndexWatchService,
+} from './watchService';
+
 // metrics-dashboard: metrics store + cost-ledger bridge
 export {
   LearningRunStats,
