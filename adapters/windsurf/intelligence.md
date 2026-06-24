@@ -81,7 +81,8 @@ The layer owns only paths under `.autoclaw/` and never collides with `.cursor/`,
 `CLAUDE.md`, or other tools:
 
 ```
-.autoclaw/vector/      config.json, db.sqlite, last-index.json
+.autoclaw/vector/      config.json, db.sqlite, last-index.json  ← VECTOR store: `/index-code` writes here
+.autoclaw/kg/          kg.db                                    ← KNOWLEDGE GRAPH: coordination facts; `/learn` + orchestrator write here
 .autoclaw/learnings/   distilled learnings
 .autoclaw/metrics/     token/usage metrics
 .autoclaw/history/     per-source extraction watermarks
@@ -89,7 +90,13 @@ The layer owns only paths under `.autoclaw/` and never collides with `.cursor/`,
 .autoclaw/kdream/memory/MEMORY.md   owned by KDream — appended, never overwritten
 ```
 
-Generated data (`db.sqlite`, `.locks/`, `history/`) is gitignored.
+The **vector store** (`.autoclaw/vector/db.sqlite`) and the **Knowledge Graph**
+(`.autoclaw/kg/kg.db`) are SEPARATE. `/index-code` writes ONLY the vector store
+(code embeddings for semantic search); it does NOT touch the KG. The KG holds
+multi-agent coordination outcomes (consensus verdicts, review findings), written
+by `/learn` and the orchestrator — not code structure.
+
+Generated data (`db.sqlite`, `kg/kg.db`, `.locks/`, `history/`) is gitignored.
 
 ## Reuse, don't fork
 

@@ -73,6 +73,8 @@ import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
 import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
 import { startIndexWatchService, loadConfig as loadIntelligenceConfig, type IndexWatchHandle } from './intelligence';
+import { writeAgentOrientation } from './intelligence/orientation';
+import { renderOrientationBlock } from './intelligence/contract';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
@@ -2968,7 +2970,9 @@ task_complete, finding_report, question, answer.
 
 ## Send Messages
 
-Write JSON to target inbox. Filename: \`{timestamp}-{type}-${agentId}.json\`
+Write one JSON file per message to the target inbox. Filename: \`{timestamp}-{type}-${agentId}.json\`.
+Every message MUST include: \`id\` (unique), \`from\`, \`session_id\` (yours, stable for the session),
+\`to\`, \`type\`, and \`timestamp\`. The \`session_id\` is how two concurrent windows of one agent are told apart.
 ${inboxLines}
 - Broadcast: \`.autoclaw/orchestrator/comms/inboxes/shared/\`
 
@@ -2987,6 +2991,8 @@ Write votes to \`consensus/active/{task_id}-${agentId}.json\`.
 
 Check \`.autoclaw/orchestrator/sprints/plan-summary.yaml\` for assignments.
 Stay in your assigned scope. Coordinate via messages for cross-scope changes.
+
+${renderOrientationBlock()}
 `;
 }
 
@@ -3406,6 +3412,14 @@ async function provisionCrossAgentComms(): Promise<void> {
       await fsPromises.writeFile(rulesPath, content, 'utf8');
     }
   }
+
+  // Drop AutoClaw's authoritative self-description into the tree (AGENT-ORIENTATION.md
+  // + per-store READMEs) so any agent — in any tool, even one without the AutoClaw
+  // extension — reads accurate facts instead of reverse-engineering (and mis-describing)
+  // the layout. Best-effort and churn-free; never blocks provisioning.
+  try {
+    await writeAgentOrientation(workspaceRoot);
+  } catch { /* best-effort */ }
 
   // Write registry
   const registry = {
