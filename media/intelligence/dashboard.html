@@ -9,6 +9,27 @@
 </head>
 <body>
   <div id="dashboard-root" role="main">
+    <!-- Intelligence Health card (Theme 2): provider + index + nudges at top.
+         Populated by the separate {type:'health'} message; hidden until then. -->
+    <section id="health-card" class="health-card" aria-label="Intelligence health" hidden>
+      <div class="health-head">
+        <span id="health-dot" class="health-dot" aria-hidden="true"></span>
+        <span id="health-status" class="health-status">Checking…</span>
+        <span class="health-title">Intelligence Health</span>
+      </div>
+      <div class="health-rows">
+        <div class="health-row" id="health-provider-row">
+          <span class="health-row-label">Provider</span>
+          <span class="health-row-value" id="health-provider"></span>
+        </div>
+        <div class="health-row" id="health-index-row">
+          <span class="health-row-label">Index</span>
+          <span class="health-row-value" id="health-index"></span>
+        </div>
+      </div>
+      <div class="health-nudges" id="health-nudges"></div>
+    </section>
+
     <!-- Action toolbar: one-click learn / index / search / rag-generate (R4.2) -->
     <div class="toolbar" role="toolbar" aria-label="Intelligence actions">
       <button type="button" class="action" data-action="learn" title="Learn from sessions">Learn</button>

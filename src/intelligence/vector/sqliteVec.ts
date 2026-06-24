@@ -141,6 +141,14 @@ export interface VectorDB {
     queryEmbedding: number[],
     opts?: VectorSearchOptions,
   ): Promise<VectorSearchResult[]>;
+  /**
+   * Persist the stale-index signal (meta `stale_index`) and update the live
+   * {@link staleIndex} value. Used to RE-RAISE the signal when a `--force`
+   * rebuild degraded mid-pass: the forced open cleared the flag, but the rebuild
+   * stored mixed-geometry vectors, so the index is not actually clean. No-op when
+   * degraded. Best-effort — a persist failure is logged, never thrown.
+   */
+  setStale(stale: boolean): Promise<void>;
   /** Release native resources. Safe to call when degraded. */
   close(): void;
 }
@@ -211,6 +219,9 @@ function degradedHandle(signature: EmbeddingSignature): VectorDB {
     async semanticVectorSearch(): Promise<VectorSearchResult[]> {
       return [];
     },
+    async setStale(): Promise<void> {
+      // no-op — nothing to persist without a backend
+    },
     close(): void {
       // nothing to release
     },
@@ -224,6 +235,9 @@ function degradedHandle(signature: EmbeddingSignature): VectorDB {
 class SqliteVectorDB implements VectorDB {
   readonly degraded = false;
 
+  // Live stale signal — mutable so {@link setStale} keeps it honest after open.
+  private _staleIndex: boolean;
+
   // Cached prepared statements (avoid re-preparing per chunk — R-perf).
   private readonly insertStmt: any;
   private readonly deleteByIdStmt: any;
@@ -234,9 +248,10 @@ class SqliteVectorDB implements VectorDB {
     private readonly dbPath: string,
     readonly model: string,
     readonly dimension: number,
-    readonly staleIndex: boolean,
+    staleIndex: boolean,
     private readonly warn: LogFn,
   ) {
+    this._staleIndex = staleIndex;
     this.insertStmt = driver.prepare(
       `INSERT INTO ${VEC_TABLE} ` +
         `(id, embedding, source, project, content, timestamp, metadata) ` +
@@ -246,6 +261,21 @@ class SqliteVectorDB implements VectorDB {
     this.deleteByPrefixStmt = driver.prepare(
       `DELETE FROM ${VEC_TABLE} WHERE id LIKE ? ESCAPE '\\'`,
     );
+  }
+
+  get staleIndex(): boolean {
+    return this._staleIndex;
+  }
+
+  async setStale(stale: boolean): Promise<void> {
+    try {
+      this.driver
+        .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+        .run('stale_index', stale ? '1' : '0');
+      this._staleIndex = stale;
+    } catch (err) {
+      this.warn(`vector: could not persist stale_index flag: ${(err as Error).message}`);
+    }
   }
 
   async storeEmbedding(record: VectorRecord): Promise<void> {
