@@ -103,7 +103,7 @@ import {
 // Agent-fabric taxonomy via explicit subpaths (keeps the message-bus + bridge
 // out of modules that only need the taxonomy).
 import { onboardPlatform } from './fabric/onboarding';
-import { defaultAgentTypeForRunner } from './fabric/agentTypes';
+import { defaultAgentTypeForRunner, agentTypeProfile, AGENT_TYPES, type AgentType } from './fabric/agentTypes';
 // Trigger hooks + fleet HALT kill switch (HKS-1..3, agent-trigger-hooks spec).
 import { setFleetHalted, startTriggerHooksRuntime } from './hooks/triggerHooks';
 // Track-record ledger (REP-1) — record reviewed-task outcomes for reputation routing.
@@ -131,6 +131,8 @@ import { LanGossipRelay, LAN_GOSSIP_DEFAULT_PORT } from './fleet/lanGossipRelay'
 import { createInvite, listInvites, revokeInvite, type AdmitPolicy } from './fleet/invites';
 import { computePendingAgents, admitAgent } from './fleet/pending';
 import { renderJoinPromptForInvite, JOIN_TARGETS } from './fleet/joinPrompt';
+import { agentTypeForRole } from './fleet/roleType';
+import { TEAM_TEMPLATES, getTeamTemplate, recommendedTemplate, seatSummary } from './fleet/teamTemplates';
 import { scaffoldAgent, keepaliveProfileFor } from './fleet/scaffold';
 import { scaffoldFleetManifest, setManifestOrchestrator, generateNeedsFile, type DetectedAgent as ManifestAgent } from './fleet/authoring';
 import { appendTaskCompletion, readTaskLedger, summarizeByAgent, recentCompletions } from './taskLedger';
@@ -840,6 +842,8 @@ export function activate(context: vscode.ExtensionContext) {
     // Generate a ready-to-paste join prompt for a chosen tool (Codex/Claude
     // Desktop/OpenClaw/Hermes/…), bundling a fresh invite token + lane steps.
     vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', () => fleetJoinPromptCommand()),
+    // Add a whole agent team from a ready-made template (gallery → preview → fan-out).
+    vscode.commands.registerCommand('autoclaw.fleet.addTeam', () => fleetAddTeamCommand()),
     // Wire an arbitrary (non-extension) agent id into the comms tree.
     vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand()),
     // Toggle the MCP server's allowWrites gate (lets MCP-lane agents claim/vote).
@@ -2381,6 +2385,9 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'inviteAgent':
           await vscode.commands.executeCommand('autoclaw.fleet.invite');
+          break;
+        case 'addTeam':
+          await vscode.commands.executeCommand('autoclaw.fleet.addTeam');
           break;
         case 'generateJoinPrompt':
           await vscode.commands.executeCommand('autoclaw.fleet.joinPrompt');
@@ -4884,30 +4891,139 @@ async function setAgentRoleCommand(): Promise<void> {
 // Fleet federation commands (FF-3) — invite / admit / decline outside agents
 // ---------------------------------------------------------------------------
 
+/** A QuickPick item carrying the resolved value behind a self-documenting row. */
+type FleetPickItem = vscode.QuickPickItem & { value?: string };
+
+/** A non-selectable section header for a QuickPick list. */
+function pickSeparator(label: string): vscode.QuickPickItem {
+  return { label, kind: vscode.QuickPickItemKind.Separator };
+}
+
+/** Short, glanceable lane name (shown inline as item.description). */
+const LANE_SHORT: Record<string, string> = {
+  mcp: 'MCP lane', http: 'HTTP bridge', fs: 'filesystem', slash: 'native /loop',
+};
+
+/** One-line consequence of a tool's join lane (shown as the wrapped item.detail). */
+function laneConsequence(conv: { lane: string; fallbackLane?: string }): string {
+  const base = ((): string => {
+    switch (conv.lane) {
+      case 'mcp':   return 'Mounts the autoclaw-mcp server and calls its tools directly; will ask to enable repo writes.';
+      case 'http':  return 'Heartbeat, claim, and report over REST + SSE through the AutoClaw bridge.';
+      case 'slash': return 'Joins in-window using the native /loop skill — no extra setup.';
+      case 'fs':
+      default:      return 'Writes a beacon + message files under the shared comms folder.';
+    }
+  })();
+  return conv.fallbackLane ? `${base} Falls back to the ${LANE_SHORT[conv.fallbackLane] ?? conv.fallbackLane}.` : base;
+}
+
+/**
+ * Build the target-tool picker items, grouped by federation peers vs in-extension
+ * IDE hosts, each row surfacing its join lane (description) + consequence (detail).
+ */
+function buildTargetItems(): FleetPickItem[] {
+  const federation = ['codex', 'claude-desktop', 'openclaw', 'hermes'];
+  const toItem = (key: string): FleetPickItem => {
+    const c = JOIN_TARGETS[key];
+    return { label: c.label, description: LANE_SHORT[c.lane] ?? c.lane, detail: laneConsequence(c), value: key };
+  };
+  const items: FleetPickItem[] = [pickSeparator('Federation peers')];
+  for (const k of federation) { if (JOIN_TARGETS[k]) { items.push(toItem(k)); } }
+  items.push(pickSeparator('In-extension IDE hosts'));
+  for (const k of Object.keys(JOIN_TARGETS)) { if (!federation.includes(k)) { items.push(toItem(k)); } }
+  return items;
+}
+
+/**
+ * Build the role picker items, grouped by tier (leadership / build & verify /
+ * support). Each row carries the role's glanceable hint (description) + one-line
+ * explanation (detail), sourced from ROLE_META so the picker can never drift.
+ */
+function buildRoleItems(): FleetPickItem[] {
+  const tiers: ReadonlyArray<readonly [string, readonly CanonicalRole[]]> = [
+    ['Leadership', ['orchestrator', 'architect', 'product']],
+    ['Build & verify', ['coder', 'reviewer', 'tester', 'security']],
+    ['Support', ['designer', 'creative', 'docs', 'researcher', 'ops', 'generalist']],
+  ];
+  const items: FleetPickItem[] = [];
+  for (const [title, roles] of tiers) {
+    items.push(pickSeparator(title));
+    for (const r of roles) {
+      const m = ROLE_META[r];
+      items.push({ label: `${m.glyph}  ${m.label}`, description: m.hint, detail: m.description, value: r });
+    }
+  }
+  return items;
+}
+
+/**
+ * Build the behavioral-type picker items, data-driven from agentTypeProfile so the
+ * trust/consensus/human-in-loop consequences (description) and the plain-language
+ * meaning (detail) can never drift from the policy module. When a `suggested` type
+ * is given (derived from the chosen role) it is listed FIRST under a "Suggested"
+ * header so the user can usually just take the top row.
+ */
+function buildAgentTypeItems(suggested?: AgentType): FleetPickItem[] {
+  const toItem = (t: AgentType): FleetPickItem => {
+    const p = agentTypeProfile(t);
+    const bits = [`trust: ${p.defaultTrust}`, `review: ${p.consensusRule}`];
+    if (p.humanInLoop) { bits.push('human-in-loop'); }
+    if (p.canOrchestrate) { bits.push('can orchestrate'); }
+    return { label: t, description: bits.join(' · '), detail: p.description, value: t };
+  };
+  if (!suggested) {
+    return AGENT_TYPES.map(toItem);
+  }
+  const rest = AGENT_TYPES.filter(t => t !== suggested);
+  return [
+    pickSeparator('Suggested for this role'),
+    toItem(suggested),
+    pickSeparator('Or choose another behavioral type'),
+    ...rest.map(toItem),
+  ];
+}
+
+/** Build the admit-policy picker items (auto-preapproved recommended first). */
+function buildAdmitItems(): FleetPickItem[] {
+  return [
+    { label: 'auto-preapproved', description: 'recommended', value: 'auto-preapproved', detail: 'Admits the agent automatically if its behavioral type is pre-approved; otherwise it waits in the tray.' },
+    { label: 'manual', value: 'manual', detail: 'Every join waits for you to approve it before the agent becomes active.' },
+    { label: 'open', value: 'open', detail: 'Anyone holding this invite joins right away, no approval — use only for trusted, short-lived invites.' },
+  ];
+}
+
 /** Issue a scoped, single-use invite token an outside agent can use to join. */
 async function fleetInviteCommand(): Promise<void> {
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
 
-  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
-  const rolePick = await vscode.window.showQuickPick(roleItems, { title: 'Invite agent — suggested role', placeHolder: 'What role should the invited agent play?' });
-  if (!rolePick) { return; }
+  const rolePick = await vscode.window.showQuickPick(buildRoleItems(), {
+    title: 'Invite agent — role',
+    placeHolder: 'What does this agent work on? (its role — shown on the board)',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!rolePick?.value) { return; }
+  const role = rolePick.value;
 
-  const typePick = await vscode.window.showQuickPick(
-    ['coder', 'runner', 'auditor', 'supervisor', 'assistant', 'governance'].map(t => ({ label: t })),
-    { title: 'Invite agent — behavioral type', placeHolder: 'agent_type (drives routing/gating)' },
-  );
-  if (!typePick) { return; }
+  // Behavioral type is DERIVED from the role and offered first; the user overrides
+  // it only for the legitimate divergent cases (e.g. a draft-only docs agent).
+  const suggestedType = agentTypeForRole(role as CanonicalRole);
+  const typePick = await vscode.window.showQuickPick(buildAgentTypeItems(suggestedType), {
+    title: `Invite agent — behavioral type (suggested: ${suggestedType})`,
+    placeHolder: 'How is this agent trusted + reviewed? Take the suggested row unless you need to change it.',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!typePick?.value) { return; }
+  const agentType = typePick.value;
 
-  const policyPick = await vscode.window.showQuickPick(
-    [
-      { label: 'auto-preapproved', description: 'Auto-admit if the joining type is pre-approved; else wait in the tray (recommended)' },
-      { label: 'manual', description: 'Every join waits for you to Admit in the tray' },
-      { label: 'open', description: 'Admit any valid invite (trusted LAN / program)' },
-    ],
-    { title: 'Invite agent — admit policy', placeHolder: 'How should a consuming agent be admitted?' },
-  );
-  if (!policyPick) { return; }
+  const policyPick = await vscode.window.showQuickPick(buildAdmitItems(), {
+    title: 'Invite agent — admit policy',
+    placeHolder: 'How should a consuming agent be admitted?',
+    matchOnDetail: true,
+  });
+  if (!policyPick?.value) { return; }
+  const admitPolicy = policyPick.value as AdmitPolicy;
 
   const scopeRaw = await vscode.window.showInputBox({
     title: 'Invite agent — path scope (optional)',
@@ -4923,16 +5039,16 @@ async function fleetInviteCommand(): Promise<void> {
       issued_by: activeHostAgentId() ?? 'claude-code',
       project,
       workspace: wr,
-      suggested_role: rolePick.role,
-      suggested_agent_type: typePick.label,
-      admit_policy: policyPick.label as AdmitPolicy,
-      preapproved_types: policyPick.label === 'auto-preapproved' ? [typePick.label] : undefined,
+      suggested_role: role,
+      suggested_agent_type: agentType,
+      admit_policy: admitPolicy,
+      preapproved_types: admitPolicy === 'auto-preapproved' ? [agentType] : undefined,
       ...(scope.length ? { scope } : {}),
       transports: ['fs', 'mcp', 'http'],
     });
     await vscode.env.clipboard.writeText(invite.token);
     const pick = await vscode.window.showInformationMessage(
-      `AutoClaw: invite created for a ${rolePick.role} on "${project}". Token copied to clipboard — hand it to the agent.\n\n${invite.token}`,
+      `AutoClaw: invite created for a ${role} (${agentType}) on "${project}". Token copied to clipboard — hand it to the agent.\n\n${invite.token}`,
       { modal: false }, 'Copy token again',
     );
     if (pick === 'Copy token again') { await vscode.env.clipboard.writeText(invite.token); }
@@ -4952,25 +5068,35 @@ async function fleetJoinPromptCommand(): Promise<void> {
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
 
-  // 1. Target tool — drives the join lane + announced agent_id.
-  const targetItems = Object.entries(JOIN_TARGETS).map(([key, c]) => ({ label: c.label, description: key, key }));
-  const targetPick = await vscode.window.showQuickPick(targetItems, {
+  // 1. Target tool — drives the join lane + announced agent_id. Grouped by
+  // federation peers vs IDE hosts; each row surfaces its lane + consequence.
+  const targetPick = await vscode.window.showQuickPick(buildTargetItems(), {
     title: 'Generate join prompt — target tool',
-    placeHolder: 'Which tool is joining? (selects its join lane)',
+    placeHolder: 'Which tool is joining? (its lane is shown on each row)',
+    matchOnDescription: true, matchOnDetail: true,
   });
-  if (!targetPick) { return; }
+  if (!targetPick?.value) { return; }
+  const targetKey = targetPick.value;
 
-  // 2. Suggested role.
-  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
-  const rolePick = await vscode.window.showQuickPick(roleItems, { title: 'Join prompt — suggested role', placeHolder: 'What role should the joining agent play?' });
-  if (!rolePick) { return; }
+  // 2. Role — the only required taxonomy choice (the board-facing job).
+  const rolePick = await vscode.window.showQuickPick(buildRoleItems(), {
+    title: 'Join prompt — role',
+    placeHolder: 'What does this agent work on? (its role — shown on the board)',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!rolePick?.value) { return; }
+  const role = rolePick.value;
 
-  // 3. Behavioral type (drives auto-preapproved admit).
-  const typePick = await vscode.window.showQuickPick(
-    ['coder', 'runner', 'auditor', 'supervisor', 'assistant', 'governance'].map(t => ({ label: t })),
-    { title: 'Join prompt — behavioral type', placeHolder: 'agent_type (drives routing/gating)' },
-  );
-  if (!typePick) { return; }
+  // 3. Behavioral type — DERIVED from the role and offered first; override only
+  // for the legitimate divergent cases. Drives trust / consensus / auto-admit.
+  const suggestedType = agentTypeForRole(role as CanonicalRole);
+  const typePick = await vscode.window.showQuickPick(buildAgentTypeItems(suggestedType), {
+    title: `Join prompt — behavioral type (suggested: ${suggestedType})`,
+    placeHolder: 'How is this agent trusted + reviewed? Take the suggested row unless you need to change it.',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!typePick?.value) { return; }
+  const agentType = typePick.value;
 
   // 4. Optional path scope.
   const scopeRaw = await vscode.window.showInputBox({
@@ -4981,7 +5107,16 @@ async function fleetJoinPromptCommand(): Promise<void> {
   });
   const scope = (scopeRaw ?? '').split(',').map(s => s.trim()).filter(Boolean);
 
-  const target = JOIN_TARGETS[targetPick.key];
+  const target = JOIN_TARGETS[targetKey];
+
+  // 4b. Admit policy — unified with the Invite command (was hard-coded here).
+  const policyPick = await vscode.window.showQuickPick(buildAdmitItems(), {
+    title: 'Join prompt — admit policy',
+    placeHolder: 'How should this agent be admitted once it consumes the invite?',
+    matchOnDetail: true,
+  });
+  if (!policyPick?.value) { return; }
+  const admitPolicy = policyPick.value as AdmitPolicy;
 
   // 5. MCP-lane peers are READ-ONLY until allowWrites is enabled. Offer to flip
   // the file flag now — enabling writes is a TRUST decision, so it is explicit
@@ -5021,14 +5156,14 @@ async function fleetJoinPromptCommand(): Promise<void> {
       issued_by: activeHostAgentId() ?? 'claude-code',
       project,
       workspace: wr,
-      suggested_role: rolePick.role,
-      suggested_agent_type: typePick.label,
-      admit_policy: 'auto-preapproved',
-      preapproved_types: [typePick.label],
+      suggested_role: role,
+      suggested_agent_type: agentType,
+      admit_policy: admitPolicy,
+      preapproved_types: admitPolicy === 'auto-preapproved' ? [agentType] : undefined,
       ...(scope.length ? { scope } : {}),
       transports: ['fs', 'mcp', 'http'],
     });
-    const prompt = renderJoinPromptForInvite(targetPick.key, invite, bridgeUrl ? { bridgeUrl } : {});
+    const prompt = renderJoinPromptForInvite(targetKey, invite, bridgeUrl ? { bridgeUrl } : {});
     await vscode.env.clipboard.writeText(prompt);
     const pick = await vscode.window.showInformationMessage(
       `AutoClaw: join prompt for ${target.label} copied — paste it into that tool's chat.`,
@@ -5039,6 +5174,119 @@ async function fleetJoinPromptCommand(): Promise<void> {
   } catch (e) {
     vscode.window.showWarningMessage(`AutoClaw: could not generate join prompt — ${(e as Error).message}`);
   }
+}
+
+/**
+ * Add a whole AGENT TEAM from a ready-made template (autoclaw.fleet.addTeam).
+ *
+ * Closes the "every agent is built from a blank picker" gap: the user picks one of
+ * the {@link TEAM_TEMPLATES} recipes, previews the squad (preview-before-mint — no
+ * token is created until they confirm), and the command fans out one scoped invite
+ * per seat, then opens a single ready-to-paste document with each seat's tailored
+ * join prompt. The headline onboarding affordance.
+ */
+async function fleetAddTeamCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+
+  // 1. Gallery — recommended starter first, each row showing its seat lineup.
+  const rec = recommendedTemplate();
+  const ordered = [rec, ...TEAM_TEMPLATES.filter(t => t.id !== rec.id)];
+  const galleryItems = ordered.map(t => ({
+    label: t.recommended ? `${t.name}  $(star-full)` : t.name,
+    description: t.recommended ? 'recommended' : `${t.seats.length} agents`,
+    detail: `${t.seats.map(seatSummary).join('   ·   ')} — ${t.whenToUse}`,
+    id: t.id,
+  }));
+  const pick = await vscode.window.showQuickPick(galleryItems, {
+    title: 'Add an agent team — pick a template',
+    placeHolder: 'Start from a ready-made squad (you can adjust each seat after)',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!pick) { return; }
+  const tpl = getTeamTemplate(pick.id);
+  if (!tpl) { return; }
+
+  // 2. Preview-before-mint — show the full squad and confirm BEFORE any token is
+  // created, so a cancel never burns invites.
+  const lineup = tpl.seats
+    .map((s, i) => `  ${i + 1}. ${s.role} / ${s.agentType} → ${JOIN_TARGETS[s.tool]?.label ?? s.tool}  (admit: ${s.admit})`)
+    .join('\n');
+  const confirm = await vscode.window.showInformationMessage(
+    `Create the "${tpl.name}" team?\n\n${lineup}\n\n${tpl.consensusNote}\n\n` +
+    `This mints ${tpl.seats.length} single-use invite${tpl.seats.length === 1 ? '' : 's'} (24h TTL) and opens a document with each seat's join prompt.`,
+    { modal: true },
+    'Create team',
+  );
+  if (confirm !== 'Create team') { return; }
+
+  // 3. MCP-lane seats need writes enabled to claim/vote. Offer once if any seat
+  // joins on the MCP lane and writes are still off (a trust decision → explicit).
+  const needsMcpWrites = tpl.seats.some(s => {
+    const lane = JOIN_TARGETS[s.tool]?.lane;
+    const fb = JOIN_TARGETS[s.tool]?.fallbackLane;
+    return (lane === 'mcp' || fb === 'mcp');
+  });
+  if (needsMcpWrites && !isWritesAllowed(wr)) {
+    const enable = await vscode.window.showWarningMessage(
+      'This team has MCP-lane agents (e.g. Codex, Claude Desktop). Enable MCP writes so they can claim tasks / vote? Writes stay gated per-tool by .autoclaw/mcp/config.json.',
+      { modal: true }, 'Enable writes', 'Keep read-only',
+    );
+    if (enable === 'Enable writes') {
+      try { await setAllowWrites(wr, true); } catch { /* non-fatal — surfaced in the doc */ }
+    }
+  }
+
+  // 4. Fan out: one scoped invite per seat, render its tailored join prompt.
+  const project = path.basename(wr);
+  const issuedBy = activeHostAgentId() ?? 'claude-code';
+  const sections: string[] = [];
+  let minted = 0;
+  for (let i = 0; i < tpl.seats.length; i++) {
+    const seat = tpl.seats[i];
+    try {
+      const invite = await createInvite({
+        issued_by: issuedBy,
+        project,
+        workspace: wr,
+        suggested_role: seat.role,
+        suggested_agent_type: seat.agentType,
+        admit_policy: seat.admit,
+        preapproved_types: seat.admit === 'auto-preapproved' ? [seat.agentType] : undefined,
+        transports: ['fs', 'mcp', 'http'],
+      });
+      const prompt = renderJoinPromptForInvite(seat.tool, invite);
+      const toolLabel = JOIN_TARGETS[seat.tool]?.label ?? seat.tool;
+      sections.push(
+        `## Seat ${i + 1} — ${seat.role} / ${seat.agentType} → ${toolLabel}\n\n` +
+        `- **Why:** ${seat.rationale}\n` +
+        `- **Suggested scope:** ${seat.scope}\n` +
+        (seat.verifyHint ? `- **Verify with:** ${seat.verifyHint}\n` : '') +
+        `- **Admit:** ${seat.admit}\n\n` +
+        `Paste this into ${toolLabel}:\n\n` +
+        '````text\n' + prompt + '\n````\n',
+      );
+      minted++;
+    } catch (e) {
+      sections.push(`## Seat ${i + 1} — ${seat.role} / ${seat.agentType} → ${seat.tool}\n\n` +
+        `> Could not mint this invite: ${(e as Error).message}\n`);
+    }
+  }
+
+  const doc = `# Join your "${tpl.name}" team\n\n` +
+    `${tpl.description}\n\n` +
+    `**How review works:** ${tpl.consensusNote}\n\n` +
+    `Each section below is one teammate. Open the suggested tool and paste its prompt into the chat. ` +
+    `Tokens are single-use and expire in 24 hours — re-run **Add agent team** to mint fresh ones if any expire. ` +
+    `Scopes below are suggestions; tighten them when you generate the prompt or in the agent's first message.\n\n` +
+    `---\n\n${sections.join('\n---\n\n')}`;
+
+  const td = await vscode.workspace.openTextDocument({ content: doc, language: 'markdown' });
+  await vscode.window.showTextDocument(td, { preview: false });
+  vscode.window.showInformationMessage(
+    `AutoClaw: created the "${tpl.name}" team — ${minted}/${tpl.seats.length} invites minted. Paste each seat's prompt into its tool.`,
+  );
+  if (kdreamView) { await refreshOrchestratorData(kdreamView); }
 }
 
 /**
