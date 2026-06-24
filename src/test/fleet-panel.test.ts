@@ -50,7 +50,9 @@ import {
   readCostLedger,
   appendCostLedgerEntry,
   recordDispatchCost,
+  unionPresenceSources,
 } from '../panel/fleetData';
+import type { BeaconRow } from '../fleet/beacons';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -776,5 +778,114 @@ suite('Fleet panel — fleetData read layer', () => {
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }
+  });
+
+  // A joined agent (e.g. Kiro) that checked in but was never written into
+  // registry.json must still appear in the fleet — presence is the source of
+  // truth, not the registry roster.
+  test('gatherFleetData surfaces an unregistered agent from a heartbeat alone', async () => {
+    const ws = makeWorkspace();
+    try {
+      const comms = path.join(ws, '.autoclaw', 'orchestrator', 'comms');
+      // No registry.json at all — Kiro only wrote a heartbeat.
+      writeJson(path.join(comms, 'heartbeats', 'kiro.json'), {
+        agent_id: 'kiro', timestamp: iso(-4), current_task: 'wiring up', session_id: 's-kiro',
+      });
+      const model = await gatherFleetData({ workspaceRoot: ws, selfAgentId: 'claude-code', now: NOW });
+      const kiro = model.cards.find(c => c.agentId === 'kiro');
+      assert.ok(kiro, 'kiro surfaces as a card with no registry row');
+      assert.strictEqual(kiro!.state, 'alive');
+      assert.strictEqual(kiro!.currentTask, 'wiring up');
+      assert.strictEqual(model.presence.total, 1);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  test('gatherFleetData surfaces an unregistered agent from a workspace beacon', async () => {
+    const ws = makeWorkspace();
+    try {
+      const comms = path.join(ws, '.autoclaw', 'orchestrator', 'comms');
+      // Kiro checked in only via a workspace-scoped beacon, no heartbeat/registry.
+      writeJson(path.join(comms, 'beacons', 'kiro.json'), {
+        agent_id: 'kiro', timestamp: iso(-10), role: 'Reviewer', host: 'kiro', workspace: ws,
+      });
+      const model = await gatherFleetData({ workspaceRoot: ws, selfAgentId: 'claude-code', now: NOW });
+      const kiro = model.cards.find(c => c.agentId === 'kiro');
+      assert.ok(kiro, 'kiro surfaces as a card from its beacon');
+      assert.strictEqual(kiro!.role, 'Reviewer', 'role carried off the beacon');
+      assert.ok(model.presence.total >= 1);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Presence union (pure)
+// ---------------------------------------------------------------------------
+
+function beaconRow(agentId: string, ageSec: number, extra: Partial<BeaconRow> = {}): BeaconRow {
+  return {
+    agent_id: agentId,
+    timestamp: iso(-ageSec),
+    origin: 'beacon',
+    workspace_id: '',
+    age_ms: ageSec * 1000,
+    stale: false,
+    ...extra,
+  };
+}
+
+suite('Fleet panel — presence union (FleetData.unionPresenceSources)', () => {
+  test('synthesizes a profile for a heartbeat-only agent missing from the registry', () => {
+    const { profiles, heartbeats } = unionPresenceSources({
+      profiles: [],
+      heartbeats: new Map<string, RawHeartbeat>([['kiro', { agent_id: 'kiro', timestamp: iso(-5) }]]),
+      beacons: [],
+    });
+    assert.deepStrictEqual(profiles.map(p => p.id), ['kiro']);
+    assert.ok(heartbeats.has('kiro'));
+  });
+
+  test('folds a beacon into the heartbeat map and carries its role onto the profile', () => {
+    const { profiles, heartbeats } = unionPresenceSources({
+      profiles: [],
+      heartbeats: new Map<string, RawHeartbeat>(),
+      beacons: [beaconRow('kiro', 5, { role: 'Reviewer', host: 'kiro' })],
+    });
+    assert.strictEqual(profiles.length, 1);
+    assert.strictEqual(profiles[0].role, 'Reviewer');
+    assert.strictEqual(heartbeats.get('kiro')?.host, 'kiro');
+  });
+
+  test('keeps a registered agent single and preserves its registry profile', () => {
+    const { profiles } = unionPresenceSources({
+      profiles: [{ id: 'claude-code', name: 'Claude Code', role: 'Panel' }],
+      heartbeats: new Map<string, RawHeartbeat>([['claude-code', { agent_id: 'claude-code', timestamp: iso(-2) }]]),
+      beacons: [beaconRow('claude-code', 1, { role: 'ShouldNotWin' })],
+    });
+    const cc = profiles.filter(p => p.id === 'claude-code');
+    assert.strictEqual(cc.length, 1, 'not duplicated');
+    assert.strictEqual(cc[0].name, 'Claude Code');
+    assert.strictEqual(cc[0].role, 'Panel', 'registry role preserved over the beacon');
+  });
+
+  test('the in-tree heartbeat wins over a beacon for the same agent', () => {
+    const hbTs = iso(-30);
+    const { heartbeats } = unionPresenceSources({
+      profiles: [],
+      heartbeats: new Map<string, RawHeartbeat>([['kiro', { agent_id: 'kiro', timestamp: hbTs }]]),
+      beacons: [beaconRow('kiro', 1)],
+    });
+    assert.strictEqual(heartbeats.get('kiro')?.timestamp, hbTs, 'heartbeat not overwritten by the beacon');
+  });
+
+  test('does not mutate the caller inputs', () => {
+    const profiles: RawAgentProfile[] = [];
+    const heartbeats = new Map<string, RawHeartbeat>();
+    unionPresenceSources({ profiles, heartbeats, beacons: [beaconRow('kiro', 2)] });
+    assert.strictEqual(profiles.length, 0, 'input profiles untouched');
+    assert.strictEqual(heartbeats.size, 0, 'input heartbeats untouched');
   });
 });
