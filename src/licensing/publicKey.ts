@@ -8,5 +8,5 @@
 // To rotate: generate a new keypair, replace this PEM, and re-issue keys.
 
 export const LICENSE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAHyuzq6zn+S9WYrR00+ZBzajbHO47171V/pcJ6vw+gQ8=
+MCowBQYDK2VwAyEA0qqP/0KT8J/HjumvP/2E4j5iwQ8CCM+IjGByywonabg=
 -----END PUBLIC KEY-----`;
