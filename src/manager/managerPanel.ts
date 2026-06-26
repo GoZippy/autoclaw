@@ -19,6 +19,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { gatherFleetData } from '../panel/fleetData';
+import { LOOP_INSTANCE_ID } from '../orchestratorLoop';
 
 /** Singleton — one Manager tab at a time; re-invoking reveals the existing one. */
 let panel: vscode.WebviewPanel | undefined;
@@ -101,7 +102,7 @@ async function refresh(): Promise<void> {
     return;
   }
   try {
-    const model = await gatherFleetData({ workspaceRoot, selfAgentId: SELF_AGENT_ID });
+    const model = await gatherFleetData({ workspaceRoot, selfAgentId: SELF_AGENT_ID, selfInstanceId: LOOP_INSTANCE_ID });
     const board = await readBoardJsonIfExists(workspaceRoot);
     panel.webview.postMessage({ type: 'model', model: board ? { ...model, board } : model });
   } catch (err) {

@@ -97,7 +97,11 @@ export type MessageType =
   //   evict_notice : the graceful-evict quiesce doorbell (drain-then-release)
   //   pause/resume : ask a cooperating agent to stop / resume claiming work
   //   reassign     : a claim was released back to the board for re-dispatch
-  | 'evict_notice' | 'pause' | 'resume' | 'reassign';
+  | 'evict_notice' | 'pause' | 'resume' | 'reassign'
+  // LANE C — board-grounded wake nudges (L3). Written to a peer's per-agent inbox.
+  //   work_available  : an idle agent should claim a specific claimable board task
+  //   review_resolved : a task's author is told its consensus verdict landed
+  | 'work_available' | 'review_resolved';
 
 export interface Message {
   id: string;

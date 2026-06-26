@@ -14,8 +14,9 @@ import { decideGate, type GateReason } from './gateLogic';
 /**
  * Whether tiered feature-gate ENFORCEMENT is on. Default **false** — the gates
  * are built but dormant until the maintainer enables enforcement (which should
- * only happen once a real purchase path exists). Flip via the
- * `autoclaw.licensing.enforceGates` setting.
+ * only happen once a real purchase path exists). This is a maintainer/product
+ * flag, not an end-user setting, so it is NOT shown in the Settings UI — flip it
+ * with the hidden `autoclaw.licensing.enforceGates` key in settings.json.
  */
 export function gateEnforcementEnabled(): boolean {
   try {

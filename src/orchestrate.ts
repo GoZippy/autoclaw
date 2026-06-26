@@ -17,6 +17,8 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 // Fabric agent-type tags (AF-8 §4). Explicit subpath keeps the bus out of the planner.
 import { agentTypeProfile, type AgentType } from './fabric/agentTypes';
+// Materialized board task shape (type-only — erased at compile time, no runtime cycle).
+import type { CatalogTask } from './orchestrator/taskCatalog';
 
 const fsPromises = fs.promises;
 
@@ -195,6 +197,12 @@ export interface OrchestratorState {
     sprint: number | null;
     tasks: string[];
   }>;
+  /**
+   * Materialized task catalog the board reads (`boardWriter.readTasks`). Written
+   * by `ingestTaskCatalog` from manifests / sprint YAMLs / spec `tasks.md`; absent
+   * on legacy state files (the board then falls back to inferred tasks).
+   */
+  tasks?: CatalogTask[];
   last_updated: string;
 }
 

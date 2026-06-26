@@ -28,6 +28,7 @@
  */
 
 import type { Invite } from './invites';
+import { deriveAgentType } from './roleType';
 
 /** The transport an invited tool uses to join. */
 export type JoinLane = 'mcp' | 'http' | 'fs' | 'slash';
@@ -88,6 +89,14 @@ export interface RenderJoinPromptInput {
   workspacePath: string;
   /** Suggested role (from the invite wizard). Free-text; fleet.json still wins. */
   role?: string;
+  /**
+   * Behavioural agent_type the agent announces (drives trust / consensus / admit).
+   * DISTINCT from `role`: a `reviewer` role announces agent_type `auditor`. When
+   * omitted, it is derived from `role` via {@link deriveAgentType} so the beacon
+   * never collapses the two fields (a reviewer would otherwise wrongly announce
+   * agent_type `reviewer` and miss the auditor unanimous rule).
+   */
+  agentType?: string;
   /** Path globs the agent may touch (seeds a scope-lease). */
   scope?: string[];
   /** The single-use invite token the agent must consume. REQUIRED. */
@@ -156,8 +165,27 @@ function loopBody(agentId: string): string {
   ].join('\n');
 }
 
+/**
+ * The behavioural agent_type the prompt should announce: an explicit override if
+ * the caller supplied one, otherwise DERIVED from the role (so a `reviewer` role
+ * correctly announces `auditor`). Returns undefined only when there is no role at
+ * all — never the role string masquerading as a type.
+ */
+function effectiveAgentType(input: RenderJoinPromptInput): string | undefined {
+  const explicit = input.agentType?.trim();
+  if (explicit) { return explicit; }
+  const role = input.role?.trim();
+  return role ? deriveAgentType(role) : undefined;
+}
+
 /** A compact beacon JSON shape (fs/http lanes) the agent writes to check in. */
-function beaconJson(agentId: string, workspacePath: string, role: string | undefined, transports: string[]): string {
+function beaconJson(
+  agentId: string,
+  workspacePath: string,
+  role: string | undefined,
+  agentType: string | undefined,
+  transports: string[],
+): string {
   const obj: Record<string, unknown> = {
     agent_id: agentId,
     session_id: '<your-session-uuid>',
@@ -167,7 +195,8 @@ function beaconJson(agentId: string, workspacePath: string, role: string | undef
     workspace: workspacePath,
     transports,
   };
-  if (role) { obj.role = role; obj.agent_type = role; }
+  if (role) { obj.role = role; }
+  if (agentType) { obj.agent_type = agentType; }
   return JSON.stringify(obj, null, 2);
 }
 
@@ -179,13 +208,15 @@ function beaconJson(agentId: string, workspacePath: string, role: string | undef
 function mcpSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): string {
   const { workspacePath, inviteToken } = input;
   const role = input.role;
+  const agentType = effectiveAgentType(input);
+  const ident = `${role ? `, role: "${role}"` : ''}${agentType ? `, agent_type: "${agentType}"` : ''}`;
   return [
     `REGISTER (MCP lane):`,
     `1. Mount AutoClaw's MCP server (\`autoclaw-mcp\`) scoped to this workspace, with writes enabled`,
     `   (.autoclaw/mcp/config.json -> { "allowWrites": true }, or AUTOCLAW_MCP_ALLOW_WRITES=true).`,
     `2. Generate one session UUID and reuse it all session. Stamp it on every call.`,
     `3. Consume your single-use invite token "${inviteToken}" (it is scoped + TTL'd).`,
-    `4. Check in: call \`presence.beacon\` with { agent_id: "${conv.agentId}"${role ? `, role: "${role}", agent_type: "${role}"` : ''},`,
+    `4. Check in: call \`presence.beacon\` with { agent_id: "${conv.agentId}"${ident},`,
     `   workspace: "${workspacePath}", transports: ["mcp"] }. The host stamps host + session_id; you`,
     `   become a visible fleet row. (presence.beacon is the tool that makes an MCP agent VISIBLE.)`,
     `5. See peers with \`presence.fleet\`. Coordinate with \`inbox.send\` / \`inbox.read\`,`,
@@ -199,13 +230,15 @@ function mcpSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): str
 function httpSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): string {
   const { workspacePath, inviteToken } = input;
   const role = input.role;
+  const agentType = effectiveAgentType(input);
+  const ident = `${role ? `, role: "${role}"` : ''}${agentType ? `, agent_type: "${agentType}"` : ''}`;
   const base = input.bridgeUrl || '<autoclaw-bridge-base-url, e.g. http://127.0.0.1:7878>';
   return [
     `REGISTER (HTTP bridge lane):`,
     `1. Generate one session UUID and reuse it all session; send it on every request.`,
     `2. Consume your single-use invite token "${inviteToken}".`,
     `3. Check in each cycle: POST ${base}/api/v1/heartbeat with`,
-    `   { agent_id: "${conv.agentId}"${role ? `, role: "${role}", agent_type: "${role}"` : ''}, session_id, workspace: "${workspacePath}",`,
+    `   { agent_id: "${conv.agentId}"${ident}, session_id, workspace: "${workspacePath}",`,
     `   transports: ["http"] } (Bearer the invite/issued token). A machine beacon is an accepted twin.`,
     `4. Serve your Agent Card at <your-endpoint>/.well-known/agent.json so the router can score you.`,
     `5. Receive messages: subscribe to the SSE stream ${base}/api/v1/messages/stream (or poll`,
@@ -223,21 +256,32 @@ function httpSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): st
 function fsSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): string {
   const { workspacePath, inviteToken } = input;
   const role = input.role;
-  const beacon = beaconJson(conv.agentId, workspacePath, role, ['fs']);
+  const agentType = effectiveAgentType(input);
+  const beacon = beaconJson(conv.agentId, workspacePath, role, agentType, ['fs']);
   return [
     `REGISTER (filesystem lane):`,
     `1. Generate one session UUID and reuse it all session. Stamp it on every file you write.`,
     `2. Consume your single-use invite token "${inviteToken}" (read the invite file under`,
     `   ~/.autoclaw/invites/ or the workspace comms/invites/; mark it consumed -- single-use).`,
-    `3. Check in: write a beacon to ~/.autoclaw/beacons/${conv.agentId}.json (machine view) AND/OR a`,
-    `   heartbeat to .autoclaw/orchestrator/comms/heartbeats/${conv.agentId}.json (this workspace):`,
+    `3. Ensure the comms tree exists -- create these if missing (all INSIDE the workspace, so no`,
+    `   access outside it is needed): .autoclaw/orchestrator/comms/heartbeats/,`,
+    `   .autoclaw/orchestrator/comms/beacons/, .autoclaw/orchestrator/comms/claims/,`,
+    `   .autoclaw/orchestrator/comms/inboxes/shared/, .autoclaw/orchestrator/comms/inboxes/${conv.agentId}/{_state,processed}/,`,
+    `   and an empty .autoclaw/orchestrator/comms/registry.json ({ "agents": [] }) if absent.`,
+    `4. Check in INSIDE the workspace (no out-of-workspace permission needed) -- write this JSON to`,
+    `   .autoclaw/orchestrator/comms/heartbeats/${conv.agentId}.json AND/OR`,
+    `   .autoclaw/orchestrator/comms/beacons/${conv.agentId}.json. Only add a machine-global copy at`,
+    `   ~/.autoclaw/beacons/${conv.agentId}.json for cross-workspace visibility if your IDE can reach $HOME:`,
     '```json',
     beacon,
     '```',
-    `4. Send messages by writing one JSON file per message into`,
+    `5. Register by name: append { "id": "${conv.agentId}"${role ? `, "role": "${role}"` : ''}${agentType ? `, "agent_type": "${agentType}"` : ''} } to the`,
+    `   "agents" array in .autoclaw/orchestrator/comms/registry.json (the panel already counts you from step 4`,
+    `   -- this adds your name + role to the roster).`,
+    `6. Send messages by writing one JSON file per message into`,
     `   .autoclaw/orchestrator/comms/inboxes/<to>/ (or inboxes/shared/ to broadcast), with the filename`,
     `   <iso-ts-with-millis>-<type>-${conv.agentId}-<session-frag>.json (never whole-second timestamps).`,
-    `5. Honor idempotency: read each inbox message once, write inboxes/${conv.agentId}/_state/<id>.json,`,
+    `7. Honor idempotency: read each inbox message once, write inboxes/${conv.agentId}/_state/<id>.json,`,
     `   act, then atomic-move the file to processed/. Never re-process a processed/ file.`,
     ``,
     loopBody(conv.agentId),
@@ -248,12 +292,14 @@ function fsSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): stri
 function slashSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): string {
   const { workspacePath, inviteToken } = input;
   const role = input.role;
+  const agentType = effectiveAgentType(input);
+  const ident = `${role ? `, role: "${role}"` : ''}${agentType ? `, agent_type: "${agentType}"` : ''}`;
   return [
     `REGISTER (Claude Code, native /loop lane):`,
     `1. Generate one session UUID and reuse it all session; stamp it on every message + heartbeat.`,
     `2. Consume your single-use invite token "${inviteToken}".`,
     `3. Write .autoclaw/orchestrator/comms/heartbeats/${conv.agentId}.json with`,
-    `   { agent_id: "${conv.agentId}"${role ? `, role: "${role}"` : ''}, session_id, status:"active", cycle:0 } and ensure a`,
+    `   { agent_id: "${conv.agentId}"${ident}, session_id, status:"active", cycle:0 } and ensure a`,
     `   row in comms/registry.json. Workspace: "${workspacePath}".`,
     `4. You have the Agent subagent primitive: a task spanning >=3 files MAY fan out to <=4 concurrent`,
     `   Agent subagents (Researcher -> Coder -> Reviewer -> Verifier). Small tasks: do them in-session.`,
@@ -290,6 +336,7 @@ function renderSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): 
 export function renderJoinPrompt(input: RenderJoinPromptInput): string {
   const conv = conventionFor(input.host, input.agentId);
   const role = input.role?.trim();
+  const agentType = effectiveAgentType(input);
   const scope = (input.scope ?? []).filter(Boolean);
 
   const header = [
@@ -301,6 +348,7 @@ export function renderJoinPrompt(input: RenderJoinPromptInput): string {
     `Your agent_id: ${conv.agentId}`,
     `Invite token (single-use, scoped, TTL'd): ${input.inviteToken}`,
     role ? `Suggested role: ${role} (the project's fleet.json is authoritative; this is a hint).` : undefined,
+    agentType ? `Behavioral type: ${agentType} (drives how your work is trusted + reviewed; announce this exact value).` : undefined,
     scope.length ? `Scope you may touch (seeds a scope-lease): ${scope.join(', ')}.` : `Scope: whole repo unless the orchestrator narrows it.`,
     `Join lane: ${laneLabel(conv.lane)}.`,
     conv.fallbackLane
@@ -334,6 +382,11 @@ export function renderJoinPromptForInvite(
     agentId: opts.agentId,
     workspacePath: invite.workspace ?? invite.project,
     role: invite.suggested_role,
+    // Thread the invite's DISTINCT behavioural type through to the beacon. The
+    // invite layer already carries a correct `suggested_agent_type` (set by the
+    // command); without this the renderer would re-derive from role only. Falls
+    // back to role-derivation inside renderJoinPrompt when the invite omits it.
+    agentType: invite.suggested_agent_type,
     scope: invite.scope,
     inviteToken: invite.token,
     bridgeUrl: opts.bridgeUrl,

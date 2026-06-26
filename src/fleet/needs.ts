@@ -16,7 +16,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { readAllBeacons, BEACON_TTL_MS } from './beacons';
+import { readAllBeacons, isDiscoveredUntrusted, BEACON_TTL_MS, type BeaconRow } from './beacons';
 import type { FleetManifest } from './architecture';
 
 const fsp = fs.promises;
@@ -41,6 +41,22 @@ export interface LiveAgent {
   role?: string;
   /** True when its presence signal is older than the freshness window. */
   stale?: boolean;
+}
+
+/**
+ * Pure: project beacon rows into the role-coverage census, excluding
+ * DISCOVERED-but-UNTRUSTED peers (origin 'lan') — see beacons.isDiscoveredUntrusted.
+ * An unauthenticated LAN peer must never count toward role coverage (it could
+ * otherwise suppress legitimate hiring pressure once it carries a role hint).
+ */
+export function beaconsToLiveAgents(beacons: BeaconRow[]): LiveAgent[] {
+  return beacons
+    .filter(b => !isDiscoveredUntrusted(b))
+    .map(b => ({
+      agent_id: b.agent_id,
+      ...(b.role ? { role: b.role } : {}),
+      stale: b.stale,
+    }));
 }
 
 /** A claim whose owner has gone stale (recovery pressure). */
@@ -202,11 +218,7 @@ export async function gatherNeedsInput(
     now: opts.now,
     ttlMs,
   });
-  const liveAgents: LiveAgent[] = beacons.map(b => ({
-    agent_id: b.agent_id,
-    ...(b.role ? { role: b.role } : {}),
-    stale: b.stale,
-  }));
+  const liveAgents: LiveAgent[] = beaconsToLiveAgents(beacons);
 
   const board = await readJson<BoardDoc>(path.join(orch, 'board.json'));
   const staleClaims: StaleClaim[] = (board?.in_flight ?? [])

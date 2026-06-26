@@ -239,6 +239,52 @@ export interface PendingAgentView {
 }
 
 // ---------------------------------------------------------------------------
+// Supervisor (single-active orchestrator) status — L4
+// ---------------------------------------------------------------------------
+
+/**
+ * Who is the active orchestrator (supervisor lease holder), and is it THIS
+ * window. Drives the "Orchestrator: … (you / standby)" chip so the operator can
+ * see which host/window is single-active and which are standing by.
+ */
+export interface SupervisorStatus {
+  /**
+   * `active`  — this window holds a fresh lease (it is the active orchestrator).
+   * `standby` — a fresh lease is held by another instance (this window defers).
+   * `none`    — no lease, or the lease is stale (role effectively up for grabs).
+   */
+  state: 'active' | 'standby' | 'none';
+  /** The current lease holder (a loop-instance id), or null when there is none. */
+  holder: string | null;
+  /** True when the holder is THIS window's loop instance. */
+  isSelf: boolean;
+  /** Milliseconds until the lease expires (may be ≤0 when stale), or null. */
+  expiresInMs: number | null;
+  /** Pre-formatted chip label. */
+  text: string;
+  /**
+   * E2c: the ranked standby roster recorded by the START LOOP (cluster-map
+   * `standbys[]`), in promotion order. Optional + omitted when the START LOOP is
+   * off (no fencing) so the chip degrades to the L4 active-only view.
+   */
+  standbys?: SupervisorStandby[];
+  /** E2c: advisory majority quorum size from the cluster map (display only). */
+  quorumSize?: number;
+}
+
+/** One ranked standby orchestrator (cluster-map roster), for the L4 chip. */
+export interface SupervisorStandby {
+  /** The standby's loop-instance id. */
+  instanceId: string;
+  /** True when this standby is THIS window's loop instance. */
+  isSelf: boolean;
+  /** 1-based promotion rank (1 = next to take over). */
+  rank: number;
+  /** The capability score recorded in the roster. */
+  score: number;
+}
+
+// ---------------------------------------------------------------------------
 // Top-level dashboard view-model
 // ---------------------------------------------------------------------------
 
@@ -255,6 +301,12 @@ export interface FleetDashboardModel {
   healthGrid: HealthGridRow[];
   cost: CostLedgerView;
   presence: PresenceSummary;
+  /**
+   * Single-active orchestrator (supervisor lease) status for the chip (L4).
+   * Optional for backward-compat with hand-built model literals; `buildFleetDashboard`
+   * always populates it.
+   */
+  supervisor?: SupervisorStatus;
   /** Agents seen via a fresh beacon but not yet admitted to fleet.json (FF-3). */
   pending: PendingAgentView[];
 }

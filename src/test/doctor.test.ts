@@ -490,6 +490,30 @@ suite('Doctor: renderReportJson()', function () {
   });
 });
 
+suite('Doctor: renderReport()', function () {
+  test('ZippyMesh section explains optional router and local provider alternatives', async function () {
+    const ws = makeTempDir('autoclaw-doc-render-ws-');
+    const ext = makeTempDir('autoclaw-doc-render-ext-');
+    try {
+      const report = await runDoctor(ext, {
+        workspaceRoot: ws,
+        isExtensionInstalled: () => false,
+        zippymeshUrl: DEAD_ZMLR_URL
+      });
+      const text = renderReport(report);
+      assert.match(text, /## ZippyMesh LLM Router/);
+      assert.match(text, /optional router/i);
+      assert.match(text, /AutoClaw does not require it/i);
+      assert.match(text, /Install LLM Providers/);
+      assert.match(text, /Ollama is auto-detected/i);
+      assert.match(text, /LM Studio is auto-detected/i);
+    } finally {
+      fs.rmSync(ws, { recursive: true, force: true });
+      fs.rmSync(ext, { recursive: true, force: true });
+    }
+  });
+});
+
 suite('Doctor: buildSkillsSourceSection()', function () {
   test('flags skills as missing when extensionPath has no skills/', function () {
     const empty = makeTempDir('autoclaw-doc-skills-empty-');
@@ -582,7 +606,9 @@ suite('Doctor: buildKgDaemonSection()', function () {
       assert.match(text, /capabilities:\s+sqlite=/);
       assert.match(text, /embedding:/);
       // Never tell users to install/build a daemon.
-      assert.doesNotMatch(text, /npm install|cd packages\/kg-daemon/i);
+      const kgText = text.match(/## KG Daemon[\s\S]*?(?=\n## |$)/)?.[0] ?? '';
+      assert.ok(kgText, 'KG Daemon section was rendered');
+      assert.doesNotMatch(kgText, /npm install|cd packages\/kg-daemon/i);
     } finally {
       fs.rmSync(ws, { recursive: true, force: true });
     }

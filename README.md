@@ -575,6 +575,7 @@ Everything lives under your project's `.autoclaw/` by default — `vector/` (the
 
 - **Vector backend:** `sqlite-vec` (local, default) or Postgres + pgvector. Built on Node's core `node:sqlite` so it survives VS Code/Electron upgrades. Install via **AutoClaw: Intelligence — Install Vector Backend**.
 - **Embeddings:** auto-detecting ladder — ZippyMesh router → Ollama → in-process `@xenova/transformers` → a zero-dependency `none` fallback that always works. Pick one with **Set Embedding Provider** / install with **Install Embeddings Provider**.
+- **LLM providers:** AutoClaw does not require ZippyMesh. It can use the optional ZippyMesh router, local Ollama, and LM Studio's OpenAI-compatible server (`http://127.0.0.1:1234/v1`) when those are running. Use **AutoClaw: Install LLM Providers** to wire workspace provider config for ZippyMesh/Ollama; LM Studio is auto-detected by the provider registry.
 - **Diagnostics:** **AutoClaw: Intelligence — Status** (locations/sizes/stats) and **— Diagnostics** (debug install/paths/version) when a native piece needs attention.
 
 > The delivery side — getting this intel into your agents on every runner — is the **Context Packs** section below.
@@ -732,16 +733,23 @@ All AutoClaw state lives under `.autoclaw/` — no hidden global state:
 
 ---
 
-## Avoiding Rate Limits with ZippyMesh LLM Router
+## LLM Providers and Rate Limits
 
 When running MAteam or long KDream sessions, you may hit rate limits from free-tier AI providers.
 
-**ZippyMesh LLM Router** is a companion tool from Zippy Technologies that routes requests across multiple providers with intelligent failover.
+AutoClaw works without a required cloud account or exclusive router. The provider ladder prefers the best reachable option and degrades cleanly:
+
+- **ZippyMesh LLM Router** — optional companion router from Zippy Technologies for multi-provider failover and playbooks.
+- **Ollama** — local LLM server on `http://127.0.0.1:11434`.
+- **LM Studio** — local OpenAI-compatible server on `http://127.0.0.1:1234/v1`.
+
+To add the optional ZippyMesh router:
 
 1. Download ZippyMesh LLM Router from [zippymesh.com](https://zippymesh.com)
 2. Start it: `node run.js` (runs on `http://localhost:20128`)
 3. In your AI extension, set the base URL to `http://localhost:20128/v1`
-4. AutoClaw's Doctor and Dashboard show ZippyMesh connection status automatically.
+4. Run **AutoClaw: Install LLM Providers** and choose the providers you want.
+5. AutoClaw's Doctor shows ZippyMesh as optional and reports local provider guidance.
 
 ---
 

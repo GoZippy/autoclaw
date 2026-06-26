@@ -32,6 +32,7 @@ import { readAllBeacons } from '../fleet/beacons';
 import { parseFleetManifest } from '../fleet/architecture';
 import { listInvites } from '../fleet/invites';
 import { computePendingAgents, type PendingAgent } from '../fleet/pending';
+import { readSupervisorLease, readClusterMap } from '../orchestrator/supervisorLease';
 
 const fsp = fs.promises;
 
@@ -523,6 +524,12 @@ export interface GatherOptions {
   /** The agent id this panel renders "for" (drives Awaiting You). */
   selfAgentId: string;
   /**
+   * L4: this window's loop-instance id (LOOP_INSTANCE_ID), used to decide whether
+   * THIS window is the active orchestrator. Distinct from {@link selfAgentId}.
+   * Omitted ⇒ the supervisor chip shows holder/standby but never "you".
+   */
+  selfInstanceId?: string;
+  /**
    * Live LMD health snapshot. When omitted, health is derived from heartbeat
    * file ages via {@link deriveHealthFromHeartbeats}.
    */
@@ -541,7 +548,7 @@ export async function gatherFleetData(
   const now = opts.now ?? Date.now();
   const { workspaceRoot, selfAgentId } = opts;
 
-  const [profiles, heartbeats, located, claims, sprintAssignments, cost, pending] =
+  const [profiles, heartbeats, located, claims, sprintAssignments, cost, pending, supervisorLease, clusterMap] =
     await Promise.all([
       readAgentProfiles(workspaceRoot),
       readHeartbeats(workspaceRoot),
@@ -550,6 +557,8 @@ export async function gatherFleetData(
       readSprintAssignments(workspaceRoot),
       readCostLedger(workspaceRoot),
       readPendingAgents(workspaceRoot, now),
+      readSupervisorLease(workspaceRoot).catch(() => null),
+      readClusterMap(workspaceRoot).catch(() => null),
     ]);
 
   const allMessages: RawMessage[] = located.map(l => l.msg);
@@ -607,6 +616,12 @@ export async function gatherFleetData(
     cost,
     healthEvents,
     pending,
+    supervisorLease,
+    selfInstanceId: opts.selfInstanceId,
+    // E2c: surface the START LOOP roster ONLY when there are actual standbys (a
+    // solo/legacy host has none → the chip degrades to the L4 active-only view).
+    clusterStandbys: clusterMap?.standbys?.length ? clusterMap.standbys : undefined,
+    quorumSize: clusterMap?.standbys?.length ? clusterMap.quorum_size : undefined,
   };
 
   return buildFleetDashboard(inputs, now);

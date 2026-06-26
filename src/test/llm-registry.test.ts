@@ -16,6 +16,7 @@ import * as path from 'path';
 import { LlmRegistry } from '../llm/registry';
 import { ZippyMeshProvider } from '../llm/zippymesh';
 import { OllamaProvider } from '../llm/ollama';
+import { LmStudioProvider } from '../llm/lmstudio';
 import { Oracle } from '../llm/oracle';
 
 function mkWorkspace(): string {
@@ -108,6 +109,47 @@ suite('LlmRegistry — oracle fallback branch (ZMLR unreachable)', () => {
     });
     const pick = await registry.getPreferred({ hints: { intent: 'chat' } });
     assert.strictEqual(pick, null);
+  });
+
+  test('getPreferred() can return LM Studio when it is the only local endpoint online', async () => {
+    const fetchImpl = makeFetch({
+      '127.0.0.1:1234/v1/models': {
+        status: 200,
+        body: { data: [{ id: 'qwen2.5-coder-7b-instruct' }] },
+      },
+    });
+    const registry = new LlmRegistry({
+      workspaceRoot: workspace,
+      providers: [
+        new ZippyMeshProvider({ fetchImpl }),
+        new OllamaProvider({ fetchImpl }),
+        new LmStudioProvider({ fetchImpl }),
+      ],
+      oracle: new Oracle({ workspaceRoot: workspace, ephemeral: true, fetchImpl }),
+    });
+    const pick = await registry.getPreferred({ hints: { intent: 'code' } });
+    assert.ok(pick, 'pick should not be null');
+    assert.strictEqual(pick!.provider.id, 'lmstudio');
+    assert.strictEqual(pick!.via, 'oracle');
+    assert.strictEqual(pick!.model, 'qwen2.5-coder-7b-instruct');
+  });
+});
+
+suite('LlmRegistry — default providers', () => {
+  let workspace: string;
+  setup(() => {
+    workspace = mkWorkspace();
+  });
+  teardown(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  test('default registry includes ZippyMesh, Ollama, and LM Studio', () => {
+    const registry = new LlmRegistry({
+      workspaceRoot: workspace,
+      oracle: new Oracle({ workspaceRoot: workspace, ephemeral: true }),
+    });
+    assert.deepStrictEqual(registry.list().map(p => p.id), ['zippymesh', 'ollama', 'lmstudio']);
   });
 });
 

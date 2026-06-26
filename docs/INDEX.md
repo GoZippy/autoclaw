@@ -16,6 +16,7 @@ Everything else is reachable from here.
 | [V3_1_ROADMAP.md](V3_1_ROADMAP.md) | v3.1 plan — governance, four phases (architect → LLM providers → security-auditor → doc-writer + peer slots). Where v3.1 contradicts an earlier doc, this wins. |
 | [V4_PLAN.md](V4_PLAN.md) | v4 blueprint (2026-06-12) — "agent dev organization in a box": onboarding (ONB), org model (ORG), fleet visibility (VIS), federation (FED), reputation routing (REP), memory overhaul (MEM), trigger hooks (HKS), quality substrate (QLT). Governs the arc after v3.x; V3_1 still rules in-flight work. |
 | [AGENT_SESSION_PROTOCOL.md](AGENT_SESSION_PROTOCOL.md) | Six-phase cross-agent coordination contract (REGISTER→SYNC→CLAIM→WORK→REPORT→LOOP). Read this *before* writing anything that touches `.autoclaw/orchestrator/`. |
+| [RELEASE-3.6.5.md](RELEASE-3.6.5.md) | Current manual release checklist for publishing 3.6.5 to VS Code Marketplace and Open VSX. |
 
 ## RFCs
 

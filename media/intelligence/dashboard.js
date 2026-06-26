@@ -20,6 +20,13 @@
     keptChart: document.getElementById('kept-rate-chart'),
     tokenChart: document.getElementById('token-chart'),
     recent: document.getElementById('recent-runs'),
+    // Intelligence Health card (Theme 2).
+    healthCard: document.getElementById('health-card'),
+    healthDot: document.getElementById('health-dot'),
+    healthStatus: document.getElementById('health-status'),
+    healthProvider: document.getElementById('health-provider'),
+    healthIndex: document.getElementById('health-index'),
+    healthNudges: document.getElementById('health-nudges'),
   };
 
   // ---- Theme-aware colors (read from CSS variables) -----------------------
@@ -60,6 +67,10 @@
     }
     if (msg.type === 'data') {
       render(msg.data || {});
+      return;
+    }
+    if (msg.type === 'health') {
+      renderHealth(msg.health || null);
     }
   });
 
@@ -137,6 +148,41 @@
     return String(n);
   }
 
+  // ---- Humanize helpers (health card) -------------------------------------
+  function fmtBytes(n) {
+    if (!n || n <= 0) { return '0 B'; }
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0;
+    let v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(1)) + ' ' + units[i];
+  }
+
+  function relTime(iso) {
+    if (!iso) { return null; }
+    const then = Date.parse(iso);
+    if (isNaN(then)) { return null; }
+    const sec = Math.round((Date.now() - then) / 1000);
+    if (sec < 0) { return 'just now'; }
+    if (sec < 60) { return sec + 's ago'; }
+    const min = Math.round(sec / 60);
+    if (min < 60) { return min + 'm ago'; }
+    const hr = Math.round(min / 60);
+    if (hr < 24) { return hr + 'h ago'; }
+    const day = Math.round(hr / 24);
+    if (day < 30) { return day + 'd ago'; }
+    const mon = Math.round(day / 30);
+    if (mon < 12) { return mon + 'mo ago'; }
+    return Math.round(mon / 12) + 'y ago';
+  }
+
+  function fmtCount(n) {
+    if (n === undefined || n === null) { return '—'; }
+    if (n >= 1000000) { return (n / 1000000).toFixed(1) + 'M'; }
+    if (n >= 1000) { return (n / 1000).toFixed(1) + 'k'; }
+    return String(n);
+  }
+
   function renderCards(summary) {
     const tokens = summary.tokens || { estimated: 0, real: 0, hasReal: false };
     const cards = [
@@ -191,6 +237,127 @@
         );
       })
       .join('');
+  }
+
+  // ---- Intelligence Health card -------------------------------------------
+  // Driven by the separate { type:'health', health } message. Renders a
+  // traffic-light status, a provider row, an index row (chunks, model/dim,
+  // indexed-when, db size, STALE badge), and a list of nudges. Nudge action
+  // buttons post { command:'run-action', commandId } — the host validates the
+  // command id against a whitelist before executing.
+  function renderHealth(health) {
+    if (!els.healthCard) { return; }
+
+    if (!health) {
+      els.healthCard.hidden = false;
+      setHealthDot('unknown');
+      els.healthStatus.textContent = 'Health unavailable';
+      els.healthProvider.textContent = '—';
+      els.healthIndex.textContent = '—';
+      els.healthNudges.innerHTML =
+        '<div class="health-nudge nudge-info"><div class="nudge-body">' +
+        '<div class="nudge-detail">Could not read the intelligence health snapshot.</div>' +
+        '</div></div>';
+      return;
+    }
+
+    els.healthCard.hidden = false;
+
+    const status = health.status === 'green' || health.status === 'amber' || health.status === 'red'
+      ? health.status
+      : 'unknown';
+    setHealthDot(status);
+    els.healthStatus.textContent =
+      status === 'green' ? 'Healthy' :
+      status === 'amber' ? 'Needs attention' :
+      status === 'red' ? 'Action required' : 'Unknown';
+
+    // Provider row.
+    const provider = health.provider || {};
+    els.healthProvider.textContent = provider.detail || provider.resolved || provider.configured || 'unknown';
+
+    // Index row.
+    renderHealthIndex(health.index || {});
+
+    // Nudges.
+    renderHealthNudges(health.nudges || []);
+  }
+
+  function setHealthDot(status) {
+    const dot = els.healthDot;
+    if (!dot) { return; }
+    dot.className = 'health-dot health-dot-' + status;
+  }
+
+  function renderHealthIndex(index) {
+    const parts = [];
+    if (index.neverIndexed) {
+      parts.push('not indexed');
+    } else {
+      parts.push(fmtCount(index.chunkCount) + ' chunks');
+      if (index.storeModel) {
+        parts.push(index.storeModel + (index.storeDimension ? ' / ' + index.storeDimension + 'd' : ''));
+      }
+      const rel = relTime(index.indexedAt);
+      if (rel) { parts.push('indexed ' + rel); }
+      if (index.dbSizeBytes) { parts.push(fmtBytes(index.dbSizeBytes)); }
+      if ((index.driftFiles || 0) > 0) { parts.push(index.driftFiles + ' files drifted'); }
+    }
+    // Escape every part exactly once at the join; the STALE badge below is the
+    // only intentional markup.
+    let html = parts.map(function (p) { return escapeHtml(p); }).join(' &middot; ');
+    if (index.stale || index.embeddingDegraded) {
+      html += ' <span class="health-stale-badge">STALE</span>';
+    }
+    if (!index.backendInstalled) {
+      html += ' <span class="health-degraded-badge">no backend</span>';
+    }
+    els.healthIndex.innerHTML = html || '—';
+  }
+
+  function renderHealthNudges(nudges) {
+    if (!nudges.length) {
+      els.healthNudges.innerHTML =
+        '<div class="health-nudge nudge-info"><div class="nudge-body">' +
+        '<div class="nudge-title">All good</div>' +
+        '<div class="nudge-detail">No intelligence-health issues detected.</div>' +
+        '</div></div>';
+      return;
+    }
+
+    els.healthNudges.innerHTML = nudges
+      .map(function (n) {
+        const sev = (n.severity === 'error' || n.severity === 'warn' || n.severity === 'info')
+          ? n.severity : 'info';
+        let btn = '';
+        if (n.action && n.action.command) {
+          btn =
+            '<button type="button" class="nudge-action" ' +
+            'data-command-id="' + escapeHtml(n.action.command) + '">' +
+            escapeHtml(n.action.label || 'Fix') +
+            '</button>';
+        }
+        return (
+          '<div class="health-nudge nudge-' + sev + '">' +
+          '<div class="nudge-body">' +
+          '<div class="nudge-title">' + escapeHtml(n.title || '') + '</div>' +
+          '<div class="nudge-detail">' + escapeHtml(n.detail || '') + '</div>' +
+          '</div>' +
+          btn +
+          '</div>'
+        );
+      })
+      .join('');
+
+    // Wire nudge action buttons (CSP-safe: addEventListener, no inline handlers).
+    els.healthNudges.querySelectorAll('button.nudge-action').forEach(function (b) {
+      b.addEventListener('click', function () {
+        const commandId = b.getAttribute('data-command-id');
+        if (commandId) {
+          vscode.postMessage({ command: 'run-action', commandId: commandId });
+        }
+      });
+    });
   }
 
   // ---- Canvas helpers -----------------------------------------------------

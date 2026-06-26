@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [3.6.6] - 2026-06-26
+
+Builds on 3.6.5: local-LLM ergonomics, ready-made agent teams, and a wave of
+coordination + intelligence hardening.
+
+### Added
+
+- **Local LLM providers.** First-class **LM Studio** adapter (auto-detected on
+  `http://127.0.0.1:1234/v1`) alongside Ollama; ZippyMesh is now clearly an
+  **optional** router (AutoClaw runs without it), and the "Install LLM Providers"
+  picker + Doctor report explain the local-first options.
+- **Multi-agent team templates + playbook.** `AutoClaw: Add Agent Team from
+  Template…` fans out a ready-made squad (Solo + Reviewer, Feature Build Squad,
+  Security Audit Cell, …) with preview-before-mint; self-documenting join/invite
+  pickers (role → derived behavioral type, the join lane shown per tool); a
+  `docs/MULTI-AGENT-TEAM-PLAYBOOK.md` guide.
+- **Coordination mesh** — LAN discovery, wake-only gossip relay, cluster map +
+  supervisor lease, task catalog, and board refresh (all off by default,
+  consent-gated).
+- **Always-on intelligence** — incremental code re-index **watch service**,
+  provider-health + index validation with stable rebuilds, an authoritative
+  agent-orientation contract so foreign agents stop guessing, and cross-tool
+  session ingestion.
+- **Fleet / orchestration** — wired the fleet **status bar**, a **Run Gates**
+  action, board auto-transition rules on state signals, and cross-agent adapter
+  safety rails.
+- **Settings** — grouped into navigable categories; maintainer/product config
+  hidden from the Settings UI.
+
+### Fixed
+
+- Panel now surfaces joined agents from a heartbeat/beacon, not just
+  `registry.json`, and fs-lane peers join permission-free in a never-orchestrated
+  project.
+- `role` ≠ `agent_type` is now announced distinctly on every join lane (a
+  `reviewer` correctly announces `auditor`), fixing downstream consensus/trust
+  keying.
+- Stopped recurring extension-host crashes seen in logs (loop / consensus /
+  autobuild), unified the task-assignment message type on `task_assign`, and added
+  an in-process KG health check + a corrected `consensus/active` reader.
+
 ## [3.6.5] - 2026-06-23
 
 A large coordination + connectivity release: agents now self-coordinate without

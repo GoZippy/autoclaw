@@ -99,6 +99,7 @@ routing, governance). What remains is wiring that logic into the live planner
 ### Release / process
 | # | Item | Status |
 |---|------|--------|
+| REL-4 | **v3.6.5 marketplace release** — package version + changelog are already at 3.6.5; registries are still on 3.6.4. Release prep is green for secrets, compile, unit tests, adapters, doctor, extension-host integration via isolated VS Code 1.118.1 cache, package, targeted VSIX scan, and publisher dry-runs. Remaining: manual publish to VS Code Marketplace + Open VSX, registry verification, `v3.6.5` tag, install smoke. | in-progress |
 | REL-3 | **v3.3.0 shipped** — agent fabric + cross-machine relay + relay server; promoted dev-beta→master (a008e44, tag v3.3.0), published to both registries. Kilo validated (cycle 5). | **done** (2026-06-12) |
 
 ---

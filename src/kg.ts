@@ -264,6 +264,13 @@ export interface KgHealthResult {
 }
 
 export function fetchKgHealth(port: number, host = '127.0.0.1', timeoutMs = 1500): Promise<KgHealthResult> {
+  // Guard against port 0/unset (the default when the OPTIONAL standalone daemon
+  // isn't running — KG is in-process now). Without this, http.request treats
+  // port 0 as :80 and spams ECONNREFUSED. Callers should report the in-process
+  // health (getKnowledgeGraph) when no daemon is live.
+  if (!Number.isInteger(port) || port <= 0) {
+    return Promise.resolve({ ok: false, status: null, body: null, error: 'no daemon (KG runs in-process; port unset)' });
+  }
   return new Promise((resolve) => {
     const req = http.request(
       { host, port, path: '/api/v1/health', method: 'GET', timeout: timeoutMs },

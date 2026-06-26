@@ -68,10 +68,13 @@ import {
   resolveCapabilityOffers,
 } from './orchestrate';
 import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistryEntry, CapabilityPendingTask, GateCheckResult } from './orchestrate';
+import { classifyConsensusActive, type ConsensusActiveEntry } from './orchestrator/consensusActiveScan';
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
 import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
+import { startIndexWatchService, loadConfig as loadIntelligenceConfig, type IndexWatchHandle } from './intelligence';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
+import { registerIntelligenceHealthSurface } from './intelligence/healthSurface';
 import { registerManagerPanel } from './manager/managerPanel';
 import { registerSupport } from './support/support';
 import { registerLicensing } from './licensing/licensing';
@@ -100,7 +103,7 @@ import {
 // Agent-fabric taxonomy via explicit subpaths (keeps the message-bus + bridge
 // out of modules that only need the taxonomy).
 import { onboardPlatform } from './fabric/onboarding';
-import { defaultAgentTypeForRunner } from './fabric/agentTypes';
+import { defaultAgentTypeForRunner, agentTypeProfile, AGENT_TYPES, type AgentType } from './fabric/agentTypes';
 // Trigger hooks + fleet HALT kill switch (HKS-1..3, agent-trigger-hooks spec).
 import { setFleetHalted, startTriggerHooksRuntime } from './hooks/triggerHooks';
 // Track-record ledger (REP-1) — record reviewed-task outcomes for reputation routing.
@@ -120,10 +123,16 @@ import { normalizeRole, ROLE_ORDER, ROLE_META, type CanonicalRole } from './role
 import {
   resolveFleet, parseFleetManifest, type FleetManifest, type AgentSignal,
 } from './fleet/architecture';
-import { readAllBeacons, type BeaconRow } from './fleet/beacons';
+import { readAllBeacons, isDiscoveredUntrusted, type BeaconRow } from './fleet/beacons';
+import {
+  LanDiscovery, shouldStartLanDiscovery, parseSeeds, LAN_DEFAULT_PORT, type LanMode,
+} from './fleet/lanDiscovery';
+import { LanGossipRelay, LAN_GOSSIP_DEFAULT_PORT } from './fleet/lanGossipRelay';
 import { createInvite, listInvites, revokeInvite, type AdmitPolicy } from './fleet/invites';
 import { computePendingAgents, admitAgent } from './fleet/pending';
 import { renderJoinPromptForInvite, JOIN_TARGETS } from './fleet/joinPrompt';
+import { agentTypeForRole } from './fleet/roleType';
+import { TEAM_TEMPLATES, getTeamTemplate, recommendedTemplate, seatSummary } from './fleet/teamTemplates';
 import { scaffoldAgent, keepaliveProfileFor } from './fleet/scaffold';
 import { scaffoldFleetManifest, setManifestOrchestrator, generateNeedsFile, type DetectedAgent as ManifestAgent } from './fleet/authoring';
 import { appendTaskCompletion, readTaskLedger, summarizeByAgent, recentCompletions } from './taskLedger';
@@ -174,9 +183,15 @@ import {
 import { getKnowledgeGraph, closeKnowledgeGraph } from './intelligence/kg/service';
 import {
   startOrchestratorLoop,
+  LOOP_INSTANCE_ID,
   dispatchWork,
   type OrchestratorLoopHandle,
 } from './orchestratorLoop';
+import {
+  startBoardRefreshService,
+  refreshBoardNow,
+  DEFAULT_BOARD_REFRESH_DEBOUNCE_MS,
+} from './orchestrator/boardRefresh';
 import {
   buildPackage,
   commitPackage,
@@ -304,6 +319,49 @@ function stopRefreshService(): void {
   }
 }
 
+let activeIndexWatch: { handle: IndexWatchHandle; watcher: vscode.FileSystemWatcher } | null = null;
+
+/**
+ * Start the always-on incremental code re-index watcher when
+ * `autoclaw.intelligence.watch.enabled` is true. Best-effort, idempotent. The
+ * service's path filter excludes `.autoclaw/` + ignored dirs, so the index's own
+ * writes can't re-trigger it.
+ */
+function maybeStartIndexWatch(): void {
+  const cfg = vscode.workspace.getConfiguration('autoclaw.intelligence.watch');
+  if (!cfg.get<boolean>('enabled', false)) { return; }
+  if (activeIndexWatch) { return; }
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { return; }
+  const seconds = cfg.get<number>('debounceSeconds', 5);
+  try {
+    const intelConfig = loadIntelligenceConfig(workspaceRoot);
+    const handle = startIndexWatchService({
+      workspaceRoot,
+      debounceMs: Math.max(1, seconds) * 1000,
+      config: intelConfig,
+      log: (m) => console.log(`AutoClaw intelligence: ${m}`),
+    });
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*');
+    const onChange = (uri: vscode.Uri) => handle.notifyChange(uri.fsPath);
+    watcher.onDidChange(onChange);
+    watcher.onDidCreate(onChange);
+    watcher.onDidDelete(onChange);
+    activeIndexWatch = { handle, watcher };
+  } catch (e) {
+    console.error('AutoClaw intelligence index watch failed to start:', e);
+  }
+}
+
+/** Stop the index watch service + dispose its watcher. Best-effort. */
+function stopIndexWatch(): void {
+  if (activeIndexWatch) {
+    try { activeIndexWatch.handle.stop(); } catch { /* ignore */ }
+    try { activeIndexWatch.watcher.dispose(); } catch { /* ignore */ }
+    activeIndexWatch = null;
+  }
+}
+
 // Re-export helpers for external use (e.g., tests)
 export {
   parseMemoryTasks,
@@ -328,6 +386,8 @@ export type { ParsedTask, AdapterHealth, TodoItem, CodeChurnMetrics, Productivit
 
 let kdreamView: vscode.WebviewView | undefined = undefined;
 let stateWatcher: vscode.FileSystemWatcher | undefined = undefined;
+// L2: consumer-side watcher — refresh the visible sidebar the instant board.json lands.
+let boardWatcher: vscode.FileSystemWatcher | undefined = undefined;
 let refreshIntervalId: NodeJS.Timeout | undefined = undefined;
 
 /**
@@ -393,7 +453,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // LLM provider install — wires ZippyMesh + Ollama into the workspace.
+  // LLM provider install — wires optional routers/local providers into the workspace.
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.llm.install', async () => {
       const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -403,11 +463,29 @@ export function activate(context: vscode.ExtensionContext) {
       }
       const choice = await vscode.window.showQuickPick(
         [
-          { label: 'ZippyMesh + Ollama (Recommended)', zippymesh: true, ollama: true },
-          { label: 'ZippyMesh only', zippymesh: true, ollama: false },
-          { label: 'Ollama only', zippymesh: false, ollama: true },
+          {
+            label: 'ZippyMesh + Ollama',
+            description: 'Recommended',
+            detail: 'Optional router plus local fallback. Skips unreachable providers without failing.',
+            zippymesh: true,
+            ollama: true,
+          },
+          {
+            label: 'Ollama only',
+            description: 'Local LLM',
+            detail: 'Uses a local Ollama server on OLLAMA_HOST or http://127.0.0.1:11434.',
+            zippymesh: false,
+            ollama: true,
+          },
+          {
+            label: 'ZippyMesh only',
+            description: 'Optional router',
+            detail: 'Adds the router when it is running; AutoClaw still works without it.',
+            zippymesh: true,
+            ollama: false,
+          },
         ],
-        { placeHolder: 'Which providers should I install?' },
+        { placeHolder: 'Choose optional LLM provider wiring. LM Studio is auto-detected on localhost:1234.' },
       );
       if (!choice) return;
       const { installLlm, formatLlmInstallReport } = await import('./llm');
@@ -782,6 +860,8 @@ export function activate(context: vscode.ExtensionContext) {
     // Generate a ready-to-paste join prompt for a chosen tool (Codex/Claude
     // Desktop/OpenClaw/Hermes/…), bundling a fresh invite token + lane steps.
     vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', () => fleetJoinPromptCommand()),
+    // Add a whole agent team from a ready-made template (gallery → preview → fan-out).
+    vscode.commands.registerCommand('autoclaw.fleet.addTeam', () => fleetAddTeamCommand()),
     // Wire an arbitrary (non-extension) agent id into the comms tree.
     vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand()),
     // Toggle the MCP server's allowWrites gate (lets MCP-lane agents claim/vote).
@@ -1011,6 +1091,63 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // Intelligence index watch: incremental re-index as you work
+  // (gated on autoclaw.intelligence.watch.enabled, default off).
+  maybeStartIndexWatch();
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.intelligence.startWatch', () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        void vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.');
+        return;
+      }
+      if (activeIndexWatch) {
+        void vscode.window.showInformationMessage('AutoClaw: intelligence index watch is already running.');
+        return;
+      }
+      const seconds = vscode.workspace
+        .getConfiguration('autoclaw.intelligence.watch')
+        .get<number>('debounceSeconds', 5);
+      const intelConfig = loadIntelligenceConfig(workspaceRoot);
+      const handle = startIndexWatchService({
+        workspaceRoot,
+        debounceMs: Math.max(1, seconds) * 1000,
+        config: intelConfig,
+        log: (m) => console.log(`AutoClaw intelligence: ${m}`),
+      });
+      const watcher = vscode.workspace.createFileSystemWatcher('**/*');
+      const onChange = (uri: vscode.Uri) => handle.notifyChange(uri.fsPath);
+      watcher.onDidChange(onChange);
+      watcher.onDidCreate(onChange);
+      watcher.onDidDelete(onChange);
+      activeIndexWatch = { handle, watcher };
+      void vscode.window.showInformationMessage(
+        `AutoClaw: intelligence index watch started (incremental re-index, ${Math.max(1, seconds)}s debounce).`,
+      );
+    }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.intelligence.stopWatch', () => {
+      if (!activeIndexWatch) {
+        void vscode.window.showInformationMessage('AutoClaw: intelligence index watch is not running.');
+        return;
+      }
+      stopIndexWatch();
+      void vscode.window.showInformationMessage('AutoClaw: intelligence index watch stopped.');
+    }),
+  );
+  // Honor live toggling of the setting without a reload.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('autoclaw.intelligence.watch.enabled')) {
+        const enabled = vscode.workspace
+          .getConfiguration('autoclaw.intelligence.watch')
+          .get<boolean>('enabled', false);
+        if (enabled) { maybeStartIndexWatch(); } else { stopIndexWatch(); }
+      }
+    }),
+  );
+
   // AutoBuild scheduler: single setInterval in the extension host.
   startAutobuildScheduler(context);
 
@@ -1063,6 +1200,26 @@ export function activate(context: vscode.ExtensionContext) {
     }
   });
   context.subscriptions.push(stateWatcher);
+
+  // L2 consumer: refresh the visible KDream sidebar the instant board.json is
+  // (re)written, instead of waiting for the slow backstop poll. Gated by the same
+  // `cluster.boardWatch` flag as the producer (so turning it off = 30s tick only),
+  // scoped to THIS workspace (a nested/sibling project's board never drives a
+  // spurious refresh), and gated on visibility so a hidden panel does zero work.
+  const kdreamBoardWatchEnabled = vscode.workspace
+    .getConfiguration('autoclaw').get<boolean>('cluster.boardWatch', true);
+  const kdreamWorkspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (kdreamBoardWatchEnabled && kdreamWorkspaceRoot) {
+    boardWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(kdreamWorkspaceRoot, '.autoclaw/orchestrator/board.json'),
+    );
+    const onBoardChange = (): void => {
+      if (kdreamView?.visible) { refreshOrchestratorData(kdreamView).catch(() => {}); }
+    };
+    boardWatcher.onDidChange(onBoardChange);
+    boardWatcher.onDidCreate(onBoardChange);
+    context.subscriptions.push(boardWatcher);
+  }
 
   // Check if .autoclaw/ is in .gitignore
   checkAndOfferGitignoreUpdate().catch(e => console.error('gitignore check failed:', e));
@@ -1122,6 +1279,15 @@ export function activate(context: vscode.ExtensionContext) {
   // Intelligence metrics dashboard (webview view + refresh command + metrics
   // file watcher). Registration only — no I/O until the view is opened.
   registerIntelligenceDashboard(context);
+
+  // Always-on Intelligence health surface (Theme 3): a status-bar rollup, a
+  // one-shot toast when the layer is in a red state, and the auto-detect
+  // "learn from other tools' sessions" consent prompt. Registration only; the
+  // probe + detection are deferred + best-effort (never block activation).
+  registerIntelligenceHealthSurface(
+    context,
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+  );
 
   // Full-tab Manager Surface (autoclaw.manager.open) — roomy single pane for
   // overseeing the fleet. Command registration only; no I/O until opened.
@@ -2238,6 +2404,9 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
         case 'inviteAgent':
           await vscode.commands.executeCommand('autoclaw.fleet.invite');
           break;
+        case 'addTeam':
+          await vscode.commands.executeCommand('autoclaw.fleet.addTeam');
+          break;
         case 'generateJoinPrompt':
           await vscode.commands.executeCommand('autoclaw.fleet.joinPrompt');
           break;
@@ -2304,9 +2473,12 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
         clearInterval(refreshIntervalId);
         refreshIntervalId = undefined;
       }
+      // Clear the module-level handle so visibility checks (incl. the L2 board
+      // watcher's onBoardChange) short-circuit after the view is destroyed.
+      kdreamView = undefined;
     });
   }
-  
+
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const cssPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'kdream-dashboard.css');
     const jsPath = vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'kdream-dashboard.js');
@@ -3366,6 +3538,21 @@ function startOrchestratorLoopTick(context: vscode.ExtensionContext): void {
     reapDeadClaims: vscode.workspace
       .getConfiguration('autoclaw')
       .get<boolean>('selfHealing.reapDeadClaims', false),
+    // L1: single-active manager, ON by default. Only the active supervisor host
+    // writes the board / dispatches / tallies each tick; standbys defer to it.
+    singleActive: vscode.workspace
+      .getConfiguration('autoclaw')
+      .get<boolean>('cluster.singleActive', true),
+    // E1c: opt-in fencing (wx-lock-serialized acquire + live epoch/term + deposed
+    // -holder fencing), OFF by default — a solo host stays byte-identical to E1b.
+    fencing: vscode.workspace
+      .getConfiguration('autoclaw')
+      .get<boolean>('cluster.fencing', false),
+    // E3b: opt-in WAKE-ONLY cluster-map gossip (publish/read peer map-beats; advisory
+    // only — never elects), OFF by default. Builds on fencing.
+    gossip: vscode.workspace
+      .getConfiguration('autoclaw')
+      .get<boolean>('cluster.gossip', false),
     onTick(result) {
       // Surface health/dispatch alerts in the output channel.
       const unhealthy = result.health.stalledIds.length + result.health.deadIds.length;
@@ -3390,6 +3577,23 @@ function startOrchestratorLoopTick(context: vscode.ExtensionContext): void {
       console.log('[autoclaw] orchestrator loop stopped');
     },
   });
+
+  // L2 producer: watch the board's INPUTS and refresh the board within a debounce
+  // window (sub-second) instead of waiting up to 30s. The 30s tick stays as the
+  // backstop. Single-active safe: refreshBoardNow reuses the L1 lease gate under
+  // the loop's holder id, so a standby host writes nothing.
+  startBoardWatch(context, workspaceRoot);
+
+  // T0b: opt-in LAN peer discovery. OFF by default — binds NO socket unless the
+  // autoclaw.cluster.lan flag is on AND the user acknowledged the one-time network
+  // consent. Discovered peers arrive as origin-'lan' (untrusted) beacons.
+  void startLanDiscovery(context, workspaceRoot);
+
+  // T1: opt-in LAN relay of cluster-map gossip. OFF by default — binds NO socket
+  // unless cluster.lan AND cluster.lan.gossip are on AND its own consent is acked.
+  // Advisory only: relayed peer beats are wake-only (the E3b consumer never elects
+  // on them); they never grant trust to an unauthenticated LAN peer (T2 does).
+  void startLanGossipRelay(context, workspaceRoot);
 
   console.log(`[autoclaw] orchestrator loop started – tickMs=30000 workspace="${workspaceRoot}"`);
 }
@@ -3609,24 +3813,41 @@ async function orchestrateReviewCommand(): Promise<void> {
     return;
   }
 
-  // Load all vote files, group by task_id
-  const voteFiles = fs.readdirSync(consensusDir).filter(f => f.endsWith('.json'));
-  if (voteFiles.length === 0) {
-    channel.appendLine('[orchestrate] No vote files in consensus/active/.');
-    return;
-  }
-
-  const votesByTask = new Map<string, ValidationVote[]>();
-  for (const f of voteFiles) {
+  // consensus/active holds TWO file kinds: review STUBS (`<task>.json`, no
+  // top-level `vote`) and per-agent VOTES (`<task>-<voter>.json`, string `vote`).
+  // Classify by CONTENT and take task_id from the file — filenames can't be
+  // split on '-' because ids like `RV-1` contain dashes (this was the perennial
+  // "No vote files in consensus/active/" bug). See consensusActiveScan.ts.
+  const allFiles = fs.readdirSync(consensusDir).filter(f => f.endsWith('.json'));
+  const entries: ConsensusActiveEntry[] = [];
+  for (const f of allFiles) {
     try {
       const raw = await fsPromises.readFile(path.join(consensusDir, f), 'utf8');
-      const vote = JSON.parse(raw) as ValidationVote;
-      const taskId = f.split('-')[0] ?? 'unknown';
-      if (!votesByTask.has(taskId)) { votesByTask.set(taskId, []); }
-      votesByTask.get(taskId)!.push(vote);
+      entries.push({ name: f, json: JSON.parse(raw) });
     } catch {
-      channel.appendLine(`[orchestrate] Warning: could not parse vote file ${f}`);
+      channel.appendLine(`[orchestrate] Warning: could not parse ${f}`);
     }
+  }
+  const scan = classifyConsensusActive(entries);
+  const votesByTask = scan.votesByTask as unknown as Map<string, ValidationVote[]>;
+  const awaitingReview = scan.awaitingReview;
+
+  if (votesByTask.size === 0) {
+    if (awaitingReview.length > 0) {
+      channel.appendLine(
+        `[orchestrate] ${awaitingReview.length} task(s) in peer review, awaiting agent votes: ${awaitingReview.join(', ')}.`,
+      );
+      vscode.window.showInformationMessage(
+        `Orchestrate: ${awaitingReview.length} task(s) in review, awaiting votes. Agents must vote (consensus.vote / vote files) to resolve.`,
+      );
+    } else {
+      channel.appendLine('[orchestrate] No consensus activity in consensus/active/ (no review stubs or votes yet).');
+      vscode.window.showInformationMessage('Orchestrate: no consensus activity yet.');
+    }
+    return;
+  }
+  if (awaitingReview.length > 0) {
+    channel.appendLine(`[orchestrate] Note: ${awaitingReview.length} task(s) still awaiting votes: ${awaitingReview.join(', ')}.`);
   }
 
   const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
@@ -3945,32 +4166,60 @@ async function bridgeStopCommand(): Promise<void> {
 }
 
 async function kgHealthCheckCommand(): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration('autoclaw.kg');
-  const configuredPort = cfg.get<number>('port', 9877);
-  // Probe the port the daemon actually bound to (may differ after fallback).
-  const livePid = activeKg?.child && activeKg.child.exitCode === null ? activeKg.child.pid : null;
-  const port = activeKg && livePid !== undefined && livePid !== null
-    ? activeKg.port
-    : configuredPort;
   const channel = getKgOutputChannel();
-  if (port !== configuredPort) {
-    channel.appendLine(`[kg] (configured port ${configuredPort} unavailable; daemon bound to ${port})`);
+  const livePid = activeKg?.child && activeKg.child.exitCode === null ? activeKg.child.pid : null;
+  const daemonLive = !!(activeKg && livePid !== undefined && livePid !== null && activeKg.port > 0);
+
+  // Only probe over HTTP when the OPTIONAL standalone daemon is genuinely
+  // running on a real port. The default is the IN-PROCESS KG (node:sqlite) —
+  // probing a non-existent daemon on port 0 just spams ECONNREFUSED:80.
+  if (daemonLive) {
+    const port = activeKg!.port;
+    channel.appendLine(`[kg] healthCheck (daemon) → http://127.0.0.1:${port}/api/v1/health`);
+    const result = await fetchKgHealth(port);
+    if (result.ok) {
+      const summary = typeof result.body === 'object' ? JSON.stringify(result.body) : String(result.body);
+      channel.appendLine(`[kg] ${result.status} ${summary}`);
+      vscode.window.showInformationMessage(`AutoClaw KG (daemon): ${result.status} OK — ${summary.slice(0, 120)}`);
+    } else {
+      const detail = result.error ?? `status=${result.status ?? 'n/a'}`;
+      channel.appendLine(`[kg!] daemon healthCheck failed: ${detail}`);
+      vscode.window.showWarningMessage(`AutoClaw KG: daemon health check failed (${detail}).`, 'Open KG Output')
+        .then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+    }
+    return;
   }
-  channel.appendLine(`[kg] healthCheck → http://127.0.0.1:${port}/api/v1/health`);
-  const result = await fetchKgHealth(port);
-  if (result.ok) {
-    const summary = typeof result.body === 'object'
-      ? JSON.stringify(result.body)
-      : String(result.body);
-    channel.appendLine(`[kg] ${result.status} ${summary}`);
-    vscode.window.showInformationMessage(`AutoClaw KG: ${result.status} OK — ${summary.slice(0, 120)}`);
-  } else {
-    const detail = result.error ?? `status=${result.status ?? 'n/a'}`;
-    channel.appendLine(`[kg!] healthCheck failed: ${detail}`);
-    vscode.window.showWarningMessage(
-      `AutoClaw KG: health check failed (${detail}). Is the daemon running on port ${port}?`,
-      'Open KG Output'
-    ).then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+
+  // In-process KG: report status directly from the store handle — no HTTP.
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) {
+    channel.appendLine('[kg] healthCheck: no workspace open.');
+    return;
+  }
+  try {
+    const h = getKnowledgeGraph({ workspaceRoot });
+    const summary = {
+      mode: 'in-process',
+      ok: !h.degraded,
+      degraded: h.degraded,
+      sqlite: h.caps.sqlite, vec: h.caps.vec, fts: h.caps.fts,
+      driver: h.driverKind,
+      embedding: `${h.embedding.provider}/${h.embedding.model}@${h.embedding.dimension}`,
+    };
+    channel.appendLine(`[kg] healthCheck (in-process) → ${JSON.stringify(summary)}`);
+    if (h.degraded) {
+      vscode.window.showWarningMessage(
+        'AutoClaw KG: in-process store is DEGRADED (no SQLite driver). Run "AutoClaw: Intelligence — Install Vector Backend" or check Diagnostics.',
+        'Open KG Output',
+      ).then(a => { if (a === 'Open KG Output') { channel.show(true); } });
+    } else {
+      vscode.window.showInformationMessage(
+        `AutoClaw KG: in-process OK — sqlite=${h.caps.sqlite} vec=${h.caps.vec} fts=${h.caps.fts} (${summary.embedding}).`,
+      );
+    }
+  } catch (e) {
+    channel.appendLine(`[kg!] in-process health check failed: ${(e as Error).message}`);
+    vscode.window.showWarningMessage(`AutoClaw KG: health check failed — ${(e as Error).message}`);
   }
 }
 
@@ -4225,6 +4474,11 @@ async function refreshOrchestratorData(view: vscode.WebviewView): Promise<void> 
   const knownIds = new Set(agentsWithSessions.map(a => a.id));
   const fleetAgents: AgentWithLive[] = [...agentsWithSessions];
   for (const b of beaconRows) {
+    // T0 trust ceiling: a LAN-DISCOVERED peer (origin 'lan') is observe-only,
+    // unauthenticated telemetry — never promote it into the TRUSTED fleet roster
+    // (beaconToAgent would launder its 'lan' marker to a 'beacon'/'joined' card
+    // indistinguishable from a real agent). Symmetric with pending.ts / needs.ts.
+    if (isDiscoveredUntrusted(b)) { continue; }
     if (knownIds.has(b.agent_id)) { continue; }
     knownIds.add(b.agent_id);
     fleetAgents.push(beaconToAgent(b));
@@ -4655,30 +4909,139 @@ async function setAgentRoleCommand(): Promise<void> {
 // Fleet federation commands (FF-3) — invite / admit / decline outside agents
 // ---------------------------------------------------------------------------
 
+/** A QuickPick item carrying the resolved value behind a self-documenting row. */
+type FleetPickItem = vscode.QuickPickItem & { value?: string };
+
+/** A non-selectable section header for a QuickPick list. */
+function pickSeparator(label: string): vscode.QuickPickItem {
+  return { label, kind: vscode.QuickPickItemKind.Separator };
+}
+
+/** Short, glanceable lane name (shown inline as item.description). */
+const LANE_SHORT: Record<string, string> = {
+  mcp: 'MCP lane', http: 'HTTP bridge', fs: 'filesystem', slash: 'native /loop',
+};
+
+/** One-line consequence of a tool's join lane (shown as the wrapped item.detail). */
+function laneConsequence(conv: { lane: string; fallbackLane?: string }): string {
+  const base = ((): string => {
+    switch (conv.lane) {
+      case 'mcp':   return 'Mounts the autoclaw-mcp server and calls its tools directly; will ask to enable repo writes.';
+      case 'http':  return 'Heartbeat, claim, and report over REST + SSE through the AutoClaw bridge.';
+      case 'slash': return 'Joins in-window using the native /loop skill — no extra setup.';
+      case 'fs':
+      default:      return 'Writes a beacon + message files under the shared comms folder.';
+    }
+  })();
+  return conv.fallbackLane ? `${base} Falls back to the ${LANE_SHORT[conv.fallbackLane] ?? conv.fallbackLane}.` : base;
+}
+
+/**
+ * Build the target-tool picker items, grouped by federation peers vs in-extension
+ * IDE hosts, each row surfacing its join lane (description) + consequence (detail).
+ */
+function buildTargetItems(): FleetPickItem[] {
+  const federation = ['codex', 'claude-desktop', 'openclaw', 'hermes'];
+  const toItem = (key: string): FleetPickItem => {
+    const c = JOIN_TARGETS[key];
+    return { label: c.label, description: LANE_SHORT[c.lane] ?? c.lane, detail: laneConsequence(c), value: key };
+  };
+  const items: FleetPickItem[] = [pickSeparator('Federation peers')];
+  for (const k of federation) { if (JOIN_TARGETS[k]) { items.push(toItem(k)); } }
+  items.push(pickSeparator('In-extension IDE hosts'));
+  for (const k of Object.keys(JOIN_TARGETS)) { if (!federation.includes(k)) { items.push(toItem(k)); } }
+  return items;
+}
+
+/**
+ * Build the role picker items, grouped by tier (leadership / build & verify /
+ * support). Each row carries the role's glanceable hint (description) + one-line
+ * explanation (detail), sourced from ROLE_META so the picker can never drift.
+ */
+function buildRoleItems(): FleetPickItem[] {
+  const tiers: ReadonlyArray<readonly [string, readonly CanonicalRole[]]> = [
+    ['Leadership', ['orchestrator', 'architect', 'product']],
+    ['Build & verify', ['coder', 'reviewer', 'tester', 'security']],
+    ['Support', ['designer', 'creative', 'docs', 'researcher', 'ops', 'generalist']],
+  ];
+  const items: FleetPickItem[] = [];
+  for (const [title, roles] of tiers) {
+    items.push(pickSeparator(title));
+    for (const r of roles) {
+      const m = ROLE_META[r];
+      items.push({ label: `${m.glyph}  ${m.label}`, description: m.hint, detail: m.description, value: r });
+    }
+  }
+  return items;
+}
+
+/**
+ * Build the behavioral-type picker items, data-driven from agentTypeProfile so the
+ * trust/consensus/human-in-loop consequences (description) and the plain-language
+ * meaning (detail) can never drift from the policy module. When a `suggested` type
+ * is given (derived from the chosen role) it is listed FIRST under a "Suggested"
+ * header so the user can usually just take the top row.
+ */
+function buildAgentTypeItems(suggested?: AgentType): FleetPickItem[] {
+  const toItem = (t: AgentType): FleetPickItem => {
+    const p = agentTypeProfile(t);
+    const bits = [`trust: ${p.defaultTrust}`, `review: ${p.consensusRule}`];
+    if (p.humanInLoop) { bits.push('human-in-loop'); }
+    if (p.canOrchestrate) { bits.push('can orchestrate'); }
+    return { label: t, description: bits.join(' · '), detail: p.description, value: t };
+  };
+  if (!suggested) {
+    return AGENT_TYPES.map(toItem);
+  }
+  const rest = AGENT_TYPES.filter(t => t !== suggested);
+  return [
+    pickSeparator('Suggested for this role'),
+    toItem(suggested),
+    pickSeparator('Or choose another behavioral type'),
+    ...rest.map(toItem),
+  ];
+}
+
+/** Build the admit-policy picker items (auto-preapproved recommended first). */
+function buildAdmitItems(): FleetPickItem[] {
+  return [
+    { label: 'auto-preapproved', description: 'recommended', value: 'auto-preapproved', detail: 'Admits the agent automatically if its behavioral type is pre-approved; otherwise it waits in the tray.' },
+    { label: 'manual', value: 'manual', detail: 'Every join waits for you to approve it before the agent becomes active.' },
+    { label: 'open', value: 'open', detail: 'Anyone holding this invite joins right away, no approval — use only for trusted, short-lived invites.' },
+  ];
+}
+
 /** Issue a scoped, single-use invite token an outside agent can use to join. */
 async function fleetInviteCommand(): Promise<void> {
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
 
-  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
-  const rolePick = await vscode.window.showQuickPick(roleItems, { title: 'Invite agent — suggested role', placeHolder: 'What role should the invited agent play?' });
-  if (!rolePick) { return; }
+  const rolePick = await vscode.window.showQuickPick(buildRoleItems(), {
+    title: 'Invite agent — role',
+    placeHolder: 'What does this agent work on? (its role — shown on the board)',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!rolePick?.value) { return; }
+  const role = rolePick.value;
 
-  const typePick = await vscode.window.showQuickPick(
-    ['coder', 'runner', 'auditor', 'supervisor', 'assistant', 'governance'].map(t => ({ label: t })),
-    { title: 'Invite agent — behavioral type', placeHolder: 'agent_type (drives routing/gating)' },
-  );
-  if (!typePick) { return; }
+  // Behavioral type is DERIVED from the role and offered first; the user overrides
+  // it only for the legitimate divergent cases (e.g. a draft-only docs agent).
+  const suggestedType = agentTypeForRole(role as CanonicalRole);
+  const typePick = await vscode.window.showQuickPick(buildAgentTypeItems(suggestedType), {
+    title: `Invite agent — behavioral type (suggested: ${suggestedType})`,
+    placeHolder: 'How is this agent trusted + reviewed? Take the suggested row unless you need to change it.',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!typePick?.value) { return; }
+  const agentType = typePick.value;
 
-  const policyPick = await vscode.window.showQuickPick(
-    [
-      { label: 'auto-preapproved', description: 'Auto-admit if the joining type is pre-approved; else wait in the tray (recommended)' },
-      { label: 'manual', description: 'Every join waits for you to Admit in the tray' },
-      { label: 'open', description: 'Admit any valid invite (trusted LAN / program)' },
-    ],
-    { title: 'Invite agent — admit policy', placeHolder: 'How should a consuming agent be admitted?' },
-  );
-  if (!policyPick) { return; }
+  const policyPick = await vscode.window.showQuickPick(buildAdmitItems(), {
+    title: 'Invite agent — admit policy',
+    placeHolder: 'How should a consuming agent be admitted?',
+    matchOnDetail: true,
+  });
+  if (!policyPick?.value) { return; }
+  const admitPolicy = policyPick.value as AdmitPolicy;
 
   const scopeRaw = await vscode.window.showInputBox({
     title: 'Invite agent — path scope (optional)',
@@ -4694,16 +5057,16 @@ async function fleetInviteCommand(): Promise<void> {
       issued_by: activeHostAgentId() ?? 'claude-code',
       project,
       workspace: wr,
-      suggested_role: rolePick.role,
-      suggested_agent_type: typePick.label,
-      admit_policy: policyPick.label as AdmitPolicy,
-      preapproved_types: policyPick.label === 'auto-preapproved' ? [typePick.label] : undefined,
+      suggested_role: role,
+      suggested_agent_type: agentType,
+      admit_policy: admitPolicy,
+      preapproved_types: admitPolicy === 'auto-preapproved' ? [agentType] : undefined,
       ...(scope.length ? { scope } : {}),
       transports: ['fs', 'mcp', 'http'],
     });
     await vscode.env.clipboard.writeText(invite.token);
     const pick = await vscode.window.showInformationMessage(
-      `AutoClaw: invite created for a ${rolePick.role} on "${project}". Token copied to clipboard — hand it to the agent.\n\n${invite.token}`,
+      `AutoClaw: invite created for a ${role} (${agentType}) on "${project}". Token copied to clipboard — hand it to the agent.\n\n${invite.token}`,
       { modal: false }, 'Copy token again',
     );
     if (pick === 'Copy token again') { await vscode.env.clipboard.writeText(invite.token); }
@@ -4723,25 +5086,35 @@ async function fleetJoinPromptCommand(): Promise<void> {
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
 
-  // 1. Target tool — drives the join lane + announced agent_id.
-  const targetItems = Object.entries(JOIN_TARGETS).map(([key, c]) => ({ label: c.label, description: key, key }));
-  const targetPick = await vscode.window.showQuickPick(targetItems, {
+  // 1. Target tool — drives the join lane + announced agent_id. Grouped by
+  // federation peers vs IDE hosts; each row surfaces its lane + consequence.
+  const targetPick = await vscode.window.showQuickPick(buildTargetItems(), {
     title: 'Generate join prompt — target tool',
-    placeHolder: 'Which tool is joining? (selects its join lane)',
+    placeHolder: 'Which tool is joining? (its lane is shown on each row)',
+    matchOnDescription: true, matchOnDetail: true,
   });
-  if (!targetPick) { return; }
+  if (!targetPick?.value) { return; }
+  const targetKey = targetPick.value;
 
-  // 2. Suggested role.
-  const roleItems = ROLE_ORDER.map(r => ({ label: `${ROLE_META[r].glyph}  ${ROLE_META[r].label}`, description: r, role: r as string }));
-  const rolePick = await vscode.window.showQuickPick(roleItems, { title: 'Join prompt — suggested role', placeHolder: 'What role should the joining agent play?' });
-  if (!rolePick) { return; }
+  // 2. Role — the only required taxonomy choice (the board-facing job).
+  const rolePick = await vscode.window.showQuickPick(buildRoleItems(), {
+    title: 'Join prompt — role',
+    placeHolder: 'What does this agent work on? (its role — shown on the board)',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!rolePick?.value) { return; }
+  const role = rolePick.value;
 
-  // 3. Behavioral type (drives auto-preapproved admit).
-  const typePick = await vscode.window.showQuickPick(
-    ['coder', 'runner', 'auditor', 'supervisor', 'assistant', 'governance'].map(t => ({ label: t })),
-    { title: 'Join prompt — behavioral type', placeHolder: 'agent_type (drives routing/gating)' },
-  );
-  if (!typePick) { return; }
+  // 3. Behavioral type — DERIVED from the role and offered first; override only
+  // for the legitimate divergent cases. Drives trust / consensus / auto-admit.
+  const suggestedType = agentTypeForRole(role as CanonicalRole);
+  const typePick = await vscode.window.showQuickPick(buildAgentTypeItems(suggestedType), {
+    title: `Join prompt — behavioral type (suggested: ${suggestedType})`,
+    placeHolder: 'How is this agent trusted + reviewed? Take the suggested row unless you need to change it.',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!typePick?.value) { return; }
+  const agentType = typePick.value;
 
   // 4. Optional path scope.
   const scopeRaw = await vscode.window.showInputBox({
@@ -4752,7 +5125,16 @@ async function fleetJoinPromptCommand(): Promise<void> {
   });
   const scope = (scopeRaw ?? '').split(',').map(s => s.trim()).filter(Boolean);
 
-  const target = JOIN_TARGETS[targetPick.key];
+  const target = JOIN_TARGETS[targetKey];
+
+  // 4b. Admit policy — unified with the Invite command (was hard-coded here).
+  const policyPick = await vscode.window.showQuickPick(buildAdmitItems(), {
+    title: 'Join prompt — admit policy',
+    placeHolder: 'How should this agent be admitted once it consumes the invite?',
+    matchOnDetail: true,
+  });
+  if (!policyPick?.value) { return; }
+  const admitPolicy = policyPick.value as AdmitPolicy;
 
   // 5. MCP-lane peers are READ-ONLY until allowWrites is enabled. Offer to flip
   // the file flag now — enabling writes is a TRUST decision, so it is explicit
@@ -4792,14 +5174,23 @@ async function fleetJoinPromptCommand(): Promise<void> {
       issued_by: activeHostAgentId() ?? 'claude-code',
       project,
       workspace: wr,
-      suggested_role: rolePick.role,
-      suggested_agent_type: typePick.label,
-      admit_policy: 'auto-preapproved',
-      preapproved_types: [typePick.label],
+      suggested_role: role,
+      suggested_agent_type: agentType,
+      admit_policy: admitPolicy,
+      preapproved_types: admitPolicy === 'auto-preapproved' ? [agentType] : undefined,
       ...(scope.length ? { scope } : {}),
       transports: ['fs', 'mcp', 'http'],
     });
-    const prompt = renderJoinPromptForInvite(targetPick.key, invite, bridgeUrl ? { bridgeUrl } : {});
+    // Pre-create the comms tree + a registry row so the joining agent arrives to a
+    // writable inbox even in a project that has never run orchestrate (fixes the
+    // "comms/claims does not exist" case). Idempotent + best-effort: a failure must
+    // never block handing over the prompt — the fs-lane prompt also tells the agent
+    // to create the tree itself.
+    try {
+      const commsRoot = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+      await scaffoldAgent(commsRoot, { agentId: target.agentId });
+    } catch { /* non-fatal — the prompt's own ensure-tree step covers it */ }
+    const prompt = renderJoinPromptForInvite(targetKey, invite, bridgeUrl ? { bridgeUrl } : {});
     await vscode.env.clipboard.writeText(prompt);
     const pick = await vscode.window.showInformationMessage(
       `AutoClaw: join prompt for ${target.label} copied — paste it into that tool's chat.`,
@@ -4810,6 +5201,124 @@ async function fleetJoinPromptCommand(): Promise<void> {
   } catch (e) {
     vscode.window.showWarningMessage(`AutoClaw: could not generate join prompt — ${(e as Error).message}`);
   }
+}
+
+/**
+ * Add a whole AGENT TEAM from a ready-made template (autoclaw.fleet.addTeam).
+ *
+ * Closes the "every agent is built from a blank picker" gap: the user picks one of
+ * the {@link TEAM_TEMPLATES} recipes, previews the squad (preview-before-mint — no
+ * token is created until they confirm), and the command fans out one scoped invite
+ * per seat, then opens a single ready-to-paste document with each seat's tailored
+ * join prompt. The headline onboarding affordance.
+ */
+async function fleetAddTeamCommand(): Promise<void> {
+  const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
+
+  // 1. Gallery — recommended starter first, each row showing its seat lineup.
+  const rec = recommendedTemplate();
+  const ordered = [rec, ...TEAM_TEMPLATES.filter(t => t.id !== rec.id)];
+  const galleryItems = ordered.map(t => ({
+    label: t.recommended ? `${t.name}  $(star-full)` : t.name,
+    description: t.recommended ? 'recommended' : `${t.seats.length} agents`,
+    detail: `${t.seats.map(seatSummary).join('   ·   ')} — ${t.whenToUse}`,
+    id: t.id,
+  }));
+  const pick = await vscode.window.showQuickPick(galleryItems, {
+    title: 'Add an agent team — pick a template',
+    placeHolder: 'Start from a ready-made squad (you can adjust each seat after)',
+    matchOnDescription: true, matchOnDetail: true,
+  });
+  if (!pick) { return; }
+  const tpl = getTeamTemplate(pick.id);
+  if (!tpl) { return; }
+
+  // 2. Preview-before-mint — show the full squad and confirm BEFORE any token is
+  // created, so a cancel never burns invites.
+  const lineup = tpl.seats
+    .map((s, i) => `  ${i + 1}. ${s.role} / ${s.agentType} → ${JOIN_TARGETS[s.tool]?.label ?? s.tool}  (admit: ${s.admit})`)
+    .join('\n');
+  const confirm = await vscode.window.showInformationMessage(
+    `Create the "${tpl.name}" team?\n\n${lineup}\n\n${tpl.consensusNote}\n\n` +
+    `This mints ${tpl.seats.length} single-use invite${tpl.seats.length === 1 ? '' : 's'} (24h TTL) and opens a document with each seat's join prompt.`,
+    { modal: true },
+    'Create team',
+  );
+  if (confirm !== 'Create team') { return; }
+
+  // 3. MCP-lane seats need writes enabled to claim/vote. Offer once if any seat
+  // joins on the MCP lane and writes are still off (a trust decision → explicit).
+  const needsMcpWrites = tpl.seats.some(s => {
+    const lane = JOIN_TARGETS[s.tool]?.lane;
+    const fb = JOIN_TARGETS[s.tool]?.fallbackLane;
+    return (lane === 'mcp' || fb === 'mcp');
+  });
+  if (needsMcpWrites && !isWritesAllowed(wr)) {
+    const enable = await vscode.window.showWarningMessage(
+      'This team has MCP-lane agents (e.g. Codex, Claude Desktop). Enable MCP writes so they can claim tasks / vote? Writes stay gated per-tool by .autoclaw/mcp/config.json.',
+      { modal: true }, 'Enable writes', 'Keep read-only',
+    );
+    if (enable === 'Enable writes') {
+      try { await setAllowWrites(wr, true); } catch { /* non-fatal — surfaced in the doc */ }
+    }
+  }
+
+  // 4. Fan out: one scoped invite per seat, render its tailored join prompt.
+  const project = path.basename(wr);
+  const issuedBy = activeHostAgentId() ?? 'claude-code';
+  const commsRoot = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
+  const sections: string[] = [];
+  let minted = 0;
+  for (let i = 0; i < tpl.seats.length; i++) {
+    const seat = tpl.seats[i];
+    const seatAgentId = JOIN_TARGETS[seat.tool]?.agentId ?? seat.tool;
+    try {
+      const invite = await createInvite({
+        issued_by: issuedBy,
+        project,
+        workspace: wr,
+        suggested_role: seat.role,
+        suggested_agent_type: seat.agentType,
+        admit_policy: seat.admit,
+        preapproved_types: seat.admit === 'auto-preapproved' ? [seat.agentType] : undefined,
+        transports: ['fs', 'mcp', 'http'],
+      });
+      // Pre-create the comms tree + a roster row per seat so each teammate arrives
+      // to a writable inbox even in a never-orchestrated project. Idempotent + best-effort.
+      try { await scaffoldAgent(commsRoot, { agentId: seatAgentId }); } catch { /* non-fatal */ }
+      const prompt = renderJoinPromptForInvite(seat.tool, invite);
+      const toolLabel = JOIN_TARGETS[seat.tool]?.label ?? seat.tool;
+      sections.push(
+        `## Seat ${i + 1} — ${seat.role} / ${seat.agentType} → ${toolLabel}\n\n` +
+        `- **Why:** ${seat.rationale}\n` +
+        `- **Suggested scope:** ${seat.scope}\n` +
+        (seat.verifyHint ? `- **Verify with:** ${seat.verifyHint}\n` : '') +
+        `- **Admit:** ${seat.admit}\n\n` +
+        `Paste this into ${toolLabel}:\n\n` +
+        '````text\n' + prompt + '\n````\n',
+      );
+      minted++;
+    } catch (e) {
+      sections.push(`## Seat ${i + 1} — ${seat.role} / ${seat.agentType} → ${seat.tool}\n\n` +
+        `> Could not mint this invite: ${(e as Error).message}\n`);
+    }
+  }
+
+  const doc = `# Join your "${tpl.name}" team\n\n` +
+    `${tpl.description}\n\n` +
+    `**How review works:** ${tpl.consensusNote}\n\n` +
+    `Each section below is one teammate. Open the suggested tool and paste its prompt into the chat. ` +
+    `Tokens are single-use and expire in 24 hours — re-run **Add agent team** to mint fresh ones if any expire. ` +
+    `Scopes below are suggestions; tighten them when you generate the prompt or in the agent's first message.\n\n` +
+    `---\n\n${sections.join('\n---\n\n')}`;
+
+  const td = await vscode.workspace.openTextDocument({ content: doc, language: 'markdown' });
+  await vscode.window.showTextDocument(td, { preview: false });
+  vscode.window.showInformationMessage(
+    `AutoClaw: created the "${tpl.name}" team — ${minted}/${tpl.seats.length} invites minted. Paste each seat's prompt into its tool.`,
+  );
+  if (kdreamView) { await refreshOrchestratorData(kdreamView); }
 }
 
 /**
@@ -5700,6 +6209,191 @@ async function transitionSprintToReview(
   );
 }
 
+/**
+ * L2 producer-side board watcher. Watches the board's INPUTS (claims, consensus,
+ * heartbeats, shared inbox, state.json) and, after a short debounce, refreshes
+ * board.json — so cross-IDE state lands sub-second instead of on the 30s tick.
+ *
+ * Loop-safe: the glob is `*.json` only (the high-churn loop-journal/comms-log are
+ * `.jsonl` and never match), and the service's allow-list predicate rejects the
+ * producer's own outputs (board.json/board.md/.tmp-*, supervisor.lock, loop-state,
+ * dispatch sidecars). `refreshBoardNow` writes only board.json/board.md, which the
+ * predicate excludes — so a refresh can never retrigger the watcher.
+ *
+ * Single-active safe: the injected action reuses the L1 lease gate under the
+ * loop's holder id, so only the active supervisor writes; standbys no-op.
+ * Off-switchable via `autoclaw.cluster.boardWatch` (default ON).
+ */
+function startBoardWatch(context: vscode.ExtensionContext, workspaceRoot: string): void {
+  const cfg = vscode.workspace.getConfiguration('autoclaw');
+  if (!cfg.get<boolean>('cluster.boardWatch', true)) { return; }
+  const singleActive = cfg.get<boolean>('cluster.singleActive', true);
+  const fencing = cfg.get<boolean>('cluster.fencing', false);
+  const debounceMs = cfg.get<number>('cluster.boardWatchDebounceMs', DEFAULT_BOARD_REFRESH_DEBOUNCE_MS);
+
+  const service = startBoardRefreshService({
+    debounceMs,
+    refresh: () => refreshBoardNow({ workspaceRoot, holderId: LOOP_INSTANCE_ID, singleActive, fencing }),
+  });
+
+  // Two scoped watchers — the comms subtree (board inputs) + the root state.json.
+  // Scoped to `*.json` so `.jsonl` bookkeeping never fires; the service predicate
+  // is the second line of defense (rejects supervisor.lock / loop-state / sidecars).
+  for (const glob of [
+    '.autoclaw/orchestrator/comms/**/*.json',
+    '.autoclaw/orchestrator/state.json',
+  ]) {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(workspaceRoot, glob),
+    );
+    const onChange = (uri: vscode.Uri): void => service.notifyChange(uri.fsPath);
+    watcher.onDidCreate(onChange);
+    watcher.onDidChange(onChange);
+    watcher.onDidDelete(onChange);
+    context.subscriptions.push(watcher);
+  }
+  context.subscriptions.push({ dispose: () => service.stop() });
+}
+
+/** globalState key for the one-time LAN-discovery network-consent acknowledgement. */
+const LAN_CONSENT_KEY = 'autoclaw.cluster.lan.consentAckAt';
+
+/**
+ * T0b: start opt-in LAN peer discovery. NETWORK OFF BY DEFAULT — this binds NO
+ * socket unless BOTH gates pass: the `autoclaw.cluster.lan` flag is on AND the user
+ * has acknowledged the one-time consent modal (persisted in globalState). Turning the
+ * flag on but declining consent leaves it inert. The discovered peers are written as
+ * origin-'lan' (DISCOVERED, UNTRUSTED) beacons that the existing presence layer
+ * already excludes from every trust sink (beacons.isDiscoveredUntrusted).
+ *
+ * Lifecycle mirrors startBoardWatch: a dispose() on the extension subscriptions
+ * stops the socket + announce timer on deactivate.
+ */
+async function startLanDiscovery(context: vscode.ExtensionContext, workspaceRoot: string): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration('autoclaw');
+  const enabled = cfg.get<boolean>('cluster.lan', false);
+  if (!enabled) { return; } // gate 1: flag off ⇒ never bind.
+
+  // Whole body is best-effort — a rejected modal / globalState write (the call site
+  // uses `void startLanDiscovery`) must never surface as an unhandledRejection, and a
+  // discovery failure must never break activation. Mirrors startBoardWatch's posture.
+  try {
+  // gate 2: one-time consent. If not yet acknowledged, ask once — naming exactly what
+  // goes on the wire and what is recorded. Decline ⇒ no bind (and no nagging again).
+  let consentAckAt = context.globalState.get<string>(LAN_CONSENT_KEY) ?? null;
+  if (!consentAckAt) {
+    const port = cfg.get<number>('cluster.lan.port', LAN_DEFAULT_PORT);
+    const mode = cfg.get<LanMode>('cluster.lan.mode', 'seed');
+    const choice = await vscode.window.showWarningMessage(
+      `Enable AutoClaw LAN peer discovery?\n\n` +
+      `This window will bind a UDP socket on port ${port} (${mode} mode) to:\n` +
+      `• Broadcast this machine's presence — only an opaque machine id, an IDE label, and this port. ` +
+      `NEVER your workspace path, tasks, files, or tokens.\n` +
+      `• Listen for other hosts on your LAN and record them as DISCOVERED, UNTRUSTED peers ` +
+      `(observe-only — they cannot join, dispatch, or be admitted until a future secure-channel step).\n\n` +
+      `Nothing is shared until you enable this. You can turn it off anytime via the autoclaw.cluster.lan setting.`,
+      { modal: true },
+      'Enable LAN discovery',
+    );
+    if (choice !== 'Enable LAN discovery') { return; }
+    consentAckAt = new Date().toISOString();
+    await context.globalState.update(LAN_CONSENT_KEY, consentAckAt);
+  }
+
+  if (!shouldStartLanDiscovery({ enabled, consentAckAt })) { return; }
+
+  const port = cfg.get<number>('cluster.lan.port', LAN_DEFAULT_PORT);
+  const mode = cfg.get<LanMode>('cluster.lan.mode', 'seed');
+  const seeds = parseSeeds(cfg.get<string[]>('cluster.lan.seeds', []), port);
+  const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+  // host = a recognizable but non-sensitive LABEL (the wire allowlist bounds it).
+  const hostLabel = (os.hostname() || 'host').replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 64) || 'host';
+
+  let machineId = 'unknown';
+  try { machineId = vscode.env.machineId; } catch { /* keep fallback */ }
+
+  const discovery = new LanDiscovery({
+    enabled, consentAckAt, // re-enforced inside start() (defense-in-depth gate)
+    machineId, host: hostLabel, commsDir, port, mode, seeds,
+    log: (m) => getOrchestrateOutputChannel().appendLine(m),
+  });
+  discovery.start();
+  context.subscriptions.push({ dispose: () => discovery.stop() });
+  console.log(`[autoclaw] LAN discovery started – mode=${mode} port=${port} seeds=${seeds.length}`);
+  } catch (err) {
+    console.warn(`[autoclaw] LAN discovery failed to start: ${String(err)}`);
+  }
+}
+
+/** globalState key for the one-time LAN cluster-map-gossip network-consent ack. */
+const LAN_GOSSIP_CONSENT_KEY = 'autoclaw.cluster.lan.gossip.consentAckAt';
+
+/**
+ * T1: start opt-in LAN relay of cluster-map gossip. NETWORK OFF BY DEFAULT — binds NO
+ * socket unless BOTH cluster.lan and cluster.lan.gossip are on AND the user
+ * acknowledged a DISTINCT one-time consent (the relay puts cluster TOPOLOGY/membership
+ * ids on the wire — more than the T0 discovery consent covered — so it asks separately).
+ * Relayed peer beats are advisory/wake-only (the E3b consumer never elects on them) and
+ * grant NO trust to an unauthenticated LAN peer (T2 authenticates). Mirrors
+ * startLanDiscovery's lifecycle (dispose stops the socket + broadcast timer).
+ */
+async function startLanGossipRelay(context: vscode.ExtensionContext, workspaceRoot: string): Promise<void> {
+  // Whole body try-wrapped — neither the gate reads nor the awaited modal/globalState
+  // (the call site uses `void`) may surface as an unhandledRejection or break activation.
+  try {
+    const cfg = vscode.workspace.getConfiguration('autoclaw');
+    const enabled = cfg.get<boolean>('cluster.lan', false) && cfg.get<boolean>('cluster.lan.gossip', false);
+    if (!enabled) { return; } // gate 1: either flag off ⇒ never bind.
+
+    const port = cfg.get<number>('cluster.lan.gossip.port', LAN_GOSSIP_DEFAULT_PORT);
+    const discoveryPort = cfg.get<number>('cluster.lan.port', LAN_DEFAULT_PORT);
+    // The relay + discovery are independent sockets in ONE process; the same UDP port
+    // would fight for datagrams. Refuse rather than double-bind (don't even prompt).
+    if (port === discoveryPort) {
+      vscode.window.showWarningMessage(
+        `AutoClaw: LAN gossip relay not started — autoclaw.cluster.lan.gossip.port (${port}) must differ ` +
+        `from autoclaw.cluster.lan.port (${discoveryPort}). Set distinct ports and reload.`,
+      );
+      return;
+    }
+
+    // gate 2: a SEPARATE one-time consent — the relay puts cluster topology on the wire,
+    // which the T0 discovery consent did not name. Decline ⇒ no bind, no nagging.
+    let consentAckAt = context.globalState.get<string>(LAN_GOSSIP_CONSENT_KEY) ?? null;
+    if (!consentAckAt) {
+      const choice = await vscode.window.showWarningMessage(
+        `Enable AutoClaw LAN cluster-map gossip relay?\n\n` +
+        `This shares this project's COORDINATION TOPOLOGY with discovered LAN hosts. ` +
+        `On UDP port ${port}, this window will:\n` +
+        `• Broadcast the cluster map — which window is the active orchestrator, the standby/monitor ` +
+        `instance ids, epoch/term. Only opaque ids + timestamps. NEVER your workspace path, tasks, files, or tokens.\n` +
+        `• Accept peer cluster maps as ADVISORY only — they accelerate awareness of a takeover but ` +
+        `can NEVER elect, dispatch, or be trusted here (a future secure-channel step authenticates peers).\n\n` +
+        `Requires LAN discovery (autoclaw.cluster.lan) already on. Turn off anytime via autoclaw.cluster.lan.gossip.`,
+        { modal: true },
+        'Enable gossip relay',
+      );
+      if (choice !== 'Enable gossip relay') { return; }
+      consentAckAt = new Date().toISOString();
+      await context.globalState.update(LAN_GOSSIP_CONSENT_KEY, consentAckAt);
+    }
+
+    const seeds = parseSeeds(cfg.get<string[]>('cluster.lan.seeds', []), discoveryPort);
+    const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+
+    const relay = new LanGossipRelay({
+      enabled, consentAckAt, // re-enforced inside start() (defense-in-depth gate)
+      workspaceRoot, commsDir, port, seeds, selfOrigin: LOOP_INSTANCE_ID,
+      log: (m) => getOrchestrateOutputChannel().appendLine(m),
+    });
+    relay.start();
+    context.subscriptions.push({ dispose: () => relay.stop() });
+    console.log(`[autoclaw] LAN gossip relay started – port=${port} seeds=${seeds.length}`);
+  } catch (err) {
+    console.warn(`[autoclaw] LAN gossip relay failed to start: ${String(err)}`);
+  }
+}
+
 function startInboxWatcher(context: vscode.ExtensionContext): void {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!workspaceRoot) { return; }
@@ -5787,6 +6481,10 @@ export function deactivate() {
   if (stateWatcher) {
     stateWatcher.dispose();
   }
+  if (boardWatcher) {
+    boardWatcher.dispose();
+    boardWatcher = undefined;
+  }
   if (refreshIntervalId) {
     clearInterval(refreshIntervalId);
     refreshIntervalId = undefined;
@@ -5812,6 +6510,7 @@ export function deactivate() {
     activeBridge = null;
   }
   stopRefreshService();
+  stopIndexWatch();
   unregisterWorker(process.pid, currentIde);
   if (currentWorkspace) {
     releasePorts(currentIde, currentWorkspace);
