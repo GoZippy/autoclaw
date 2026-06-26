@@ -24,7 +24,7 @@ export interface SupportLinks {
   donationUrl: string;
   /** Square custom-amount payment link. */
   customAmountUrl: string;
-  /** Square subscription / commercial-license checkout link. */
+  /** Square one-time commercial-license (Pro) checkout link. */
   proUrl: string;
   /** Ko-fi page for one-time tips and memberships. */
   koFiUrl: string;

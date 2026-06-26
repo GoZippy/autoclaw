@@ -181,13 +181,20 @@ from Licensor.
 
 | Tier | Seats Covered | Fee |
 |------|--------------|-----|
-| Pro | 1 Seat | USD $150 per year (or $15 per month) |
-| Teams | Up to 5 Seats | USD $250 per seat per year (or $25 per seat per month) |
+| Pro | 1 Seat | USD $99 one-time (perpetual major-version license; includes 12 months of updates) |
+| Teams | Per Seat (minimum 3 Seats) | USD $200 per seat per year (or $20 per seat per month) |
 | Enterprise | Unlimited | Custom — contact Support@GoZippy.com |
 
-All fees are per-calendar-year (or per-calendar-month for monthly billing)
-unless a separate written agreement specifies otherwise. Seats exceeding a
-tier's limit require upgrade before the excess Seats may be used commercially.
+Pro is sold as a one-time, perpetual license for the purchased major version,
+including updates for twelve (12) months from the date of purchase. After the
+update window ends, the licensee may continue using the last version released
+during the window indefinitely; the license does not expire. Upgrades to a new
+major version of Pro are offered at then-current upgrade pricing and are
+optional. Teams fees are per-Seat, per-calendar-year (or per-calendar-month for
+monthly billing). Seats exceeding a tier's limit require upgrade before the
+excess Seats may be used commercially. Promotional or early-bird pricing, when
+offered, applies only for the stated period and does not change these standard
+fees.
 
 5.3 Unlicensed Commercial Use penalty: Any Commercial Use discovered without a
 valid paid license is subject to a retroactive fee of **USD $1,000 per Seat**

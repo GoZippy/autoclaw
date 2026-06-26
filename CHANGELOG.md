@@ -35,6 +35,13 @@ coordination + intelligence hardening.
   Walkthrough`); the fleet panel gains an **Add Team** button + an empty-state
   call-to-action; the README quick-start covers teams + the playbook.
 
+### Changed
+
+- **Licensing model finalized.** Pro is now a **one-time perpetual-major** license
+  (buy once, 12 months of updates, keep forever) rather than a subscription;
+  Teams/Enterprise remain annual. `PRICING.md` + `LICENSE` Schedule A updated.
+  Feature-gate enforcement remains **off** by default — nothing is gated yet.
+
 ### Fixed
 
 - Panel now surfaces joined agents from a heartbeat/beacon, not just
