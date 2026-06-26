@@ -66,18 +66,12 @@ async function getStatus(url: string): Promise<number> {
   });
 }
 
-/** Pick a random high port so parallel test files don't collide. */
-function pickPort(): number {
-  return 30000 + Math.floor(Math.random() * 20000);
-}
-
 suite('PeerServer — happy path round-trip', () => {
   let server: PeerServer;
-  const port = pickPort();
 
   setup(async () => {
     server = new PeerServer({
-      port,
+      port: 0,
       suggest: (req) => ({
         suggestedModelIds: [`echo/${req.intent ?? 'none'}`, 'ollama/llama3.1:8b'],
       }),
@@ -127,11 +121,10 @@ suite('PeerServer — happy path round-trip', () => {
 
 suite('PeerServer — body cap short-circuit', () => {
   let server: PeerServer;
-  const port = pickPort();
 
   setup(async () => {
     server = new PeerServer({
-      port,
+      port: 0,
       bodyCapBytes: 256,
       suggest: () => ({ suggestedModelIds: ['ollama/llama3.1:8b'] }),
     });
@@ -156,11 +149,10 @@ suite('PeerServer — body cap short-circuit', () => {
 
 suite('PeerServer — budget short-circuit', () => {
   let server: PeerServer;
-  const port = pickPort();
 
   setup(async () => {
     server = new PeerServer({
-      port,
+      port: 0,
       budgetMs: 50,
       suggest: async () => {
         // Deliberately slow — past the budget.
@@ -189,9 +181,10 @@ suite('PeerServer — budget short-circuit', () => {
 
 suite('PeerServer — clean shutdown + restart', () => {
   test('stop() releases the port; restart on the same port succeeds', async () => {
-    const port = pickPort();
-    const a = new PeerServer({ port, suggest: () => ({ suggestedModelIds: [] }) });
+    const a = new PeerServer({ port: 0, suggest: () => ({ suggestedModelIds: [] }) });
     await a.start();
+    const port = a.boundPort();
+    assert.ok(port, 'first server bound an ephemeral port');
     await a.stop();
     const b = new PeerServer({ port, suggest: () => ({ suggestedModelIds: ['x'] }) });
     await b.start();
@@ -208,8 +201,7 @@ suite('PeerServer — clean shutdown + restart', () => {
   });
 
   test('multiple calls to stop() are safe', async () => {
-    const port = pickPort();
-    const s = new PeerServer({ port, suggest: () => ({ suggestedModelIds: [] }) });
+    const s = new PeerServer({ port: 0, suggest: () => ({ suggestedModelIds: [] }) });
     await s.start();
     await s.stop();
     await s.stop(); // no-throw
@@ -219,9 +211,8 @@ suite('PeerServer — clean shutdown + restart', () => {
 
 suite('PeerServer — defensive output handling', () => {
   test('non-string entries in suggestedModelIds are filtered out', async () => {
-    const port = pickPort();
     const s = new PeerServer({
-      port,
+      port: 0,
       suggest: () => ({
         // intentionally malformed
         suggestedModelIds: ['ollama/llama3.1:8b', '', 42 as unknown as string, 'ollama/llama3.1:8b'],
@@ -241,9 +232,8 @@ suite('PeerServer — defensive output handling', () => {
   });
 
   test('suggest() throwing returns empty (non-fatal)', async () => {
-    const port = pickPort();
     const s = new PeerServer({
-      port,
+      port: 0,
       suggest: () => {
         throw new Error('boom');
       },

@@ -29,6 +29,7 @@ import type {
 import { parseProviderRef } from './types';
 import { ZippyMeshProvider } from './zippymesh';
 import { OllamaProvider } from './ollama';
+import { LmStudioProvider } from './lmstudio';
 import { Oracle } from './oracle';
 
 export interface RegistryOptions {
@@ -67,7 +68,11 @@ export class LlmRegistry {
   constructor(opts: RegistryOptions) {
     this.workspaceRoot = opts.workspaceRoot;
     this.oracle = opts.oracle ?? new Oracle({ workspaceRoot: opts.workspaceRoot });
-    const providers = opts.providers ?? [new ZippyMeshProvider(), new OllamaProvider()];
+    const providers = opts.providers ?? [
+      new ZippyMeshProvider(),
+      new OllamaProvider(),
+      new LmStudioProvider(),
+    ];
     for (const p of providers) this.register(p);
   }
 

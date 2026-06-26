@@ -1153,6 +1153,11 @@ export function renderReport(report: DoctorReport): string {
   lines.push('## ZippyMesh LLM Router');
   lines.push(`  status:  ${report.zmlr.status}`);
   lines.push(`  details: ${report.zmlr.details}`);
+  lines.push('  role:    optional router for multi-provider failover and playbooks; AutoClaw does not require it.');
+  lines.push('  setup:   run "AutoClaw: Install LLM Providers" to wire ZippyMesh and/or Ollama when available.');
+  lines.push('  local:   Ollama is auto-detected on http://127.0.0.1:11434; LM Studio is auto-detected on http://127.0.0.1:1234/v1.');
+  lines.push('  note:    OpenAI-compatible local servers can be supported through the provider registry without making ZippyMesh exclusive.');
+  lines.push('  link:    https://zippymesh.com');
   lines.push('');
 
   // Skills source

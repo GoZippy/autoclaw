@@ -239,7 +239,7 @@
       },
       {
         "command": "autoclaw.llm.install",
-        "title": "AutoClaw: Install LLM Providers (ZippyMesh + Ollama)"
+        "title": "AutoClaw: Install LLM Providers"
       },
       {
         "command": "autoclaw.launchSkill",

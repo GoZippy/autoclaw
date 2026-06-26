@@ -453,7 +453,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
-  // LLM provider install — wires ZippyMesh + Ollama into the workspace.
+  // LLM provider install — wires optional routers/local providers into the workspace.
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.llm.install', async () => {
       const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -463,11 +463,29 @@ export function activate(context: vscode.ExtensionContext) {
       }
       const choice = await vscode.window.showQuickPick(
         [
-          { label: 'ZippyMesh + Ollama (Recommended)', zippymesh: true, ollama: true },
-          { label: 'ZippyMesh only', zippymesh: true, ollama: false },
-          { label: 'Ollama only', zippymesh: false, ollama: true },
+          {
+            label: 'ZippyMesh + Ollama',
+            description: 'Recommended',
+            detail: 'Optional router plus local fallback. Skips unreachable providers without failing.',
+            zippymesh: true,
+            ollama: true,
+          },
+          {
+            label: 'Ollama only',
+            description: 'Local LLM',
+            detail: 'Uses a local Ollama server on OLLAMA_HOST or http://127.0.0.1:11434.',
+            zippymesh: false,
+            ollama: true,
+          },
+          {
+            label: 'ZippyMesh only',
+            description: 'Optional router',
+            detail: 'Adds the router when it is running; AutoClaw still works without it.',
+            zippymesh: true,
+            ollama: false,
+          },
         ],
-        { placeHolder: 'Which providers should I install?' },
+        { placeHolder: 'Choose optional LLM provider wiring. LM Studio is auto-detected on localhost:1234.' },
       );
       if (!choice) return;
       const { installLlm, formatLlmInstallReport } = await import('./llm');

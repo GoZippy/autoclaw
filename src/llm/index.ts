@@ -3,7 +3,8 @@
  *
  * Public surface:
  *   - `LlmProvider` interface + supporting types.
- *   - `OpenAiCompatibleProvider` base + `ZippyMeshProvider`, `OllamaProvider`.
+ *   - `OpenAiCompatibleProvider` base + `ZippyMeshProvider`, `OllamaProvider`,
+ *     `LmStudioProvider`.
  *   - `Oracle` — client-side fallback ladder (TS port of an upstream model-oracle script).
  *   - `CostLedger` — ZICO-aligned append-only ledger.
  *   - `LlmRegistry` — provider registry + three-branch `getPreferred()`.
@@ -51,6 +52,8 @@ export {
 } from './zippymesh';
 
 export { OllamaProvider, type OllamaOptions } from './ollama';
+
+export { LmStudioProvider, type LmStudioOptions } from './lmstudio';
 
 export {
   Oracle,

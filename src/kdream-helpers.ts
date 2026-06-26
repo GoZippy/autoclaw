@@ -363,7 +363,7 @@ export async function checkZippyMeshHealth(baseUrl = 'http://localhost:20128'): 
   return {
     name: 'ZippyMesh LLM Router',
     status: 'warning',
-    details: 'Not detected — start ZippyMesh on localhost:20128'
+    details: 'Optional router not detected at localhost:20128'
   };
 }
 

@@ -31,6 +31,7 @@ out/**/*.ts
 .claude/**
 .clinerules/**
 .kilo/**
+.qodo/**
 .kilocodemodes
 .voidspec/**
 .cursor/**
@@ -38,6 +39,7 @@ out/**/*.ts
 
 # CI/CD internals
 .github/**
+.githooks/**
 node_modules/.package-lock.json
 
 # Intelligence Layer native peers — declared as optionalDependencies but NOT
@@ -103,6 +105,7 @@ tmp/**
 # Internal documentation - keep README, CHANGELOG, LICENSE only
 docs/research/**
 docs/specs/**
+docs/ideas/**
 docs/IDEAS_LOG.md
 docs/COORDINATION_IMPROVEMENTS.md
 docs/DISTRIBUTED_AGENT_FABRIC.md
