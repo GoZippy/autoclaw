@@ -30,6 +30,17 @@ coordination + intelligence hardening.
   safety rails.
 - **Settings** — grouped into navigable categories; maintainer/product config
   hidden from the Settings UI.
+- **Onboarding** — a first-run nudge now promotes the team flow and links the new
+  **Build your first agent team** walkthrough (`AutoClaw: Open Getting-Started
+  Walkthrough`); the fleet panel gains an **Add Team** button + an empty-state
+  call-to-action; the README quick-start covers teams + the playbook.
+
+### Changed
+
+- **Licensing model finalized.** Pro is now a **one-time perpetual-major** license
+  (buy once, 12 months of updates, keep forever) rather than a subscription;
+  Teams/Enterprise remain annual. `PRICING.md` + `LICENSE` Schedule A updated.
+  Feature-gate enforcement remains **off** by default — nothing is gated yet.
 
 ### Fixed
 

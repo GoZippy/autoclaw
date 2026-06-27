@@ -170,7 +170,13 @@
     if (badge) { badge.textContent = cards ? cards.length : 0; }
 
     if (!cards || cards.length === 0) {
-      grid.appendChild(el('p', 'empty', 'No agents registered.'));
+      const empty = el('div', 'empty');
+      empty.appendChild(el('p', null, 'No agents yet. Put a small team on this repo to get started.'));
+      const cta = el('button', 'ghost', '+ Add a team');
+      cta.type = 'button';
+      cta.addEventListener('click', function () { vscode.postMessage({ command: 'addTeam' }); });
+      empty.appendChild(cta);
+      grid.appendChild(empty);
       return;
     }
 
@@ -526,6 +532,7 @@
       });
     }
   }
+  wireAction('btn-add-team', 'addTeam');
   wireAction('btn-join-prompt', 'generateJoinPrompt');
   wireAction('btn-invite-agent', 'inviteAgent');
   wireAction('btn-admit-agent', 'admitAgent');
