@@ -25,6 +25,8 @@ import {
   checkWriteGate,
   installAll,
   mergeRegistryFile,
+  mergeTomlRegistryFile,
+  parseTomlAutoclawEntry,
   buildServerEntry,
   serverEntriesEqual,
   type JsonRpcRequest,
@@ -771,6 +773,148 @@ suite('MCP — install (BP2)', () => {
       assert.strictEqual(kiro.path, ''); // no file path — CLI-managed
       assert.ok(kiroArgs.includes('mcp') && kiroArgs.includes('add'));
       assert.ok(kiroArgs.includes('autoclaw'));
+    } finally {
+      rmrf(home);
+      rmrf(ws);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Codex — TOML registry (~/.codex/config.toml)
+  // -------------------------------------------------------------------------
+
+  test('mergeTomlRegistryFile: adds a [mcp_servers.autoclaw] table, then idempotent', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-toml-'));
+    try {
+      const file = path.join(root, 'config.toml');
+      const entry = buildServerEntry('/abs/out/mcp/server.js', 'workspace');
+
+      const first = await mergeTomlRegistryFile(file, entry, { force: false });
+      assert.strictEqual(first.outcome, 'added');
+
+      const text = fs.readFileSync(file, 'utf8');
+      assert.ok(/\[mcp_servers\.autoclaw\]/.test(text));
+      assert.ok(/command = 'node'/.test(text));
+      assert.ok(/\[mcp_servers\.autoclaw\.env\]/.test(text));
+      assert.ok(/AUTOCLAW_MCP_SCOPE = 'workspace'/.test(text));
+
+      // Round-trips back to the same entry.
+      assert.ok(serverEntriesEqual(parseTomlAutoclawEntry(text) ?? undefined, entry));
+
+      const second = await mergeTomlRegistryFile(file, entry, { force: false });
+      assert.strictEqual(second.outcome, 'unchanged');
+    } finally {
+      rmrf(root);
+    }
+  });
+
+  test('mergeTomlRegistryFile: preserves other tables, keys, and comments', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-toml-'));
+    try {
+      const file = path.join(root, 'config.toml');
+      fs.writeFileSync(
+        file,
+        [
+          '# my codex config',
+          'model = "o4-mini"',
+          '',
+          '[mcp_servers.other]',
+          "command = 'python'",
+          "args = ['server.py']",
+          '',
+        ].join('\n'),
+        'utf8'
+      );
+      const entry = buildServerEntry('/abs/out/mcp/server.js', 'workspace');
+      const res = await mergeTomlRegistryFile(file, entry, { force: false });
+      assert.strictEqual(res.outcome, 'added');
+
+      const text = fs.readFileSync(file, 'utf8');
+      assert.ok(/# my codex config/.test(text), 'comment preserved');
+      assert.ok(/model = "o4-mini"/.test(text), 'top-level key preserved');
+      assert.ok(/\[mcp_servers\.other\]/.test(text), 'other server preserved');
+      assert.ok(/\[mcp_servers\.autoclaw\]/.test(text), 'autoclaw table added');
+    } finally {
+      rmrf(root);
+    }
+  });
+
+  test('mergeTomlRegistryFile: Windows backslash path stays verbatim (literal string)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-toml-'));
+    try {
+      const file = path.join(root, 'config.toml');
+      const winPath = 'K:\\Projects\\autoclaw\\out\\mcp\\server.js';
+      const entry = buildServerEntry(winPath, 'workspace');
+      await mergeTomlRegistryFile(file, entry, { force: false });
+
+      const text = fs.readFileSync(file, 'utf8');
+      // Literal string ⇒ no backslash doubling; parses back to the exact path.
+      assert.ok(text.includes(`args = ['${winPath}']`));
+      assert.deepStrictEqual(parseTomlAutoclawEntry(text)!.args, [winPath]);
+    } finally {
+      rmrf(root);
+    }
+  });
+
+  test('mergeTomlRegistryFile: differing entry needs --force', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-toml-'));
+    try {
+      const file = path.join(root, 'config.toml');
+      await mergeTomlRegistryFile(file, buildServerEntry('/old/server.js', 'workspace'), { force: false });
+      const next = buildServerEntry('/new/server.js', 'workspace');
+
+      const blocked = await mergeTomlRegistryFile(file, next, { force: false });
+      assert.strictEqual(blocked.outcome, 'error');
+
+      const forced = await mergeTomlRegistryFile(file, next, { force: true });
+      assert.strictEqual(forced.outcome, 'updated');
+      assert.ok(serverEntriesEqual(parseTomlAutoclawEntry(fs.readFileSync(file, 'utf8')) ?? undefined, next));
+    } finally {
+      rmrf(root);
+    }
+  });
+
+  test('mergeTomlRegistryFile: refuses an unsupported inline autoclaw entry', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-toml-'));
+    try {
+      const file = path.join(root, 'config.toml');
+      fs.writeFileSync(
+        file,
+        ['[mcp_servers]', "autoclaw = { command = 'node', args = ['x'] }", ''].join('\n'),
+        'utf8'
+      );
+      const res = await mergeTomlRegistryFile(file, buildServerEntry('/abs/server.js', 'workspace'), {
+        force: true,
+      });
+      assert.strictEqual(res.outcome, 'error');
+      assert.ok(/inline/.test(res.detail));
+    } finally {
+      rmrf(root);
+    }
+  });
+
+  test('installAll: detects Codex by config dir and writes its TOML registry', async () => {
+    const home = fakeHome(['.codex']);
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-ws-'));
+    try {
+      const opts = {
+        scope: 'workspace' as const,
+        home,
+        workspaceRoot: ws,
+        env: { PATH: '' }, // detection via config dir only
+        serverPath: '/abs/out/mcp/server.js',
+        kiroAdd: async () => ({ ok: false, detail: 'kiro-cli not found' }),
+      };
+
+      const first = await installAll(opts);
+      const codex = first.find(r => r.host === 'codex')!;
+      assert.strictEqual(codex.outcome, 'added');
+      assert.ok(codex.path.endsWith(path.join('.codex', 'config.toml')));
+      assert.ok(/\[mcp_servers\.autoclaw\]/.test(fs.readFileSync(codex.path, 'utf8')));
+
+      // Re-run is idempotent.
+      const second = await installAll(opts);
+      assert.strictEqual(second.find(r => r.host === 'codex')!.outcome, 'unchanged');
     } finally {
       rmrf(home);
       rmrf(ws);

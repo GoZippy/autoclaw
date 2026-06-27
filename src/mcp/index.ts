@@ -66,6 +66,8 @@ export {
   buildServerEntry,
   serverEntriesEqual,
   mergeRegistryFile,
+  mergeTomlRegistryFile,
+  parseTomlAutoclawEntry,
 } from './install';
 export type {
   InstallScope,
