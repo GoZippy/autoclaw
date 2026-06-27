@@ -59,8 +59,9 @@
   container-name: intel;
 }
 
-/* Backend "online" pill — shown when the vector backend is installed; sits
- * next to the (then-hidden) Backend deploy CTA in the manage toolbar. */
+/* Backend status pills — sit next to the Backend deploy CTA in the manage toolbar.
+ * Green "Online" = backend installed & DB healthy.
+ * Amber "Reset" = backend installed but DB was auto-recovered from corruption. */
 .backend-pill {
   display: inline-flex;
   align-items: center;
@@ -72,6 +73,11 @@
   color: var(--vscode-charts-green, #89d185);
   border: 1px solid var(--vscode-charts-green, #89d185);
   white-space: nowrap;
+}
+
+.backend-pill-warn {
+  color: var(--acw-status-warn, #cca700);
+  border-color: var(--acw-status-warn, #cca700);
 }
 
 body {
@@ -135,6 +141,7 @@ body {
 
 .health-row {
   display: flex;
+  align-items: baseline;
   gap: var(--acw-space-3);
   font-size: 0.88em;
   line-height: 1.35;
@@ -149,6 +156,23 @@ body {
   flex: 1 1 auto;
   overflow-wrap: anywhere;
 }
+
+/* Small inline action button that sits at the end of a health row (e.g. the
+ * "Change" button on the Provider row). Uses the secondary button palette so
+ * it stays visually subordinate to the nudge action buttons below. */
+.health-row-btn {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid var(--vscode-button-secondaryBorder, var(--vscode-contrastBorder, transparent));
+  border-radius: var(--acw-radius-sm);
+  background: var(--vscode-button-secondaryBackground, transparent);
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  cursor: pointer;
+  font-size: 0.8em;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+.health-row-btn:hover { opacity: 1; }
 
 .health-stale-badge,
 .health-degraded-badge {
