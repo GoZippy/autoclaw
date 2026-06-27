@@ -45,7 +45,7 @@ const DEFAULTS: SupportLinks = {
   // TODO(maintainer): paste your real Square links here or via settings.
   donationUrl: `https://square.link/u/${PLACEHOLDER}`,
   customAmountUrl: `https://square.link/u/${PLACEHOLDER}`,
-  proUrl: `https://square.link/u/${PLACEHOLDER}`,
+  proUrl: 'https://square.link/u/AonvPo4b',
   koFiUrl: 'https://ko-fi.com/gozippy',
   reviewVscode: `https://marketplace.visualstudio.com/items?itemName=${EXT_ID}&ssr=false#review-details`,
   reviewOpenVsx: `https://open-vsx.org/extension/ZippyTechnologiesLLC/autoclaw/reviews`,
