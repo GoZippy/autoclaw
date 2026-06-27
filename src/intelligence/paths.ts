@@ -46,6 +46,18 @@ export interface IntelligencePaths {
   kgDbPath: string;
   /** Existing KDream memory — referenced, never overwritten. */
   memoryPath: string;
+  /**
+   * `<root>/.autoclaw/vector/db-recovered.json` — written by the vector store
+   * when it auto-recovers from a corrupt database. Health reads this to surface
+   * a re-index nudge.
+   */
+  dbRecoveredPath: string;
+  /**
+   * `<root>/.autoclaw/vector/embedding-signature.json` — mirrors the active
+   * model + dimension outside the SQLite file so recovery can report what model
+   * was in use even when the database itself is unreadable.
+   */
+  embeddingSignaturePath: string;
 }
 
 /**
@@ -70,6 +82,8 @@ export function intelligencePaths(workspaceRoot: string): IntelligencePaths {
     kgDbPath: toForwardSlash(path.join(root, 'kg', 'kg.db')),
     // Owned by KDream (skills/kdream); the layer appends, never overwrites.
     memoryPath: toForwardSlash(path.join(root, 'kdream', 'memory', 'MEMORY.md')),
+    dbRecoveredPath: toForwardSlash(path.join(vectorDir, 'db-recovered.json')),
+    embeddingSignaturePath: toForwardSlash(path.join(vectorDir, 'embedding-signature.json')),
   };
 }
 

@@ -103,6 +103,7 @@ function parseMetadata(raw: unknown): Record<string, unknown> | undefined {
 function degradedHandle(signature: EmbeddingSignature): VectorDB {
   return {
     degraded: true,
+    dbRecovered: false,
     model: signature.model,
     dimension: signature.dimension,
     staleIndex: false,
@@ -136,6 +137,7 @@ function degradedHandle(signature: EmbeddingSignature): VectorDB {
 
 class PostgresVectorDB implements VectorDB {
   readonly degraded = false;
+  readonly dbRecovered = false; // Postgres backend never auto-recovers on open
 
   // Live stale signal — mutable so {@link setStale} keeps it honest after open.
   private _staleIndex: boolean;

@@ -54,26 +54,40 @@ function recommendedId(probe: ProviderProbe): ProviderOption['id'] {
 /** Live status + reason for the Ollama rung. */
 function ollamaDescription(o: ProviderProbe['ollama']): string {
   if (o.reachable && o.embedModel) {
-    return `✓ ${o.embedModel} ready — best private quality, free, fully local`;
+    return (
+      `✓ ${o.embedModel} ready — fully local, free, high quality. ` +
+      `Switching to a different model requires a full re-index (different vector geometry).`
+    );
   }
   if (o.reachable) {
-    return '⚠ running, no embed model — run `ollama pull nomic-embed-text`';
+    return (
+      '⚠ running but no embed model pulled — ' +
+      'run: ollama pull nomic-embed-text:latest  (768-dim, recommended) ' +
+      'or: ollama pull mxbai-embed-large  (1024-dim, higher quality, larger)'
+    );
   }
-  return '✗ not running — best private quality, free, fully local once started';
+  return (
+    '✗ not running — start Ollama then pull an embed model. ' +
+    'Recommended: nomic-embed-text:latest (fast, 768-dim) or mxbai-embed-large (better, 1024-dim).'
+  );
 }
 
 /** Live status + reason for the router rung. */
 function routerDescription(r: ProviderProbe['router']): string {
-  const why = 'best for teams/fleets: one service → identical geometry across every tool & machine';
+  const why =
+    'best for teams/fleets: one service → identical geometry across every tool & machine; ' +
+    'model is pinned server-side so local config changes never corrupt the index';
   return r.reachable ? `✓ reachable — ${why}` : `✗ not running — ${why}`;
 }
 
 /** Live status + reason for the offline transformers rung. */
 function transformersDescription(t: ProviderProbe['transformers']): string {
-  const why = 'zero services, airgap-friendly; slower CPU embed';
+  const why =
+    'zero services, airgap-friendly, consistent geometry (model is bundled); ' +
+    'slower CPU embed — not recommended for large codebases';
   return t.installed
     ? `✓ installed — ${why}`
-    : `not installed (~135 MB) — ${why}`;
+    : `not installed (~135 MB download) — ${why}`;
 }
 
 /**
@@ -108,12 +122,16 @@ export function buildProviderOptions(probe: ProviderProbe, current: string): Pro
     {
       id: 'none',
       baseLabel: "Basic ('none')",
-      description: 'always works — keyword-only, degraded recall, temporary only',
+      description:
+        'always works — keyword-only, no vector geometry, degraded recall. ' +
+        'Use temporarily while setting up a real provider.',
     },
     {
       id: 'auto',
       baseLabel: 'Auto-detect',
-      description: 'probe Router → Ollama → offline → basic and pin the best',
+      description:
+        'probe Router → Ollama → offline → basic and pin the best available. ' +
+        'WARNING: if the winning provider changes between runs, re-index is required.',
     },
   ];
 

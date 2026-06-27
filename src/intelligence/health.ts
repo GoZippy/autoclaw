@@ -96,6 +96,12 @@ export interface IndexHealth {
   embeddingDegraded: boolean;
   /** True when no index has ever been built for this project. */
   neverIndexed: boolean;
+  /**
+   * True when a `db-recovered.json` marker is present beside the database —
+   * meaning the database was corrupted on a recent open and auto-reset. All
+   * stored vectors are gone; a re-index is required to restore semantic search.
+   */
+  dbCorruptRecovered: boolean;
 }
 
 export interface LearnHealth {
@@ -311,6 +317,16 @@ export async function getIntelligenceHealth(
     }
   }
 
+  // Check for auto-recovery marker written by initVectorDB when it found a
+  // corrupt database. Presence of the file means vectors were wiped — user
+  // must re-index. Best-effort read; absence == not recovered.
+  let dbCorruptRecovered = false;
+  try {
+    dbCorruptRecovered = fs.existsSync(path.join(paths.vectorDir, 'db-recovered.json'));
+  } catch {
+    // best-effort
+  }
+
   const index: IndexHealth = {
     backendInstalled: backend.installed,
     backendPath: backend.path,
@@ -324,6 +340,7 @@ export async function getIntelligenceHealth(
     stale: snap?.staleIndex ?? false,
     embeddingDegraded: snap?.embeddingDegraded ?? false,
     neverIndexed,
+    dbCorruptRecovered,
   };
 
   // --- Learn --------------------------------------------------------------
@@ -399,6 +416,18 @@ function buildNudges(args: {
       title: 'Embedding provider not yet detected',
       detail: 'Run a detect (or index once) to pin the best available provider.',
       action: { command: HEALTH_ACTIONS.detectProvider, label: 'Detect provider' },
+    });
+  }
+
+  if (index.dbCorruptRecovered) {
+    nudges.push({
+      id: 'db-corrupt-recovered',
+      severity: 'warn',
+      title: 'Vector index was reset after database corruption',
+      detail:
+        'The previous database was unreadable and has been replaced with a fresh empty one. ' +
+        'Semantic search is unavailable until you re-index. The backup is saved beside the database.',
+      action: { command: HEALTH_ACTIONS.indexCode, label: 'Re-index now' },
     });
   }
 

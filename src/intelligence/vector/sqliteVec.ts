@@ -23,6 +23,8 @@
  * No `vscode` import; no work or native require at module load time.
  */
 
+import * as fs from 'fs';
+
 import { DEFAULT_CONFIG } from '../config';
 import { LogFn } from '../config';
 import { EmbeddingSignature } from '../types';
@@ -109,6 +111,14 @@ export interface InitVectorDBOptions {
 export interface VectorDB {
   /** True when the native backend could not load/initialize (no-op mode). */
   readonly degraded: boolean;
+  /**
+   * True when the database file was found corrupt on open and auto-recovered:
+   * the bad file was renamed to a timestamped backup and a fresh empty database
+   * was created. All stored vectors are gone — a re-index is required. A
+   * `db-recovered.json` marker is written next to the database so the health
+   * card can surface the nudge persistently.
+   */
+  readonly dbRecovered: boolean;
   /** Active embedding model recorded in the DB meta row. */
   readonly model: string;
   /** Vector dimension the store was provisioned with. */
@@ -201,6 +211,7 @@ function parseMetadata(raw: unknown): Record<string, unknown> | undefined {
 function degradedHandle(signature: EmbeddingSignature): VectorDB {
   return {
     degraded: true,
+    dbRecovered: false,
     model: signature.model,
     dimension: signature.dimension,
     staleIndex: false,
@@ -234,6 +245,7 @@ function degradedHandle(signature: EmbeddingSignature): VectorDB {
 
 class SqliteVectorDB implements VectorDB {
   readonly degraded = false;
+  readonly dbRecovered: boolean;
 
   // Live stale signal — mutable so {@link setStale} keeps it honest after open.
   private _staleIndex: boolean;
@@ -249,9 +261,11 @@ class SqliteVectorDB implements VectorDB {
     readonly model: string,
     readonly dimension: number,
     staleIndex: boolean,
+    dbRecovered: boolean,
     private readonly warn: LogFn,
   ) {
     this._staleIndex = staleIndex;
+    this.dbRecovered = dbRecovered;
     this.insertStmt = driver.prepare(
       `INSERT INTO ${VEC_TABLE} ` +
         `(id, embedding, source, project, content, timestamp, metadata) ` +
@@ -451,6 +465,78 @@ class SqliteVectorDB implements VectorDB {
 }
 
 // ---------------------------------------------------------------------------
+// Corruption detection + auto-recovery helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `PRAGMA quick_check` on an already-open driver. Returns `'ok'` when the
+ * database is healthy, or the first error string when corrupt. Never throws —
+ * a prepare/exec failure itself is treated as corruption.
+ */
+function checkDbIntegrity(driver: SqliteDriver): string {
+  try {
+    const rows = driver.prepare('PRAGMA quick_check').all();
+    if (rows.length === 0) {
+      return 'ok';
+    }
+    const firstVal = Object.values(rows[0] as Record<string, unknown>)[0];
+    return String(firstVal ?? 'ok');
+  } catch {
+    return 'quick_check failed';
+  }
+}
+
+/**
+ * Close the corrupt driver, rename the bad database file to a timestamped
+ * backup, write a `db-recovered.json` marker beside it (health reads this to
+ * surface a re-index nudge), then open a fresh empty driver on the same path.
+ * Sets the freshened pragmas (WAL + busy_timeout + synchronous=NORMAL) before
+ * returning. Never throws — every step is best-effort except the fresh open
+ * (which may itself fail and propagate to the outer degrade catch).
+ */
+function recoverCorruptDB(
+  badDriver: SqliteDriver,
+  dbPath: string,
+  reason: string,
+  warn: LogFn,
+): { driver: SqliteDriver; dbRecovered: true } {
+  try {
+    badDriver.close();
+  } catch {
+    // ignore — we're already abandoning this driver
+  }
+  const ts = Date.now();
+  const backupPath = dbPath.replace(/\.sqlite$/, `.sqlite.bak-${ts}`);
+  try {
+    fs.renameSync(dbPath, backupPath);
+  } catch {
+    // best-effort — if rename fails the fresh open will overwrite/recreate
+  }
+  try {
+    const markerPath = dbPath.replace(/db\.sqlite$/, 'db-recovered.json');
+    fs.writeFileSync(
+      markerPath,
+      JSON.stringify({ at: new Date(ts).toISOString(), backupPath, reason }),
+    );
+  } catch {
+    // best-effort marker
+  }
+  warn(
+    `vector: database corrupted (${reason}) — renamed to backup, starting fresh. ` +
+      `Re-index is required to restore semantic search.`,
+  );
+  const fresh = openSqliteDriver(dbPath, warn);
+  try {
+    fresh.exec('PRAGMA journal_mode = WAL');
+    fresh.exec('PRAGMA busy_timeout = 5000');
+    fresh.exec('PRAGMA synchronous = NORMAL');
+  } catch {
+    // pragmas are best-effort
+  }
+  return { driver: fresh, dbRecovered: true };
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -488,11 +574,24 @@ export async function initVectorDB(
     // Concurrency hygiene (issue: KDream / parallel agents share `.autoclaw`).
     // WAL lets readers proceed while a writer holds the lock; busy_timeout makes
     // a contended open wait briefly instead of throwing SQLITE_BUSY immediately.
+    // synchronous=NORMAL: with WAL, this syncs only at checkpoints (not every
+    // commit), reducing the corruption window from unexpected process death while
+    // still being safe for a rebuildable cache like the vector index.
     try {
       driver.exec('PRAGMA journal_mode = WAL');
       driver.exec('PRAGMA busy_timeout = 5000');
+      driver.exec('PRAGMA synchronous = NORMAL');
     } catch {
       // pragmas are best-effort — never fail init over them
+    }
+
+    // Integrity check: detect a corrupt database before touching stored data.
+    // A corrupt DB triggers rename-to-backup + fresh open so callers always get
+    // a working (empty) store rather than a broken one they cannot write to.
+    let dbRecovered = false;
+    const integrityResult = checkDbIntegrity(driver);
+    if (integrityResult !== 'ok') {
+      ({ driver, dbRecovered } = recoverCorruptDB(driver, dbPath, integrityResult, warn));
     }
 
     // Meta table records the active embedding identity (model + dimension).
@@ -563,7 +662,20 @@ export async function initVectorDB(
     upsertMeta.run('dimension', String(dimension));
     upsertMeta.run('stale_index', staleIndex ? '1' : '0');
 
-    return new SqliteVectorDB(driver, dbPath, signature.model, dimension, staleIndex, warn);
+    // Write embedding-signature.json beside the database (outside SQLite) so
+    // recovery flows can report what model was in use even when the DB file
+    // itself is unreadable. Best-effort — never fails the open.
+    try {
+      const sigPath = dbPath.replace(/db\.sqlite$/, 'embedding-signature.json');
+      fs.writeFileSync(
+        sigPath,
+        JSON.stringify({ model: signature.model, dimension, savedAt: new Date().toISOString() }),
+      );
+    } catch {
+      // best-effort
+    }
+
+    return new SqliteVectorDB(driver, dbPath, signature.model, dimension, staleIndex, dbRecovered, warn);
   } catch (err) {
     if (driver) {
       try {
