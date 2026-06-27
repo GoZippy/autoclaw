@@ -862,6 +862,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', () => fleetJoinPromptCommand()),
     // Add a whole agent team from a ready-made template (gallery → preview → fan-out).
     vscode.commands.registerCommand('autoclaw.fleet.addTeam', () => fleetAddTeamCommand()),
+    // Open the "Build your first agent team" getting-started walkthrough.
+    vscode.commands.registerCommand('autoclaw.openWalkthrough', () => openGettingStartedWalkthrough()),
     // Wire an arbitrary (non-extension) agent id into the comms tree.
     vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand()),
     // Toggle the MCP server's allowWrites gate (lets MCP-lane agents claim/vote).
@@ -2892,8 +2894,27 @@ async function autobuildTailCommand(): Promise<void> {
 // Welcome / Onboarding
 // ---------------------------------------------------------------------------
 
+/**
+ * Open the AutoClaw getting-started walkthrough. Best-effort: VS Code forks /
+ * non-Microsoft hosts may not support `workbench.action.openWalkthrough`, so a
+ * failure is swallowed rather than surfaced. Exposed as `autoclaw.openWalkthrough`
+ * so the first-run nudge, the panel, and the docs can all link to it.
+ */
+async function openGettingStartedWalkthrough(): Promise<void> {
+  try {
+    await vscode.commands.executeCommand(
+      'workbench.action.openWalkthrough',
+      'ZippyTechnologiesLLC.autoclaw#autoclaw.fleet.getStarted',
+      false,
+    );
+  } catch { /* host doesn't support walkthroughs — non-fatal */ }
+}
+
 async function showWelcomeIfNeeded(context: vscode.ExtensionContext): Promise<void> {
-  const WELCOME_KEY = 'autoclaw.welcomeShown.2.0.0';
+  // Bump the key suffix whenever this message changes so existing installs see
+  // the new onboarding exactly once (the old `.2.0.0` key is intentionally left
+  // behind). Promotes the team-onboarding flow that is now the headline feature.
+  const WELCOME_KEY = 'autoclaw.welcomeShown.3.6';
   if (context.globalState.get<boolean>(WELCOME_KEY)) { return; }
 
   const ide = vscode.env.appName || 'VS Code';
@@ -2902,21 +2923,26 @@ async function showWelcomeIfNeeded(context: vscode.ExtensionContext): Promise<vo
 
   let tip: string;
   if (isKiro) {
-    tip = 'In Kiro chat: use # to attach steering files (kdream, orchestrate, etc.). In Kilo Code: type skill names naturally (e.g. "kdream start").';
+    tip = 'In Kiro chat, use # to attach steering files (kdream, orchestrate).';
   } else if (isCursor) {
-    tip = 'Skills are loaded from .cursor/rules/. Type skill commands in chat (e.g. "kdream start", "orchestrate plan").';
+    tip = 'Skills load from .cursor/rules/ — type commands in chat (e.g. "orchestrate plan").';
   } else {
-    tip = 'Use /kdream, /autobuild, /mateam, /orchestrate in VS Code chat. Or run "AutoClaw: Launch Skill" from the command palette.';
+    tip = 'Or use /kdream, /orchestrate, or "AutoClaw: Launch Skill" in chat.';
   }
 
+  const ADD_TEAM = 'Add a team';
+  const WALKTHROUGH = 'Open walkthrough';
   const action = await vscode.window.showInformationMessage(
-    `AutoClaw v2.0.0 ready (${ide}). ${tip}`,
-    'Launch Skill',
-    'Dismiss'
+    `AutoClaw is ready (${ide}). Put a small team of AI agents on this repo — start with "Solo + Reviewer". ${tip}`,
+    ADD_TEAM,
+    WALKTHROUGH,
+    'Dismiss',
   );
 
-  if (action === 'Launch Skill') {
-    await vscode.commands.executeCommand('autoclaw.launchSkill');
+  if (action === ADD_TEAM) {
+    await vscode.commands.executeCommand('autoclaw.fleet.addTeam');
+  } else if (action === WALKTHROUGH) {
+    await openGettingStartedWalkthrough();
   }
 
   await context.globalState.update(WELCOME_KEY, true);

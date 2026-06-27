@@ -379,6 +379,10 @@
         "title": "AutoClaw: Add Agent Team from Template…"
       },
       {
+        "command": "autoclaw.openWalkthrough",
+        "title": "AutoClaw: Open Getting-Started Walkthrough"
+      },
+      {
         "command": "autoclaw.fleet.scaffoldAgent",
         "title": "AutoClaw: Scaffold Agent into Project…"
       },

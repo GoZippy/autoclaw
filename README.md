@@ -25,6 +25,9 @@ Works with **GitHub Copilot, Claude Code, Cursor, Kiro, Windsurf, KiloCode, Clin
    Or on Claude Code/Copilot: `@kdream /kdream start`. KDream initialises its state, scans your workspace, and reports your first snapshot.
 4. **Press `Ctrl+Alt+K`** (Mac: `Cmd+Alt+K`) to open the KDream Dashboard.
 5. **Press `Ctrl+Alt+D`** (Mac: `Cmd+Alt+D`) to run the Doctor health check.
+6. **Put a team of agents on your repo.** Run **AutoClaw: Add Agent Team from Template…** (or click **Add Team** in the panel) and pick **Solo + Reviewer** to start — you preview the squad before anything is created. See the **[Multi-Agent Team Playbook](docs/MULTI-AGENT-TEAM-PLAYBOOK.md)**.
+
+> First time? Run **AutoClaw: Open Getting-Started Walkthrough** for a guided tour.
 
 ---
 
@@ -763,8 +766,6 @@ On the near-term list:
 |---|---|
 | **OpenClaw client SDK** | A client library for remote agents joining over the HTTP bridge |
 | **AutoBuild YAML IntelliSense** | JSON Schema for workflow files — autocomplete + validation in the editor |
-| **Intelligence watch service** | An always-on file watcher that re-learns / re-indexes as you work (today's `/learn` + `/index-code` + per-host refresh service are command- and tick-driven) |
-| **VS Code walkthrough** | Guided first-run walkthrough in the Welcome tab |
 | **Real-time collaboration** | Shared task boards, team memory sync, multi-user notifications |
 
 ---

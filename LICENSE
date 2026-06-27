@@ -1,7 +1,7 @@
 # Zippy Technologies Source-Available Commercial License
 
-Version 1.3
-Effective Date: April 2, 2026
+Version 1.4
+Effective Date: June 27, 2026
 
 Copyright (c) 2026 Zippy Technologies LLC
 All rights reserved.
@@ -133,6 +133,10 @@ By accessing, downloading, viewing, copying, installing, executing, modifying,
 distributing, or otherwise using the Software, You agree to be bound by this
 License. If You do not agree, You must not use the Software.
 
+Purchasing a commercial license, activating a license key, or completing
+checkout for a paid tier each constitutes Your separate, affirmative acceptance
+of this License, including Schedule A and Sections 5, 7, 8, and 19.
+
 ---
 
 ## 3. Ownership and Reservation of Rights
@@ -153,9 +157,12 @@ rights not expressly granted are reserved by Licensor.
 Subject to compliance with this License, Licensor grants You a non-exclusive,
 non-transferable, non-sublicensable license to:
 - access and review the Software,
-- use Open Materials and permitted portions of the Software for Personal Use
-  or Educational Use,
-- modify Open Materials for Personal Use or Educational Use,
+- **install and run the entire Product, free of charge and with no feature
+  gating**, for Personal Use or Educational Use — including the Restricted
+  Materials in the compiled, unmodified form distributed by Licensor (for
+  example, the published extension package),
+- use, modify, and create Derivative Works of **Open Materials** for Personal
+  Use or Educational Use,
 - share Open Materials and permitted modifications solely for Personal Use or
   Educational Use, provided that: this License is included in full, all
   notices are preserved, no recipient receives broader rights than You
@@ -166,9 +173,12 @@ Your material breach of this License that You fail to cure within thirty (30)
 days of written notice from Licensor describing the breach in reasonable
 detail.
 
-No free right is granted to use Restricted Materials except as minimally
-necessary to inspect the repository and exercise express rights granted under
-this License.
+The right to install and run the Product for Personal Use or Educational Use
+granted above extends to the Restricted Materials in their compiled, unmodified
+form. Apart from that running right, no free right is granted to modify, adapt,
+reverse-engineer beyond inspection, port, reimplement, distribute, or otherwise
+exploit Restricted Materials, except as minimally necessary to inspect the
+repository and exercise the express rights granted under this License.
 
 ---
 
@@ -181,13 +191,20 @@ from Licensor.
 
 | Tier | Seats Covered | Fee |
 |------|--------------|-----|
-| Pro | 1 Seat | USD $150 per year (or $15 per month) |
-| Teams | Up to 5 Seats | USD $250 per seat per year (or $25 per seat per month) |
+| Pro | 1 Seat | USD $99 one-time (perpetual major-version license; includes 12 months of updates) |
+| Teams | Per Seat (minimum 3 Seats) | USD $200 per seat per year (or $20 per seat per month) |
 | Enterprise | Unlimited | Custom — contact Support@GoZippy.com |
 
-All fees are per-calendar-year (or per-calendar-month for monthly billing)
-unless a separate written agreement specifies otherwise. Seats exceeding a
-tier's limit require upgrade before the excess Seats may be used commercially.
+Pro is sold as a one-time, perpetual license for the purchased major version,
+including updates for twelve (12) months from the date of purchase. After the
+update window ends, the licensee may continue using the last version released
+during the window indefinitely; the license does not expire. Upgrades to a new
+major version of Pro are offered at then-current upgrade pricing and are
+optional. Teams fees are per-Seat, per-calendar-year (or per-calendar-month for
+monthly billing). Seats exceeding a tier's limit require upgrade before the
+excess Seats may be used commercially. Promotional or early-bird pricing, when
+offered, applies only for the stated period and does not change these standard
+fees.
 
 5.3 Unlicensed Commercial Use penalty: Any Commercial Use discovered without a
 valid paid license is subject to a retroactive fee of **USD $1,000 per Seat**
@@ -485,5 +502,23 @@ release.
 
 ---
 
-*Zippy Technologies Source-Available Commercial License v1.3*
+## 23. Third-Party Components
+
+The Software includes third-party open-source components that are licensed to
+You under their own respective licenses, not this License. A list of those
+components and their licenses is provided in `THIRD-PARTY-NOTICES.md` in the
+distribution. To the extent any third-party license conflicts with this License
+as applied to that component, the third-party license governs that component.
+
+## 24. Privacy
+
+Your use of the Product is also subject to the AutoClaw Privacy Policy
+(`PRIVACY.md` in the distribution, and published at
+https://gozippy.com/autoclaw/privacy), which describes what data the Product
+processes, what stays local on Your machine, and the opt-in nature of any
+hosted or networked features.
+
+---
+
+*Zippy Technologies Source-Available Commercial License v1.4*
 *Copyright (c) 2026 Zippy Technologies LLC. All rights reserved.*
