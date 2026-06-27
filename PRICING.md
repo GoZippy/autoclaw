@@ -32,10 +32,7 @@ your own (BYO) API key, or bundled into the Teams subscription.
 
 ### How to buy
 
-> **TODO (maintainer):** paste your Square **one-time** checkout link here and in
-> [`src/support/supportConfig.ts`](src/support/supportConfig.ts) (`proUrl`).
-
-- **Pro (one-time):** `https://square.link/u/REPLACE_ME`  ← TODO
+- **Pro (one-time):** **[square.link/u/AonvPo4b](https://square.link/u/AonvPo4b)** — $99, or **$79 with code `EARLYBIRD`** at checkout (limited early-bird).
 - **Teams / Enterprise:** email **Support@GoZippy.com**
 
 ### Why pay for something that's free locally?
