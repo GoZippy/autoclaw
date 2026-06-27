@@ -16,8 +16,12 @@ import {
   handoffNoteTemplate,
   handoffsDir,
   handoffFilename,
+  sanitizeTaskId,
   type HandoffNote,
 } from '../orchestrator/handoff';
+import { buildPackagePrompt } from '../handoff_factory';
+import type { WorkPackage } from '../orchestratorLoop';
+import type { DispatchContext } from '../handoff_factory';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,15 +52,39 @@ function noteFixture(overrides: Partial<HandoffNote> = {}): HandoffNote {
 // handoffFilename
 // ---------------------------------------------------------------------------
 
+suite('handoff — sanitizeTaskId', () => {
+  test('alphanumeric, dots, dashes, underscores pass through', () => {
+    assert.strictEqual(sanitizeTaskId('S3-WA-2-panel'), 'S3-WA-2-panel');
+    assert.strictEqual(sanitizeTaskId('task_1.0'), 'task_1.0');
+  });
+
+  test('path separators are replaced', () => {
+    assert.strictEqual(sanitizeTaskId('../../evil'), '______evil');
+    assert.strictEqual(sanitizeTaskId('task/sub'), 'task_sub');
+  });
+
+  test('Windows illegal characters are replaced', () => {
+    assert.strictEqual(sanitizeTaskId('task:config'), 'task_config');
+    assert.strictEqual(sanitizeTaskId('task<x>'), 'task_x_');
+    assert.strictEqual(sanitizeTaskId('task|pipe'), 'task_pipe');
+  });
+});
+
 suite('handoff — handoffFilename', () => {
-  test('produces <task-id>-<session-frag>.json', () => {
+  test('produces <sanitized-task-id>-<session-frag>.json', () => {
     const name = handoffFilename('editor-command-api', 'abcd1234');
     assert.strictEqual(name, 'editor-command-api-abcd1234.json');
   });
 
-  test('task ids with special chars are preserved as-is', () => {
-    const name = handoffFilename('S3-WA-2-panel', 'deadbeef');
-    assert.strictEqual(name, 'S3-WA-2-panel-deadbeef.json');
+  test('sanitizes task id containing path separators', () => {
+    const name = handoffFilename('../../evil', 'deadbeef');
+    assert.ok(!name.includes('..'), 'path traversal must not survive into filename');
+    assert.ok(name.endsWith('-deadbeef.json'));
+  });
+
+  test('sanitizes Windows-illegal chars', () => {
+    const name = handoffFilename('task:config', 'deadbeef');
+    assert.ok(!name.includes(':'), 'colon must be removed');
   });
 });
 
@@ -155,15 +183,24 @@ suite('handoff — readHandoffNote', () => {
     assert.strictEqual(result!.branch, original.branch);
   });
 
-  test('returns the latest sidecar when multiple sessions wrote for the same task', async () => {
+  test('returns the sidecar with the latest TIMESTAMP, not the lex-latest filename', async () => {
     const root = mkWorkspace();
-    const note1 = noteFixture({ session_id: 'aaaa0000-0000-0000-0000-000000000000', summary: 'first' });
-    const note2 = noteFixture({ session_id: 'zzzz9999-9999-9999-9999-999999999999', summary: 'latest' });
-    await writeHandoffNote(root, note1);
-    await writeHandoffNote(root, note2);
+    // zzzz session_id is lex-latest, but aaaa has the newer timestamp.
+    // readHandoffNote must sort by timestamp field, not filename.
+    const older = noteFixture({
+      session_id: 'zzzz9999-9999-9999-9999-999999999999',
+      timestamp: '2026-01-01T00:00:00.000Z',
+      summary: 'older but lex-latest',
+    });
+    const newer = noteFixture({
+      session_id: 'aaaa0000-0000-0000-0000-000000000000',
+      timestamp: '2026-06-27T12:00:00.000Z',
+      summary: 'newer but lex-earliest',
+    });
+    await writeHandoffNote(root, older);
+    await writeHandoffNote(root, newer);
     const result = await readHandoffNote(root, 'editor-command-api');
-    // Lexicographically latest session frag wins ('zzzz' > 'aaaa').
-    assert.strictEqual(result!.summary, 'latest');
+    assert.strictEqual(result!.summary, 'newer but lex-earliest', 'timestamp wins over lex order');
   });
 
   test('returns null gracefully on a malformed sidecar', async () => {
@@ -199,9 +236,83 @@ suite('handoff — handoffNoteTemplate', () => {
     assert.ok(typeof parsed.summary === 'string');
   });
 
+  test('template uses a parseable ISO timestamp example (not literal "ISO-8601")', () => {
+    const tpl = handoffNoteTemplate('t', 'a', 's');
+    const parsed = JSON.parse(tpl) as HandoffNote;
+    assert.ok(!isNaN(Date.parse(parsed.timestamp)), 'timestamp must be a real parseable ISO string');
+    assert.ok(parsed.timestamp !== 'ISO-8601', 'must not use opaque placeholder');
+  });
+
   test('template includes placeholder text that agents must replace', () => {
     const tpl = handoffNoteTemplate('t', 'a', 's');
-    assert.ok(tpl.includes('ISO-8601'), 'timestamp placeholder present');
     assert.ok(tpl.includes('workspace-relative'), 'files_changed placeholder present');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildPackagePrompt — handoff note template injection
+// ---------------------------------------------------------------------------
+
+function makePkg(overrides: Partial<WorkPackage> = {}): WorkPackage {
+  return {
+    type: 'work_package',
+    taskId: 'editor-cmd',
+    taskName: 'Editor Command API',
+    description: 'Implement the editor command API.',
+    filePaths: ['src/commands/editor.ts'],
+    successCriteria: ['npm run test:unit passes'],
+    sprint: 1,
+    assignToVendor: 'claude-code',
+    priority: 'medium',
+    timeBudgetMs: 3_600_000,
+    ...overrides,
+  };
+}
+
+function makeCtx(overrides: Partial<DispatchContext> = {}): DispatchContext {
+  return {
+    workspaceRoot: '/tmp/test',
+    vendor: 'claude-code',
+    agentId: 'claude-code',
+    sprint: 1,
+    commitmentText: 'I will not stop until all criteria pass.',
+    ...overrides,
+  };
+}
+
+suite('handoff_factory — buildPackagePrompt template injection', () => {
+  test('prompt includes the handoff note schema template', () => {
+    const prompt = buildPackagePrompt(makePkg(), makeCtx());
+    assert.ok(prompt.includes('handoff_note'), 'handoff_note field must appear in prompt');
+    assert.ok(prompt.includes('files_changed'), 'files_changed must appear in prompt');
+    assert.ok(prompt.includes('files_not_touched'), 'files_not_touched must appear in prompt');
+    assert.ok(prompt.includes('Handoff Note (REQUIRED'), 'section header must appear');
+  });
+
+  test('prompt instructs agents to write handoff note BEFORE task_complete', () => {
+    const prompt = buildPackagePrompt(makePkg(), makeCtx());
+    const handoffIdx = prompt.indexOf('Handoff Note (REQUIRED');
+    const completeIdx = prompt.indexOf('Task Complete Message');
+    assert.ok(handoffIdx > -1, 'handoff section must exist');
+    assert.ok(completeIdx > -1, 'task_complete section must exist');
+    assert.ok(handoffIdx < completeIdx, 'handoff note section must come BEFORE task_complete section');
+  });
+
+  test('prompt includes priorBrief context when provided', () => {
+    const priorBrief = noteFixture({
+      summary: 'Implemented the read half of the API.',
+      files_changed: ['src/commands/editorRead.ts'],
+      risks: ['write path not yet implemented'],
+    });
+    const prompt = buildPackagePrompt(makePkg(), makeCtx({ priorBrief }));
+    assert.ok(prompt.includes('Prior Agent Handoff Brief'), 'prior brief section must appear');
+    assert.ok(prompt.includes('Implemented the read half'), 'summary from prior brief must appear');
+    assert.ok(prompt.includes('editorRead.ts'), 'changed files from prior brief must appear');
+    assert.ok(prompt.includes('write path not yet implemented'), 'risks from prior brief must appear');
+  });
+
+  test('prompt does NOT include priorBrief section when none provided', () => {
+    const prompt = buildPackagePrompt(makePkg(), makeCtx());
+    assert.ok(!prompt.includes('Prior Agent Handoff Brief'), 'prior brief section must be absent');
   });
 });

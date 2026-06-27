@@ -58,12 +58,20 @@ export interface AcceptanceCheck {
 }
 
 /** Outcome of running one AcceptanceCheck (recorded on ConsensusResult.gate_checks). */
+export type GateVerdict = 'pass' | 'weak-pass' | 'fail';
+
 export interface GateCheckResult {
   command: string;
   exit_code: number;
   passed: boolean;
   duration_ms: number;
   stdout_excerpt?: string;
+  /**
+   * Distinguishes a real pass from a weak pass (gate skipped/no-op because the
+   * verifier tool is absent). A weak-pass is reported as green with a warning,
+   * not equivalent to a real pass. undefined when the gate ran normally.
+   */
+  verdict?: GateVerdict;
 }
 
 export interface ManifestTask {

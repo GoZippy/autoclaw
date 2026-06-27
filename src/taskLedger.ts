@@ -43,6 +43,14 @@ export interface TaskLedgerEntry {
   review_status?: string;
   /** Branch the work landed on, when known (carried for drill-down parity). */
   branch?: string;
+  /** Gate results at completion time, when known (e.g. ["lint", "test", "build"]). */
+  gates?: string[];
+  /** Number of tests run, when known. */
+  tests_run?: number;
+  /** Multi-task completion: all task ids included in this completion. */
+  task_ids?: string[];
+  /** Structured summary of what was done, when known. */
+  summary?: string;
 }
 
 /** A minimal claim shape: only what the rollup needs. Matches `claims/<id>.json`

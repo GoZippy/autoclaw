@@ -58,6 +58,8 @@ export interface ConsensusStub {
   status?: string;
   /** Review round (1-based). Bumped by the revise/converge loop on dissent. */
   round?: number;
+  /** Set by peerReviewWatcher when the completing agent omitted a handoff note (§3.3). */
+  missing_handoff_note?: boolean;
 }
 
 export interface TallyResult {
@@ -305,6 +307,9 @@ export async function resolvePendingConsensus(opts: ResolveConsensusOptions): Pr
         opened_at: stub.opened_at,
         resolved_at: now.toISOString(),
         resolved_by: resolvedBy,
+        // Preserve the handoff-note-missing flag so the audit trail is complete
+        // even after the active stub is deleted (§3.3).
+        ...(stub.missing_handoff_note ? { missing_handoff_note: true } : {}),
       };
       // Atomic publish: temp + rename so a reader never sees a half-written file.
       const tmp = resolvedPath + `.tmp-${process.pid}`;

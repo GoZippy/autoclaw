@@ -46,8 +46,8 @@ function result(overrides: Partial<ConsensusResult> = {}): ConsensusResult {
   };
 }
 
-const gate = (command: string, passed: boolean, dur = 10): GateCheckResult => ({
-  command, exit_code: passed ? 0 : 1, passed, duration_ms: dur,
+const gate = (command: string, passed: boolean, dur = 10, verdict?: GateCheckResult['verdict']): GateCheckResult => ({
+  command, exit_code: passed ? 0 : 1, passed, duration_ms: dur, verdict,
 });
 
 suite('Evidence — run handles', () => {
@@ -76,6 +76,29 @@ suite('Evidence — buildCapsule', () => {
   test('no gate ⇒ gates_passed undefined (no-gate is not a failure)', () => {
     const c = buildCapsule(result());
     assert.strictEqual(c.gates_passed, undefined);
+  });
+
+  test('weak-pass gate ⇒ gates_passed true but gates_weak counted', () => {
+    const c = buildCapsule(result({ gate_checks: [
+      gate('npm test', true, 30, 'pass'),
+      gate('contract-verify', true, 0, 'weak-pass'),
+    ] }));
+    assert.strictEqual(c.gates_passed, true);
+    assert.strictEqual(c.gates_weak, 1);
+  });
+
+  test('all weak-pass ⇒ gates_passed true with gates_weak = total', () => {
+    const c = buildCapsule(result({ gate_checks: [
+      gate('a', true, 0, 'weak-pass'),
+      gate('b', true, 0, 'weak-pass'),
+    ] }));
+    assert.strictEqual(c.gates_passed, true);
+    assert.strictEqual(c.gates_weak, 2);
+  });
+
+  test('no weak-pass ⇒ gates_weak undefined', () => {
+    const c = buildCapsule(result({ gate_checks: [gate('npm test', true, 30, 'pass')] }));
+    assert.strictEqual(c.gates_weak, undefined);
   });
 
   test('carries verdict, vote count, and review context', () => {

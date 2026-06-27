@@ -13,6 +13,7 @@ import {
   buildConsensusStub,
   buildReviewRequest,
   computeReviewers,
+  hasHandoffNote,
   reviewRequestFilename,
   type ReviewerCandidate,
   type TaskCompleteLike,
@@ -335,6 +336,112 @@ suite('peerReviewWatcher — promotePendingTaskCompletes', () => {
         path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active', 'B5.json'), 'utf8'));
       assert.strictEqual(stub.rule, 'majority');
       assert.deepStrictEqual(stub.reviewers.sort(), ['kilocode', 'kiro']);
+    } finally {
+      rmrf(ws);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasHandoffNote — §3.3 guard
+// ---------------------------------------------------------------------------
+
+suite('peerReview — hasHandoffNote', () => {
+  test('returns false when payload is absent', () => {
+    assert.strictEqual(hasHandoffNote({ ...TC, payload: undefined }), false);
+  });
+
+  test('returns false when handoff_note is missing from payload', () => {
+    assert.strictEqual(hasHandoffNote({ ...TC, payload: { branch: 'main' } }), false);
+  });
+
+  test('returns false when handoff_note is an empty string', () => {
+    assert.strictEqual(hasHandoffNote({ ...TC, payload: { handoff_note: '' } }), false);
+  });
+
+  test('returns false when handoff_note is whitespace only', () => {
+    assert.strictEqual(hasHandoffNote({ ...TC, payload: { handoff_note: '   ' } }), false);
+  });
+
+  test('returns false when handoff_note is not a string', () => {
+    assert.strictEqual(hasHandoffNote({ ...TC, payload: { handoff_note: 42 } }), false);
+  });
+
+  test('returns true when handoff_note is a non-empty string', () => {
+    assert.strictEqual(
+      hasHandoffNote({ ...TC, payload: { handoff_note: '.autoclaw/orchestrator/comms/handoffs/B5-abcd1234.json' } }),
+      true,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// peerReviewWatcher — missingHandoffNote enforcement (§3.3)
+// ---------------------------------------------------------------------------
+
+suite('peerReviewWatcher — missingHandoffNote enforcement', () => {
+  const pool: ReviewerCandidate[] = [
+    candidate({ agent_id: 'kilocode' }),
+    candidate({ agent_id: 'kiro' }),
+  ];
+
+  test('task_complete without handoff note increments missingHandoffNote and tags consensus stub', async () => {
+    const ws = mkTempWorkspace();
+    try {
+      const res = await promotePendingTaskCompletes({
+        workspaceRoot: ws, now: new Date(now),
+        reviewerPoolOverride: pool,
+        taskCompletesOverride: [TC], // TC has no payload.handoff_note
+      });
+      assert.strictEqual(res.promoted, 1);
+      assert.strictEqual(res.missingHandoffNote, 1);
+      assert.strictEqual(res.promotions[0].missingHandoffNote, true);
+
+      // Consensus stub tagged.
+      const stub = JSON.parse(fs.readFileSync(
+        path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active', 'B5.json'), 'utf8'));
+      assert.strictEqual(stub.missing_handoff_note, true);
+
+      // finding_report delivered to the author's inbox.
+      const authorInbox = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'inboxes', 'claude-code');
+      const files = fs.readdirSync(authorInbox).filter(f => f.includes('finding_report'));
+      assert.strictEqual(files.length, 1, 'one finding_report sent to author');
+      const finding = JSON.parse(fs.readFileSync(path.join(authorInbox, files[0]), 'utf8'));
+      assert.strictEqual(finding.payload.code, 'MISSING_HANDOFF_NOTE');
+      assert.strictEqual(finding.to, 'claude-code');
+    } finally {
+      rmrf(ws);
+    }
+  });
+
+  test('task_complete WITH handoff note has missingHandoffNote=0 and no finding_report', async () => {
+    const ws = mkTempWorkspace();
+    try {
+      const tcWithNote: TaskCompleteLike = {
+        ...TC,
+        id: 'msg-tc-with-note',
+        payload: { handoff_note: '.autoclaw/orchestrator/comms/handoffs/B5-abcd1234.json' },
+      };
+      const res = await promotePendingTaskCompletes({
+        workspaceRoot: ws, now: new Date(now),
+        reviewerPoolOverride: pool,
+        taskCompletesOverride: [tcWithNote],
+      });
+      assert.strictEqual(res.promoted, 1);
+      assert.strictEqual(res.missingHandoffNote, 0);
+      assert.strictEqual(res.promotions[0].missingHandoffNote, undefined);
+
+      // Consensus stub NOT tagged.
+      const stub = JSON.parse(fs.readFileSync(
+        path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active', 'B5.json'), 'utf8'));
+      assert.strictEqual(stub.missing_handoff_note, undefined, 'stub should not be tagged when note is present');
+
+      // No finding_report sent.
+      const authorInbox = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'inboxes', 'claude-code');
+      const files = fs.existsSync(authorInbox)
+        ? fs.readdirSync(authorInbox).filter(f => f.includes('finding_report'))
+        : [];
+      assert.strictEqual(files.length, 0, 'no finding_report when handoff note present');
     } finally {
       rmrf(ws);
     }

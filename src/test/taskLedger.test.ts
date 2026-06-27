@@ -40,6 +40,23 @@ suite('taskLedger — append/read roundtrip', () => {
     assert.strictEqual(ledger[1].title, 'Build panel');
   });
 
+  test('enriched fields (gates, tests_run, task_ids, summary) round-trip', () => {
+    const root = makeTmp();
+    appendTaskCompletion(root, entry({
+      task_id: 'C',
+      gates: ['lint', 'test', 'build'],
+      tests_run: 42,
+      task_ids: ['C1', 'C2', 'C3'],
+      summary: 'Implemented the feature with full coverage',
+    }));
+    const ledger = readTaskLedger(root);
+    assert.strictEqual(ledger.length, 1);
+    assert.deepStrictEqual(ledger[0].gates, ['lint', 'test', 'build']);
+    assert.strictEqual(ledger[0].tests_run, 42);
+    assert.deepStrictEqual(ledger[0].task_ids, ['C1', 'C2', 'C3']);
+    assert.strictEqual(ledger[0].summary, 'Implemented the feature with full coverage');
+  });
+
   test('writes JSONL (one object per line) to the canonical path', () => {
     const root = makeTmp();
     appendTaskCompletion(root, entry({ task_id: 'A' }));

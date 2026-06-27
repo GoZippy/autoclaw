@@ -30,11 +30,12 @@
  * runs in its own isolated namespace.
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { COMMS_DIR_REL, SHARED_INBOX_REL } from './orchestratorLoop';
 import type { WorkPackage, VendorKind } from './orchestratorLoop';
-import { handoffNoteTemplate } from './orchestrator/handoff';
+import { handoffNoteTemplate, type HandoffNote } from './orchestrator/handoff';
 
 const fsPromises = fs.promises;
 
@@ -87,6 +88,13 @@ export interface DispatchContext {
    * inproc, governed by the native k8s service-account.
    */
   k8sWorkload?: boolean;
+  /**
+   * Handoff note from the agent that last worked on this task.
+   * When provided, it is injected into the prompt so the new claimant knows
+   * which files were changed, which are clean, what tests ran, and what risks
+   * remain — preventing blind re-work and file-racing.
+   */
+  priorBrief?: HandoffNote;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +304,44 @@ export function buildPackagePrompt(
     lines.push('');
   }
 
+  if (ctx.priorBrief) {
+    const b = ctx.priorBrief;
+    lines.push('### Prior Agent Handoff Brief');
+    lines.push(`The last agent to work on this task was **${b.agent_id}** at \`${b.timestamp}\`.`);
+    lines.push('Read this before touching any file to avoid re-work and collisions.');
+    lines.push('');
+    if (b.files_changed.length > 0) {
+      lines.push('**Files already changed** (review before re-editing):');
+      b.files_changed.forEach(f => lines.push(`- \`${f}\``));
+      lines.push('');
+    }
+    if (b.files_not_touched.length > 0) {
+      lines.push('**Files in scope but deliberately left clean** (safe to edit):');
+      b.files_not_touched.forEach(f => lines.push(`- \`${f}\``));
+      lines.push('');
+    }
+    if (b.integration_points.length > 0) {
+      lines.push('**Integration points to be aware of:**');
+      b.integration_points.forEach(p => lines.push(`- ${p}`));
+      lines.push('');
+    }
+    if (b.tests_run.length > 0) {
+      const allPassed = b.tests_run.every(t => t.failed === 0);
+      lines.push(`**Tests at handoff:** ${allPassed ? '✅ all passing' : '⚠️ some failing'}`);
+      b.tests_run.forEach(t => lines.push(`- ${t.suite}: ${t.passed} passed, ${t.failed} failed`));
+      lines.push('');
+    }
+    if (b.risks.length > 0) {
+      lines.push('**Known risks / incomplete items:**');
+      b.risks.forEach(r => lines.push(`- ${r}`));
+      lines.push('');
+    }
+    if (b.summary) {
+      lines.push(`**Summary:** ${b.summary}`);
+      lines.push('');
+    }
+  }
+
   lines.push('### Context (Do Not Ignore)');
   lines.push('The success criteria below are mandatory. You are operating in a');
   lines.push('nested loop — do not stop until ALL criteria are verified as passing.');
@@ -311,6 +357,17 @@ export function buildPackagePrompt(
   lines.push('3. If any criterion fails → return to step 1 with fixes.');
   lines.push('4. Only write `task_complete` to the shared inbox when EVERY criterion passes.');
   lines.push('');
+  lines.push('### Handoff Note (REQUIRED before task_complete)');
+  lines.push('Before writing task_complete, write a handoff note sidecar to:');
+  lines.push(`\`.autoclaw/orchestrator/comms/handoffs/${pkg.taskId}-<first-8-chars-of-your-session-id>.json\``);
+  lines.push('Then include `"handoff_note": "<relative path to the sidecar>"` in the task_complete payload.');
+  lines.push('This is how you prevent peer agents racing on the files you just touched.');
+  lines.push('Fill in ALL fields. Use the template below:');
+  lines.push('');
+  lines.push('```json');
+  lines.push(handoffNoteTemplate(pkg.taskId, ctx.agentId, '<your-session-id>'));
+  lines.push('```');
+  lines.push('');
   lines.push('### Task Complete Message');
   lines.push(`When done, write to \`.autoclaw/orchestrator/comms/inboxes/orchestrator-loop/\`: `);
   lines.push('```json');
@@ -324,17 +381,6 @@ export function buildPackagePrompt(
   lines.push(`  "payload": {"verification": "all-passed", "verifier": "${ctx.agentId}"},`);
   lines.push(`  "requires_response": false`);
   lines.push(`}`);
-  lines.push('```');
-  lines.push('');
-  lines.push('### Handoff Note (REQUIRED before task_complete)');
-  lines.push('Before writing task_complete, write a handoff note sidecar to:');
-  lines.push(`\`.autoclaw/orchestrator/comms/handoffs/${pkg.taskId}-<first-8-chars-of-your-session-id>.json\``);
-  lines.push('Then include `"handoff_note": "<relative path to the sidecar>"` in the task_complete payload.');
-  lines.push('This is how you prevent peer agents racing on the files you just touched.');
-  lines.push('Fill in ALL fields. Use the template below:');
-  lines.push('');
-  lines.push('```json');
-  lines.push(handoffNoteTemplate(pkg.taskId, ctx.agentId, '<your-session-id>'));
   lines.push('```');
   lines.push('');
   lines.push('---');

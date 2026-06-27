@@ -392,6 +392,38 @@ class ClaudeCodeAdapter implements SourceAdapter {
     this.options = options;
   }
 
+  /**
+   * Count sessions that match the current workspace vs those ignored as
+   * unrelated. Used by the sources report to show workspace-scope provenance.
+   */
+  async countWorkspaceSessions(): Promise<{ matched: number; ignored: number }> {
+    const dir = claudeProjectsDir(this.env ?? defaultEnv(), this.options.projectsDir);
+    if (!dir) { return { matched: 0, ignored: 0 }; }
+    const workspaceRoot =
+      this.env?.workspaceRoot && this.env.workspaceRoot.trim() !== ''
+        ? this.env.workspaceRoot
+        : undefined;
+    if (!workspaceRoot) { return { matched: 0, ignored: 0 }; }
+
+    let matched = 0;
+    let ignored = 0;
+    for (const file of listJsonlRecursive(dir)) {
+      const session = readClaudeTranscript(
+        file,
+        ADAPTER_ID,
+        DISPLAY_NAME,
+        this.env?.workspaceRoot,
+      );
+      if (!session) { continue; }
+      if (sessionInWorkspace(session.project, workspaceRoot)) {
+        matched++;
+      } else {
+        ignored++;
+      }
+    }
+    return { matched, ignored };
+  }
+
   async discover(env: AdapterEnv): Promise<SourcePresence> {
     this.env = env;
     const dir = claudeProjectsDir(env, this.options.projectsDir);

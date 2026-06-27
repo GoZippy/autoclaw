@@ -6456,10 +6456,13 @@ function startInboxWatcher(context: vscode.ExtensionContext): void {
             session_id: typeof msg.session_id === 'string' ? msg.session_id : undefined,
             completed_at: typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
             sprint: sprintNum ?? undefined,
-            title: typeof payload.summary === 'string' ? payload.summary
-                 : typeof payload.title === 'string' ? payload.title : undefined,
+            title: typeof payload.title === 'string' ? payload.title : undefined,
             review_status: typeof payload.review_status === 'string' ? payload.review_status : undefined,
             branch: typeof payload.branch === 'string' ? payload.branch : undefined,
+            gates: Array.isArray(payload.gates) ? payload.gates.filter((g: unknown) => typeof g === 'string') : undefined,
+            tests_run: typeof payload.tests_run === 'number' ? payload.tests_run : undefined,
+            task_ids: Array.isArray(payload.task_ids) ? payload.task_ids.filter((t: unknown) => typeof t === 'string') : undefined,
+            summary: typeof payload.summary === 'string' ? payload.summary : undefined,
           });
         } catch { /* ledger is best-effort */ }
 

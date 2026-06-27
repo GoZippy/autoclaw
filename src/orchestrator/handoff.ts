@@ -96,8 +96,21 @@ export function handoffsDir(workspaceRoot: string): string {
   return path.join(workspaceRoot, HANDOFFS_REL);
 }
 
+/**
+ * Sanitize a task ID so it is safe as a Windows/POSIX filename component.
+ * Replaces any character that is not alphanumeric, dot, dash, or underscore
+ * with an underscore. Path traversal sequences are collapsed to literals.
+ */
+export function sanitizeTaskId(taskId: string): string {
+  // Replace illegal filename chars, then expand `..` to `__` so path-traversal
+  // sequences can never survive into a filename (each dot replaced individually).
+  return taskId
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .replace(/\.\./g, '__');
+}
+
 export function handoffFilename(taskId: string, sessionFrag: string): string {
-  return `${taskId}-${sessionFrag}.json`;
+  return `${sanitizeTaskId(taskId)}-${sessionFrag}.json`;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +148,10 @@ export async function writeHandoffNote(
 /**
  * Read the most recent handoff note for a task, if any exists.
  * Returns null when no sidecar is found (task never had a handoff note).
+ *
+ * "Most recent" is determined by the `timestamp` field inside each sidecar —
+ * NOT by lexicographic filename order, which would break if session IDs are
+ * not monotonically increasing (they aren't guaranteed to be).
  */
 export async function readHandoffNote(
   workspaceRoot: string,
@@ -148,19 +165,26 @@ export async function readHandoffNote(
     return null;
   }
 
-  // Files are named <task-id>-<session-frag>.json — filter by prefix.
-  const prefix = `${taskId}-`;
-  const matches = entries.filter(f => f.startsWith(prefix) && f.endsWith('.json')).sort();
+  // Use the sanitized form for prefix matching (consistent with writeHandoffNote).
+  const prefix = `${sanitizeTaskId(taskId)}-`;
+  const matches = entries.filter(f => f.startsWith(prefix) && f.endsWith('.json'));
   if (matches.length === 0) { return null; }
 
-  // Return the last (lexicographically latest) match.
-  const last = matches[matches.length - 1];
-  try {
-    const raw = await fs.promises.readFile(path.join(dir, last), 'utf8');
-    return JSON.parse(raw) as HandoffNote;
-  } catch {
-    return null;
+  // Read all candidates and pick the one with the latest timestamp field.
+  let latest: HandoffNote | null = null;
+  let latestMs = -Infinity;
+  for (const filename of matches) {
+    try {
+      const raw = await fs.promises.readFile(path.join(dir, filename), 'utf8');
+      const note = JSON.parse(raw) as HandoffNote;
+      const ms = note.timestamp ? Date.parse(note.timestamp) : NaN;
+      if (Number.isFinite(ms) && ms > latestMs) {
+        latestMs = ms;
+        latest = note;
+      }
+    } catch { /* malformed — skip */ }
   }
+  return latest;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +205,7 @@ export function handoffNoteTemplate(
     task_id: taskId,
     agent_id: agentId,
     session_id: sessionId,
-    timestamp: 'ISO-8601',
+    timestamp: '2026-01-01T00:00:00.000Z',
     files_changed: ['<workspace-relative path>'],
     files_not_touched: ['<in-scope path you deliberately left clean>'],
     integration_points: ['<seam the next agent must know about>'],

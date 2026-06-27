@@ -12,6 +12,7 @@
  * @see docs/AGENT_SESSION_PROTOCOL.md §3 (REPORT)
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -20,6 +21,7 @@ import {
   buildConsensusStub,
   buildReviewRequest,
   computeReviewers,
+  hasHandoffNote,
   reviewRequestFilename,
   type ReviewerCandidate,
   type TaskCompleteLike,
@@ -155,12 +157,20 @@ export interface PromotionResult {
   skippedNoPeers: number;
   /** task_complete messages skipped because already promoted previously. */
   skippedAlreadyPromoted: number;
+  /**
+   * task_complete messages promoted but flagged because the agent did not
+   * include a handoff note (§3.3). A finding_report is sent back to the
+   * author and the consensus stub is tagged `missing_handoff_note: true`
+   * so reviewers know the brief is absent.
+   */
+  missingHandoffNote: number;
   /** Per-promoted detail. */
   promotions: Array<{
     sourceMessageId: string;
     taskId: string | undefined;
     author: string;
     reviewers: string[];
+    missingHandoffNote?: boolean;
   }>;
 }
 
@@ -200,6 +210,7 @@ export async function promotePendingTaskCompletes(
     promoted: 0,
     skippedNoPeers: 0,
     skippedAlreadyPromoted: 0,
+    missingHandoffNote: 0,
     promotions: [],
   };
 
@@ -238,6 +249,42 @@ export async function promotePendingTaskCompletes(
       continue;
     }
 
+    // §3.3: flag task_completes that omitted a handoff note.
+    const notePresent = hasHandoffNote(tc);
+    if (!notePresent) {
+      result.missingHandoffNote++;
+      // Send a finding_report back to the author so they know what's missing.
+      // We still promote (non-blocking) so the review isn't stalled, but the
+      // consensus stub and ledger are tagged so reviewers see the gap.
+      const authorInbox = inboxFor(workspaceRoot, tc.from);
+      await fsp.mkdir(authorInbox, { recursive: true });
+      const findingMsg = {
+        id: `msg-finding-handoff-${tc.id.slice(-8)}-${crypto.randomUUID().slice(0, 8)}`,
+        from: fromAgent,
+        to: tc.from,
+        type: 'finding_report' as const,
+        timestamp: now.toISOString(),
+        task_id: tc.task_id,
+        requires_response: false,
+        payload: {
+          severity: 'warning',
+          code: 'MISSING_HANDOFF_NOTE',
+          title: 'task_complete missing handoff note',
+          description:
+            `task_complete for "${tc.task_id ?? tc.id}" has no payload.handoff_note. ` +
+            'Write a handoff note to .autoclaw/orchestrator/comms/handoffs/<task-id>-<session-frag>.json ' +
+            'before broadcasting task_complete. See docs/AGENT_SESSION_PROTOCOL.md §3.3.',
+          source_task_complete_id: tc.id,
+        },
+      };
+      const findingTs = now.toISOString().replace(/[:.]/g, '-');
+      await fsp.writeFile(
+        path.join(authorInbox, `${findingTs}-finding_report-${fromAgent}-${findingMsg.id.slice(-8)}.json`),
+        JSON.stringify(findingMsg, null, 2),
+        'utf8',
+      );
+    }
+
     // AF-8 §1+§2: derive the consensus rule + route security reviews to auditors.
     const personaId = typeof tc.payload?.persona_id === 'string' ? tc.payload.persona_id : undefined;
     const rule = quorumRuleForPersona(personaId);
@@ -265,7 +312,10 @@ export async function promotePendingTaskCompletes(
       const prior = JSON.parse(await fsp.readFile(stubPath, 'utf8')) as { round?: unknown };
       if (typeof prior?.round === 'number') { priorRound = prior.round; }
     } catch { /* no prior stub — this is a fresh promotion */ }
-    const stubToWrite = priorRound !== undefined ? { ...stub, round: priorRound } : stub;
+    const stubToWrite = {
+      ...(priorRound !== undefined ? { ...stub, round: priorRound } : stub),
+      ...(notePresent ? {} : { missing_handoff_note: true }),
+    };
     await fsp.writeFile(stubPath, JSON.stringify(stubToWrite, null, 2), 'utf8');
 
     // Deliver per-peer review_request messages.
@@ -292,6 +342,7 @@ export async function promotePendingTaskCompletes(
       promoted_at: now.toISOString(),
       promoted_by: fromAgent,
       reviewers,
+      ...(notePresent ? {} : { missing_handoff_note: true }),
     };
     await ledgerFd.writeFile(JSON.stringify(ledgerBody, null, 2), 'utf8');
     await ledgerFd.close();
@@ -302,6 +353,7 @@ export async function promotePendingTaskCompletes(
       taskId: tc.task_id,
       author: tc.from,
       reviewers,
+      ...(notePresent ? {} : { missingHandoffNote: true }),
     });
   }
 

@@ -437,4 +437,47 @@ suite('board — writeBoard end-to-end', () => {
       rmrf(ws);
     }
   });
+
+  test('writeBoard ingests sprint YAML tasks even when state.json has none', async () => {
+    const ws = mkTempWorkspace();
+    try {
+      const orch = path.join(ws, '.autoclaw', 'orchestrator');
+      const comms = path.join(orch, 'comms');
+      fs.mkdirSync(path.join(comms, 'heartbeats'), { recursive: true });
+      fs.mkdirSync(path.join(orch, 'sprints'), { recursive: true });
+
+      // state.json with NO tasks array.
+      fs.writeFileSync(path.join(orch, 'state.json'), JSON.stringify({
+        project: 'demo', current_sprint: 1, total_sprints: 1,
+        tasks_complete: 0, tasks_total: 0,
+        agents: {},
+        last_updated: new Date(now).toISOString(),
+      }, null, 2));
+
+      // sprint-1.yaml with tasks not in state.json.
+      fs.writeFileSync(path.join(orch, 'sprints', 'sprint-1.yaml'), [
+        'sprint: 1',
+        'status: in_progress',
+        'assignments:',
+        '  - agent: WA-1',
+        '    tasks:',
+        '      - id: S1',
+        '        name: "Sprint task 1"',
+        '        status: pending',
+        '      - id: S2',
+        '        name: "Sprint task 2"',
+        '        status: pending',
+        '',
+      ].join('\n'), 'utf8');
+
+      const result = await writeBoard({ workspaceRoot: ws, now });
+      const board = JSON.parse(fs.readFileSync(result.jsonPath, 'utf8'));
+
+      const taskIds = board.claimable.map((c: { task_id: string }) => c.task_id);
+      assert.ok(taskIds.includes('S1'), 'S1 from sprint YAML should be claimable');
+      assert.ok(taskIds.includes('S2'), 'S2 from sprint YAML should be claimable');
+    } finally {
+      rmrf(ws);
+    }
+  });
 });
