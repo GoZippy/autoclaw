@@ -35,6 +35,15 @@ your own (BYO) API key, or bundled into the Teams subscription.
 - **Pro (one-time):** **[square.link/u/AonvPo4b](https://square.link/u/AonvPo4b)** — $99, or **$79 with code `EARLYBIRD`** at checkout (limited early-bird).
 - **Teams / Enterprise:** email **Support@GoZippy.com**
 
+### Refunds & cancellation
+
+- **Pro (one-time):** if it's not working out, email **Support@GoZippy.com within
+  14 days** of purchase for a full refund. Where local law (e.g. EU/UK consumer
+  rules) grants a longer or statutory withdrawal right, that right applies.
+- **Teams (subscription):** cancel anytime — cancellation stops future renewals;
+  the current paid period is not pro-rated unless required by law.
+- Refunds are issued to the original payment method via Square.
+
 ### Why pay for something that's free locally?
 
 The paid tiers fund development. The local individual experience is **always
