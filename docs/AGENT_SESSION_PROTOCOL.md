@@ -66,6 +66,7 @@ required for local coordination.
     consensus/active/              # in-flight votes
     consensus/resolved/            # tallied votes
     reviews/                       # review reports
+    handoffs/<task-id>-<session>.json  # structured handoff notes (§3.3)
 ```
 
 ### 2.1 Agent id vs session id — both matter
@@ -163,6 +164,42 @@ for a `task_complete` whose `id` is already in the ledger. The classic bug
 (see [AGENT_DAEMON_CRITIQUE.md](AGENT_DAEMON_CRITIQUE.md) §2.1) is a daemon
 that re-sends a review request every poll because it never moved the source
 file — within an hour the peer's inbox has hundreds of duplicates.
+
+### 3.3 Handoff notes — the anti-racing brief
+
+**Before broadcasting `task_complete`, every agent MUST write a handoff note
+sidecar** to `comms/handoffs/<task-id>-<first-8-chars-session-id>.json` and
+reference it in the task_complete payload as `payload.handoff_note`.
+
+Without handoff notes, the next claimant has no structured context: which
+files were touched, which are clean and safe to edit, what tests ran, or
+what risks exist. Four agents racing on the same UI file is the predictable
+result of omitting this step.
+
+The handoff note schema (enforced by `src/orchestrator/handoff.ts`):
+
+```json
+{
+  "task_id": "editor-command-api",
+  "agent_id": "claude-code",
+  "session_id": "<uuid>",
+  "timestamp": "<iso>",
+  "files_changed": ["src/commands/editorApi.ts"],
+  "files_not_touched": ["src/views/fleetPanel.ts"],
+  "integration_points": ["EditorCommand interface exported from src/commands/index.ts"],
+  "tests_run": [{ "suite": "npm run test:unit", "passed": 12, "failed": 0 }],
+  "risks": [],
+  "next_agent_requested": "kilocode",
+  "next_task_suggested": "editor-viewport",
+  "summary": "Implemented EditorCommand API with create/update/delete.",
+  "branch": "feat/editor-command-api"
+}
+```
+
+A task_complete with no `payload.handoff_note` is treated as incomplete by
+the orchestrator and will not transition the board task to `Done`. The
+`readHandoffNote(root, taskId)` helper in `src/orchestrator/handoff.ts`
+lets the next claimant read the brief before editing a single file.
 
 ---
 

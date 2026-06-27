@@ -34,6 +34,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { COMMS_DIR_REL, SHARED_INBOX_REL } from './orchestratorLoop';
 import type { WorkPackage, VendorKind } from './orchestratorLoop';
+import { handoffNoteTemplate } from './orchestrator/handoff';
 
 const fsPromises = fs.promises;
 
@@ -325,9 +326,20 @@ export function buildPackagePrompt(
   lines.push(`}`);
   lines.push('```');
   lines.push('');
+  lines.push('### Handoff Note (REQUIRED before task_complete)');
+  lines.push('Before writing task_complete, write a handoff note sidecar to:');
+  lines.push(`\`.autoclaw/orchestrator/comms/handoffs/${pkg.taskId}-<first-8-chars-of-your-session-id>.json\``);
+  lines.push('Then include `"handoff_note": "<relative path to the sidecar>"` in the task_complete payload.');
+  lines.push('This is how you prevent peer agents racing on the files you just touched.');
+  lines.push('Fill in ALL fields. Use the template below:');
+  lines.push('');
+  lines.push('```json');
+  lines.push(handoffNoteTemplate(pkg.taskId, ctx.agentId, '<your-session-id>'));
+  lines.push('```');
+  lines.push('');
   lines.push('---');
   lines.push('This is the orchestrator\'s nested working loop.');
-  lines.push('No criterion is optional.');
+  lines.push('No criterion is optional. No handoff note = incomplete task.');
   return lines.join('\n');
 }
 
