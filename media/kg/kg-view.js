@@ -50,6 +50,7 @@
   let graphBuilt = false;
   const highlightNodes = new Set();
   const highlightLinks = new Set();
+  const nodeCache = new Map(); // id -> node obj, reused across rebuilds to keep x/y
 
   // ---- dom ----------------------------------------------------------------
   const $ = (id) => document.getElementById(id);
@@ -88,12 +89,9 @@
     return timeMin + (timeMax - timeMin) * asofRatio;
   }
   function presentAt(t, instant) {
-    const created = Date.parse(t.valid_from || t.created_at);
-    if (isFinite(created) && created > instant) return false;
-    if (t.valid_to) {
-      const vt = Date.parse(t.valid_to);
-      if (isFinite(vt) && vt <= instant) return false;
-    }
+    // __c / __vt are precomputed in renderAll so this stays cheap per frame.
+    if (t.__c != null && t.__c > instant) return false;
+    if (t.__vt != null && t.__vt <= instant) return false;
     return true;
   }
 
@@ -165,11 +163,13 @@
       field('ID', t.id) +
       metaHtml + edgesHtml +
       `<div class="kg-detail-actions">` +
+      `<button class="kg-mini" id="kg-copytext">Copy text</button>` +
       `<button class="kg-mini" id="kg-copyid">Copy ID</button>` +
       `<button class="kg-mini" id="kg-focus">Focus in graph</button>` +
       `</div>`;
     el.detail.classList.remove('hidden');
-    el.detail.querySelector('.kg-detail-close').addEventListener('click', () => { selectedId = null; renderDetail(); renderBrowser(); });
+    el.detail.querySelector('.kg-detail-close').addEventListener('click', () => { selectedId = null; renderDetail(); renderBrowser(); if (tab === 'graph') nudgePaint(); });
+    el.detail.querySelector('#kg-copytext').addEventListener('click', () => vscode.postMessage({ command: 'copyText', text: t.text }));
     el.detail.querySelector('#kg-copyid').addEventListener('click', () => vscode.postMessage({ command: 'copyId', id: t.id }));
     el.detail.querySelector('#kg-focus').addEventListener('click', () => focusInGraph(t.id));
     el.detail.querySelectorAll('.kg-edge').forEach((row) =>
@@ -187,7 +187,15 @@
   function buildGraphData() {
     const items = filteredThoughts();
     const present = new Set(items.map((t) => t.id));
-    const nodes = items.map((t) => ({ id: t.id, t }));
+    // Reuse cached node objects so force-graph preserves x/y across filter/search
+    // changes (fresh objects would re-randomize the layout on every keystroke).
+    const nodes = items.map((t) => {
+      const ex = nodeCache.get(t.id);
+      if (ex) { ex.t = t; return ex; }
+      const n = { id: t.id, t };
+      nodeCache.set(t.id, n);
+      return n;
+    });
     const links = [];
     for (const e of raw.edges) {
       if (!showDerived && e.derived) continue;
@@ -357,6 +365,13 @@
   }
   function renderAll() {
     byId = new Map(raw.thoughts.map((t) => [t.id, t]));
+    // Precompute parsed validity timestamps once (presentAt runs per frame).
+    for (const t of raw.thoughts) {
+      const c = Date.parse(t.valid_from || t.created_at);
+      t.__c = isFinite(c) ? c : 0;
+      const vt = t.valid_to ? Date.parse(t.valid_to) : NaN;
+      t.__vt = isFinite(vt) ? vt : null;
+    }
     const times = raw.thoughts.map((t) => Date.parse(t.created_at)).filter(isFinite);
     timeMin = times.length ? Math.min(...times) : 0;
     timeMax = times.length ? Math.max(...times) : 0;

@@ -27,6 +27,9 @@ import type { Edge, Thought } from '../intelligence/kg/types';
 
 /** Singleton — one KG tab at a time; re-invoking reveals the existing one. */
 let panel: vscode.WebviewPanel | undefined;
+/** Watches the KG db so the open viewer refreshes as thoughts are recorded. */
+let watcher: vscode.FileSystemWatcher | undefined;
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Hard cap on thoughts pulled into the viewer (the graph degrades past a few k nodes). */
 const THOUGHT_LIMIT = 2000;
@@ -230,7 +233,7 @@ export function openKgViewPanel(context: vscode.ExtensionContext): void {
   panel.webview.html = renderHtml(panel.webview, context.extensionUri);
 
   panel.webview.onDidReceiveMessage(
-    (msg: { command?: string; id?: string }) => {
+    (msg: { command?: string; id?: string; text?: string }) => {
       switch (msg?.command) {
         case 'ready':
         case 'refresh':
@@ -240,6 +243,13 @@ export function openKgViewPanel(context: vscode.ExtensionContext): void {
           if (typeof msg.id === 'string' && msg.id) {
             void vscode.env.clipboard.writeText(msg.id).then(() =>
               vscode.window.setStatusBarMessage(`Copied thought id: ${msg.id}`, 2500),
+            );
+          }
+          break;
+        case 'copyText':
+          if (typeof msg.text === 'string' && msg.text) {
+            void vscode.env.clipboard.writeText(msg.text).then(() =>
+              vscode.window.setStatusBarMessage('Copied thought text', 2500),
             );
           }
           break;
@@ -254,8 +264,30 @@ export function openKgViewPanel(context: vscode.ExtensionContext): void {
     context.subscriptions,
   );
 
+  // Live refresh: the KG runs WAL, so writes land in kg.db / kg.db-wal. Watch both
+  // and debounce — the orchestrator + /learn record thoughts during normal work,
+  // and an open viewer should reflect them without a manual Refresh click.
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (workspaceFolder) {
+    watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(workspaceFolder, '.autoclaw/kg/kg.db*'),
+    );
+    const onChange = (): void => {
+      if (refreshTimer) { clearTimeout(refreshTimer); }
+      refreshTimer = setTimeout(() => { void refresh(); }, 800);
+    };
+    watcher.onDidChange(onChange, undefined, context.subscriptions);
+    watcher.onDidCreate(onChange, undefined, context.subscriptions);
+    watcher.onDidDelete(onChange, undefined, context.subscriptions);
+    context.subscriptions.push(watcher);
+  }
+
   panel.onDidDispose(
-    () => { panel = undefined; },
+    () => {
+      panel = undefined;
+      if (refreshTimer) { clearTimeout(refreshTimer); refreshTimer = undefined; }
+      if (watcher) { watcher.dispose(); watcher = undefined; }
+    },
     undefined,
     context.subscriptions,
   );
