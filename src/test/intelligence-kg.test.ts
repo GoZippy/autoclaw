@@ -183,6 +183,39 @@ suite('intelligence-kg', function () {
     }
   });
 
+  test('allThoughts lists newest-first and listEdges returns stored relations (viewer)', async function () {
+    const h = openKnowledgeGraph({ dbPath: freshDbPath(), config: noneConfig() });
+    try {
+      const a = await h.kg.recordThought({
+        project: 'p', agent: 'x', kind: 'decision', text: 'older thought',
+        created_at: '2026-01-01T00:00:00.000Z',
+      });
+      const b = await h.kg.recordThought({
+        project: 'p', agent: 'y', kind: 'observation', text: 'newer thought',
+        created_at: '2026-02-01T00:00:00.000Z',
+      });
+      await h.kg.recordRelation(a, 'supersedes', b, { reason: 'test' });
+
+      const all = await h.kg.allThoughts();
+      assert.ok(all.length >= 2, 'allThoughts returns every thought');
+      assert.strictEqual(all[0].id, b, 'newest thought sorts first');
+      assert.ok(all.some((t) => t.id === a) && all.some((t) => t.id === b));
+
+      const capped = await h.kg.allThoughts({ limit: 1 });
+      assert.strictEqual(capped.length, 1, 'limit caps allThoughts');
+
+      const edges = await h.kg.listEdges();
+      assert.strictEqual(edges.length, 1, 'listEdges returns the stored relation');
+      assert.deepStrictEqual(
+        { from: edges[0].from, kind: edges[0].kind, to: edges[0].to },
+        { from: a, kind: 'supersedes', to: b },
+      );
+      assert.strictEqual((edges[0].meta as { reason?: string }).reason, 'test', 'edge meta round-trips');
+    } finally {
+      h.close();
+    }
+  });
+
   test('degraded handle no-ops without throwing', async function () {
     // A bogus driver order makes every candidate fail -> degraded path. We
     // simulate by pointing at an unwritable path is unreliable cross-platform,

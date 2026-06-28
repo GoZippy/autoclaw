@@ -603,6 +603,21 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
   const agg = aggregate(sessions, coordination);
   const iso = new Date().toISOString();
 
+  // (KG) Promote this run's mined learnings — successful workflow patterns and
+  // review findings — into the graph so kg.search + the viewer surface durable,
+  // queryable knowledge from data we already compute, not just consensus
+  // decisions. Best-effort, deduped, never blocks /learn.
+  try {
+    const { recordLearningsToKg } = await import('./kgRecord');
+    await recordLearningsToKg(
+      workspaceRoot,
+      { workflows: agg.workflows.successful, findings: coordination?.findings },
+      { log },
+    );
+  } catch (err) {
+    log(`learn: KG learning enrichment failed (${(err as Error).message})`);
+  }
+
   // (R7.1) Everything below is already redacted via clean()/firstMeaningfulLine().
   const distilled = buildDistilledInsight(agg, sessions.length, focus);
 
