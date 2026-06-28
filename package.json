@@ -335,6 +335,10 @@
         "title": "AutoClaw: KG — Open Dashboard"
       },
       {
+        "command": "autoclaw.kg.browse",
+        "title": "AutoClaw: Knowledge Graph — Browse & Visualize"
+      },
+      {
         "command": "autoclaw.program.create",
         "title": "AutoClaw: Create Program… (cross-repo registry)"
       },

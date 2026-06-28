@@ -17,6 +17,7 @@
 import { randomUUID } from "node:crypto";
 import type { SqliteDriver } from "../vector/sqliteDriver";
 import type {
+  Edge,
   KgCapabilities,
   KnowledgeGraph,
   SearchOpts,
@@ -236,6 +237,29 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
   }
   async since(iso: string): Promise<Thought[]> {
     return this.filterStream({ since: iso });
+  }
+
+  async allThoughts(opts: { limit?: number } = {}): Promise<Thought[]> {
+    const limit = clampInt(opts.limit ?? 2000, 1, 20000);
+    const rows = this.driver
+      .prepare(`SELECT * FROM thoughts ORDER BY created_at DESC LIMIT ?`)
+      .all(limit) as ThoughtRow[];
+    return rows.map(rowToThought);
+  }
+
+  async listEdges(opts: { limit?: number } = {}): Promise<Edge[]> {
+    const limit = clampInt(opts.limit ?? 5000, 1, 50000);
+    const rows = this.driver
+      .prepare(
+        `SELECT from_id, kind, to_id, meta_json FROM edges ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(limit) as { from_id: string; kind: string; to_id: string; meta_json: string | null }[];
+    return rows.map((r) => ({
+      from: r.from_id,
+      kind: r.kind,
+      to: r.to_id,
+      ...(r.meta_json ? { meta: safeParse(r.meta_json) } : {}),
+    }));
   }
 
   async *export(

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="%%CSP%%" />
+  <link rel="stylesheet" href="%%CSS_URI%%" />
+  <title>AutoClaw Knowledge Graph</title>
+</head>
+<body>
+  <header id="kg-header">
+    <div class="kg-title">
+      <span class="kg-logo" aria-hidden="true">◇</span>
+      <h1>Knowledge Graph</h1>
+      <button id="kg-health" type="button" class="kg-health" title="Knowledge Graph health — click to run a health check"></button>
+    </div>
+    <div class="kg-header-actions">
+      <span id="kg-stats" class="kg-stats"></span>
+      <button id="kg-refresh" class="kg-btn" type="button" title="Reload from the database">↻ Refresh</button>
+    </div>
+  </header>
+
+  <nav id="kg-tabs" role="tablist">
+    <button class="kg-tab active" data-tab="browser" type="button" role="tab" aria-selected="true">☰ Browser</button>
+    <button class="kg-tab" data-tab="graph" type="button" role="tab" aria-selected="false">◍ Graph</button>
+  </nav>
+
+  <div id="kg-filters">
+    <input id="kg-search" type="search" placeholder="Search text, agent, task, kind…" autocomplete="off" spellcheck="false" />
+    <select id="kg-filter-kind" title="Filter by kind"><option value="">All kinds</option></select>
+    <select id="kg-filter-agent" title="Filter by agent"><option value="">All agents</option></select>
+    <select id="kg-filter-project" title="Filter by project"><option value="">All projects</option></select>
+    <label class="kg-check"><input type="checkbox" id="kg-derived" checked /> derived edges</label>
+    <span id="kg-filter-count" class="kg-muted"></span>
+  </div>
+
+  <main id="kg-main">
+    <section id="kg-browser" class="kg-pane active" role="tabpanel">
+      <div id="kg-list" class="kg-list"><p class="empty">Loading…</p></div>
+    </section>
+
+    <section id="kg-graph-pane" class="kg-pane" role="tabpanel">
+      <div id="kg-graph-controls">
+        <label class="kg-ctl">Color by
+          <select id="kg-colorby">
+            <option value="kind">kind</option>
+            <option value="agent">agent</option>
+            <option value="project">project</option>
+          </select>
+        </label>
+        <label class="kg-ctl kg-asof-wrap" title="Bi-temporal as-of: fade thoughts not valid at this instant">As of
+          <input type="range" id="kg-asof" min="0" max="100" value="100" />
+          <span id="kg-asof-label" class="kg-muted">now</span>
+          <button id="kg-asof-reset" class="kg-mini" type="button" title="Reset to now">⟲</button>
+        </label>
+        <button id="kg-fit" class="kg-mini" type="button" title="Zoom to fit">⊡ Fit</button>
+      </div>
+      <div id="kg-graph"></div>
+      <div id="kg-legend" class="kg-legend"></div>
+    </section>
+  </main>
+
+  <aside id="kg-detail" class="kg-detail hidden" aria-live="polite"></aside>
+
+  <script nonce="%%NONCE%%" src="%%FORCEGRAPH_URI%%"></script>
+  <script nonce="%%NONCE%%" src="%%JS_URI%%"></script>
+</body>
+</html>

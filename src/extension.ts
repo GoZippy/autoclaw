@@ -77,6 +77,7 @@ import { startIndexWatchService, loadConfig as loadIntelligenceConfig, type Inde
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerIntelligenceHealthSurface } from './intelligence/healthSurface';
 import { registerManagerPanel } from './manager/managerPanel';
+import { registerKgViewPanel } from './kg/kgViewPanel';
 import { registerSupport } from './support/support';
 import { registerLicensing } from './licensing/licensing';
 import { GateService } from './licensing/gateService';
@@ -1301,6 +1302,10 @@ export function activate(context: vscode.ExtensionContext) {
   // Full-tab Manager Surface (autoclaw.manager.open) — roomy single pane for
   // overseeing the fleet. Command registration only; no I/O until opened.
   registerManagerPanel(context);
+
+  // Knowledge Graph viewer (autoclaw.kg.browse) — browse + visualize the
+  // in-process KG (thoughts + relations). Command registration only.
+  registerKgViewPanel(context);
 
   // First-run welcome with IDE-specific guidance
   showWelcomeIfNeeded(context);
@@ -4304,14 +4309,18 @@ async function kgRestartCommand(extensionPath: string): Promise<void> {
 }
 
 /**
- * RV-3: explicit `autoclaw.kg.openDashboard` — focus the AutoClaw panel where
- * the KG (kg:) fabric-health badge lives, then surface a live health line so
- * the user can see daemon status. There is no separate KG webview; the unified
- * dashboard is the surface.
+ * `autoclaw.kg.openDashboard` — open the Knowledge Graph viewer (browse +
+ * visualize). This is the surface the `kg:` fabric-health chip dispatches to.
+ * Falls back to focusing the unified dashboard + a health line if the viewer
+ * can't open (e.g. headless).
  */
 async function kgOpenDashboardCommand(): Promise<void> {
-  try { await vscode.commands.executeCommand('kdreamDashboard.focus'); } catch { /* panel may be unavailable in headless */ }
-  await kgHealthCheckCommand();
+  try {
+    await vscode.commands.executeCommand('autoclaw.kg.browse');
+  } catch {
+    try { await vscode.commands.executeCommand('kdreamDashboard.focus'); } catch { /* panel may be unavailable in headless */ }
+    await kgHealthCheckCommand();
+  }
 }
 
 async function bridgeAddAgentCommand(): Promise<void> {
