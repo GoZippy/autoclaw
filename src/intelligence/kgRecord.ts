@@ -18,11 +18,24 @@
 
 import { LogFn } from './config';
 import { resolveProjectKey } from './project';
-import type { CoordinationSignals } from './coordinationSignals';
+import type { CoordinationSignals, ReviewFinding } from './coordinationSignals';
+import { workflowPatternLabel, type WorkflowPattern } from './workflows';
 import type { KnowledgeGraph } from './kg/types';
 
 /** Agent the orchestrator records coordination facts under. */
 const COORD_AGENT = 'orchestrator';
+/** Agent the `/learn` pipeline records distilled learnings under. */
+const LEARN_AGENT = 'learn';
+
+/** Deterministic short hash for stable dedup ids (FNV-1a, base36). */
+function hashId(s: string): string {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h.toString(36);
+}
 
 /** Injectable seams (tests). */
 export interface RecordCoordinationDeps {
@@ -200,5 +213,98 @@ export async function recordOrchestrationEventsToKg(
     }
   }
   log(`kg-record: recorded ${recorded} ${list[0].type} event(s), skipped ${skipped}`);
+  return { recorded, skipped };
+}
+
+/** Facts mined by a `/learn` run that are worth promoting into the graph. */
+export interface LearningFacts {
+  /** Successful workflow patterns (best first). */
+  workflows?: WorkflowPattern[];
+  /** Review findings harvested from the comms tree. */
+  findings?: ReviewFinding[];
+}
+
+/**
+ * Promote a `/learn` run's mined learnings — successful workflow patterns and
+ * review findings — into the KG as durable `finding` thoughts, so kg.search and
+ * the viewer surface real, queryable knowledge beyond consensus decisions. This
+ * is how the graph gets fed from intelligence we ALREADY compute each `/learn`.
+ *
+ * Same contract as {@link recordCoordinationToKg}: degrade-safe (missing/degraded
+ * KG records nothing), deterministic ids (a pattern/finding already recorded in a
+ * prior run is silently skipped), never throws, never blocks the caller.
+ */
+export async function recordLearningsToKg(
+  workspaceRoot: string,
+  facts: LearningFacts,
+  opts: { log?: LogFn; deps?: RecordCoordinationDeps; maxWorkflows?: number; maxFindings?: number } = {},
+): Promise<RecordCoordinationResult> {
+  const log = opts.log ?? noop;
+  const workflows = (facts.workflows ?? []).slice(0, opts.maxWorkflows ?? 8);
+  const findings = (facts.findings ?? []).slice(0, opts.maxFindings ?? 20);
+  if (workflows.length === 0 && findings.length === 0) {
+    return { recorded: 0, skipped: 0 };
+  }
+
+  const project = resolveProjectKey(workspaceRoot);
+
+  let kg: KnowledgeGraph;
+  try {
+    if (opts.deps?.getKg) {
+      kg = await opts.deps.getKg();
+    } else {
+      const { getKnowledgeGraph } = await import('./kg/service');
+      kg = getKnowledgeGraph({ workspaceRoot }).kg;
+    }
+  } catch (err) {
+    log(`kg-record: KG unavailable — ${(err as Error).message}`);
+    return { recorded: 0, skipped: workflows.length + findings.length };
+  }
+
+  let recorded = 0;
+  let skipped = 0;
+
+  for (const w of workflows) {
+    if (!w || !Array.isArray(w.sequence) || w.sequence.length === 0) { skipped++; continue; }
+    try {
+      await kg.recordThought({
+        id: `workflow:${project}:${hashId(w.sequence.join('|'))}`,
+        project,
+        agent: LEARN_AGENT,
+        kind: 'finding',
+        text: workflowPatternLabel(w),
+        meta: {
+          source: 'workflow',
+          shipRate: w.shipRate,
+          shipped: w.shipped,
+          discarded: w.discarded,
+          total: w.total,
+          sequence: w.sequence,
+        },
+      });
+      recorded++;
+    } catch {
+      skipped++; // duplicate id (already recorded) or transient — best-effort
+    }
+  }
+
+  for (const f of findings) {
+    if (!f || typeof f.description !== 'string' || f.description.trim() === '') { skipped++; continue; }
+    try {
+      await kg.recordThought({
+        id: `finding:${project}:${hashId((f.from ?? '') + '|' + f.description)}`,
+        project,
+        agent: f.from || LEARN_AGENT,
+        kind: 'finding',
+        text: f.description,
+        meta: { source: 'review', from: f.from, severity: f.severity },
+      });
+      recorded++;
+    } catch {
+      skipped++;
+    }
+  }
+
+  log(`kg-record: recorded ${recorded} learning fact(s), skipped ${skipped}`);
   return { recorded, skipped };
 }

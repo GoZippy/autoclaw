@@ -205,6 +205,15 @@ When your heartbeat goes stale, the orchestrator's \`/orchestrate revive
 ${agentId}\` renders that template (with your last task + stall duration)
 and delivers it via the ${kp.loop_mechanism} path.
 
+## Shared memory — the Knowledge Graph
+This project keeps a durable, queryable Knowledge Graph of decisions, findings,
+and learned patterns (fed by the orchestrator, \`/learn\`, and the \`kg.record\`
+MCP tool). Before re-deriving something, recall what the team already knows:
+- \`kg.search\` (MCP tool) — semantic recall of past decisions/findings/patterns.
+- \`kg.traverse\` (MCP tool) — walk relations out from a recalled thought.
+- Humans browse + visualize it via the **AutoClaw: Knowledge Graph — Browse &
+  Visualize** command (\`autoclaw.kg.browse\`).
+
 ## Hard rules
 - Never edit outside your claimed scope.
 - Never re-process a message already in processed/.

@@ -16,7 +16,7 @@
 
 import * as assert from 'assert';
 
-import { recordCoordinationToKg, recordOrchestrationEventsToKg, OrchestrationEvent } from '../intelligence/kgRecord';
+import { recordCoordinationToKg, recordOrchestrationEventsToKg, recordLearningsToKg, OrchestrationEvent } from '../intelligence/kgRecord';
 import { CoordinationSignals } from '../intelligence/coordinationSignals';
 import type { KnowledgeGraph } from '../intelligence/kg/types';
 
@@ -179,6 +179,54 @@ suite('intelligence-kgrecord', function () {
         await recordOrchestrationEventsToKg(WS, [], { deps: { getKg: () => f.kg } }),
         { recorded: 0, skipped: 0 },
       );
+    });
+  });
+
+  suite('recordLearningsToKg', () => {
+    function workflow(seq: string[], shipped: number, discarded: number): any {
+      const total = shipped + discarded;
+      return { sequence: seq, label: seq.join(' → '), shipped, discarded, unknown: 0, total, shipRate: total ? shipped / (shipped + discarded) : 0 };
+    }
+
+    test('records workflow patterns + review findings as finding thoughts', async () => {
+      const f = fakeKg();
+      const res = await recordLearningsToKg(WS, {
+        workflows: [workflow(['Read', 'Edit', 'Bash'], 6, 1)],
+        findings: [{ from: 'kilocode', severity: 'high', description: 'inbox watcher race on same-second writes' }],
+      }, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(res.recorded, 2);
+      assert.strictEqual(f.recorded.length, 2);
+
+      const wf = f.recorded.find((t) => t.id!.startsWith('workflow:'))!;
+      assert.strictEqual(wf.kind, 'finding');
+      assert.ok(wf.text.includes('Read → Edit → Bash') && wf.text.includes('ships'), 'reuses workflowPatternLabel');
+      assert.strictEqual((wf.meta as any).source, 'workflow');
+
+      const find = f.recorded.find((t) => t.id!.startsWith('finding:'))!;
+      assert.strictEqual(find.kind, 'finding');
+      assert.strictEqual(find.text, 'inbox watcher race on same-second writes');
+      assert.strictEqual((find.meta as any).severity, 'high');
+      assert.strictEqual(find.agent, 'kilocode');
+    });
+
+    test('idempotent on re-run', async () => {
+      const f = fakeKg();
+      const facts = { workflows: [workflow(['Read', 'Edit'], 3, 0)], findings: [{ from: 'x', severity: 'low', description: 'note' }] };
+      const first = await recordLearningsToKg(WS, facts, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(first.recorded, 2);
+      const second = await recordLearningsToKg(WS, facts, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(second.recorded, 0, 'duplicate ids skipped on re-run');
+      assert.strictEqual(second.skipped, 2);
+    });
+
+    test('empty learnings record nothing; a failing KG never throws', async () => {
+      const f = fakeKg();
+      assert.deepStrictEqual(await recordLearningsToKg(WS, {}, { deps: { getKg: () => f.kg } }), { recorded: 0, skipped: 0 });
+      const res = await recordLearningsToKg(WS, { findings: [{ from: 'x', severity: 'low', description: 'd' }] }, {
+        deps: { getKg: () => { throw new Error('no driver'); } },
+      });
+      assert.strictEqual(res.recorded, 0);
+      assert.strictEqual(res.skipped, 1);
     });
   });
 });
