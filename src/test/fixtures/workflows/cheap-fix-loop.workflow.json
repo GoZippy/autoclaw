@@ -1,0 +1,285 @@
+{
+  "schema": "autoclaw.workflow.v1",
+  "id": "cheap-fix-loop",
+  "name": "Cheap Fix Loop",
+  "description": "Local-first fix-failing-test loop. Tries a cheap local model first, runs the test gate, diagnoses the failure, retrieves context, retries twice, then escalates to a stronger model only if the same failure type persists. WL-0.5 fixture.",
+  "edition": "core",
+  "version": "1.0.0",
+  "contract": {
+    "inputs": [
+      { "id": "task", "type": "string", "required": true, "description": "Free-text task description (e.g. 'fix failing test')" },
+      { "id": "targetFile", "type": "string", "required": true, "description": "Path to the failing test or source file" },
+      { "id": "testCommand", "type": "string", "required": true, "description": "Command that runs the failing test" }
+    ],
+    "outputs": [
+      { "id": "patch", "type": "artifact", "description": "The patch applied to the target file" },
+      { "id": "testResult", "type": "artifact", "description": "Final test pass/fail + failure type" },
+      { "id": "reviewPacket", "type": "artifact", "description": "Review packet for the fix attempt" }
+    ],
+    "invariants": [
+      { "id": "no-src-rewrite", "description": "Only the target file and its test may be edited", "noTouchGlobs": ["src/**", "!src/**/targetFile"] }
+    ],
+    "requiredTools": [
+      { "id": "test-runner", "name": "project test runner", "required": true },
+      { "id": "file-editor", "name": "file editor", "required": true }
+    ],
+    "requiredModels": [
+      { "id": "cheap-model", "capabilities": ["tools", "json"], "locality": "local" },
+      { "id": "strong-model", "capabilities": ["tools", "json", "long-context"], "locality": "lan" }
+    ],
+    "requiredPermissions": [
+      { "id": "exec-test", "kind": "execute", "scope": "testCommand" },
+      { "id": "write-target", "kind": "write", "scope": "targetFile" }
+    ],
+    "successCriteria": [
+      { "id": "tests-pass", "description": "Test gate passes after patch", "gateNodeId": "test-gate" }
+    ],
+    "privacy": [
+      { "id": "no-cloud", "dataSensitivity": "project-private", "allowedLocalities": ["local", "lan"] }
+    ],
+    "recovery": { "onFailure": "route", "maxAttempts": 3 }
+  },
+  "variables": {
+    "taskId": { "type": "string", "scope": "workflow", "description": "Unique task id" },
+    "branch": { "type": "string", "scope": "workflow", "description": "Branch to patch" },
+    "budgetRemaining": { "type": "number", "scope": "run", "description": "Cents remaining in budget" },
+    "failureType": { "type": "string", "scope": "node", "description": "Last diagnosed failure type" },
+    "selectedModel": { "type": "string", "scope": "node", "description": "Model selected for current attempt" }
+  },
+  "policies": {
+    "budget": {
+      "maxCostCents": 50,
+      "maxTokens": 200000,
+      "maxWallTimeSeconds": 600,
+      "maxIterations": 4
+    },
+    "routingProfile": "cheap",
+    "allowWrites": true,
+    "allowNetwork": false,
+    "requireHumanApproval": false,
+    "maxIterations": 4,
+    "maxDepth": 1,
+    "maxWallTimeSeconds": 600,
+    "premiumModelPolicy": {
+      "allowedProviders": ["ollama-local", "lm-studio-lan"],
+      "maxCostCents": 30,
+      "minAttemptsBeforeEscalation": 2,
+      "allowedFailureTriggers": ["test_failure", "compile_error", "tool_format_invalid"],
+      "requiresHumanApproval": false
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "type": "input",
+      "kind": "task",
+      "label": "Failing test task",
+      "config": {
+        "task": "Fix the failing test described by ${{task}}",
+        "targetFile": "${{targetFile}}",
+        "testCommand": "${{testCommand}}"
+      },
+      "ports": {
+        "outputs": [
+          { "id": "task", "type": "string", "label": "Task" },
+          { "id": "targetFile", "type": "string", "label": "Target file" },
+          { "id": "testCommand", "type": "string", "label": "Test command" }
+        ]
+      },
+      "intent": "debug"
+    },
+    {
+      "id": "context-pack",
+      "type": "context",
+      "kind": "build_context_pack",
+      "label": "Build context pack",
+      "config": {
+        "mode": "normal",
+        "query": "${{task}}",
+        "files": ["${{targetFile}}"],
+        "depth": "shallow"
+      },
+      "ports": {
+        "inputs": [{ "id": "task", "type": "string" }],
+        "outputs": [{ "id": "context", "type": "object", "label": "Context pack" }]
+      },
+      "intent": "research",
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "cheap-dispatch",
+      "type": "agent",
+      "kind": "local_model_call",
+      "label": "Cheap local patch",
+      "config": {
+        "provider": "ollama-local",
+        "model": "qwen2.5:7b",
+        "locality": "local",
+        "intent": "code",
+        "prompt": "Use the context pack and task to propose a minimal patch to the target file. Emit JSON {patch, explanation}.",
+        "inputSchema": { "type": "object", "properties": { "task": {}, "context": {}, "targetFile": {} } }
+      },
+      "ports": {
+        "inputs": [
+          { "id": "task", "type": "string" },
+          { "id": "context", "type": "object" }
+        ],
+        "outputs": [
+          { "id": "patch", "type": "object", "label": "Patch proposal" }
+        ]
+      },
+      "intent": "code",
+      "timeoutSeconds": 120,
+      "retry": { "maxAttempts": 1, "retryOn": ["tool_format_invalid"] }
+    },
+    {
+      "id": "apply-patch",
+      "type": "tool",
+      "kind": "file_editor",
+      "label": "Apply patch",
+      "config": {
+        "action": "apply_patch",
+        "file": "${{targetFile}}",
+        "patch": "${{cheap-dispatch.patch}}"
+      },
+      "ports": {
+        "inputs": [{ "id": "patch", "type": "object" }],
+        "outputs": [{ "id": "applied", "type": "boolean", "label": "Applied" }]
+      },
+      "intent": "code",
+      "timeoutSeconds": 30
+    },
+    {
+      "id": "test-gate",
+      "type": "gate",
+      "kind": "test_command",
+      "label": "Run test gate",
+      "config": {
+        "command": "${{testCommand}}",
+        "criterion": "exit_code == 0",
+        "failureTypeOnFail": "test_failure"
+      },
+      "ports": {
+        "inputs": [{ "id": "applied", "type": "boolean" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean", "label": "Passed" },
+          { "id": "failureType", "type": "string", "label": "Failure type" }
+        ]
+      },
+      "intent": "test",
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "fix-loop",
+      "type": "loop",
+      "kind": "retry",
+      "label": "Fix loop",
+      "config": {
+        "maxIterations": 3,
+        "stopOn": "test-gate.passed == true",
+        "noProgress": "same failureType twice"
+      },
+      "ports": {
+        "inputs": [{ "id": "failureType", "type": "string" }],
+        "outputs": [{ "id": "done", "type": "boolean" }]
+      },
+      "intent": "debug",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "failure-diagnosis",
+      "type": "router",
+      "kind": "failure_router",
+      "label": "Diagnose failure",
+      "config": {
+        "inputs": ["context_missing", "tool_format_invalid", "compile_error", "test_failure", "irreducible_or_needs_human"],
+        "routes": {
+          "context_missing": "context-pack",
+          "tool_format_invalid": "cheap-dispatch",
+          "compile_error": "cheap-dispatch",
+          "test_failure": "cheap-dispatch",
+          "irreducible_or_needs_human": "escalate"
+        }
+      },
+      "ports": {
+        "inputs": [{ "id": "failureType", "type": "string" }],
+        "outputs": [
+          { "id": "retry", "type": "string", "label": "Retry node" },
+          { "id": "escalate", "type": "string", "label": "Escalate" }
+        ]
+      },
+      "intent": "debug"
+    },
+    {
+      "id": "escalate",
+      "type": "agent",
+      "kind": "strong_model_call",
+      "label": "Escalate to stronger model",
+      "config": {
+        "provider": "lm-studio-lan",
+        "model": "qwen2.5:70b",
+        "locality": "lan",
+        "intent": "code",
+        "prompt": "A cheaper model failed after 2 attempts with the same failure type. Produce a corrected patch. Emit JSON {patch, explanation}."
+      },
+      "ports": {
+        "inputs": [
+          { "id": "task", "type": "string" },
+          { "id": "context", "type": "object" }
+        ],
+        "outputs": [{ "id": "patch", "type": "object" }]
+      },
+      "intent": "code",
+      "timeoutSeconds": 300,
+      "retry": { "maxAttempts": 1 }
+    },
+    {
+      "id": "artifact",
+      "type": "artifact",
+      "kind": "review_packet",
+      "label": "Review packet",
+      "config": {
+        "include": ["patch", "testResult", "model", "cost", "attempts"]
+      },
+      "ports": {
+        "inputs": [
+          { "id": "patch", "type": "object" },
+          { "id": "testResult", "type": "object" }
+        ],
+        "outputs": [{ "id": "reviewPacket", "type": "object" }]
+      },
+      "intent": "release"
+    }
+  ],
+  "edges": [
+    { "id": "e1", "type": "data", "from": { "node": "input", "port": "task" }, "to": { "node": "context-pack", "port": "task" } },
+    { "id": "e2", "type": "data", "from": { "node": "input", "port": "targetFile" }, "to": { "node": "cheap-dispatch" } },
+    { "id": "e3", "type": "data", "from": { "node": "context-pack", "port": "context" }, "to": { "node": "cheap-dispatch", "port": "context" } },
+    { "id": "e4", "type": "data", "from": { "node": "cheap-dispatch", "port": "patch" }, "to": { "node": "apply-patch", "port": "patch" } },
+    { "id": "e5", "type": "control", "from": { "node": "apply-patch", "port": "applied" }, "to": { "node": "test-gate", "port": "applied" } },
+    { "id": "e6", "type": "control", "from": { "node": "test-gate", "port": "passed" }, "to": { "node": "artifact", "port": "testResult" }, "condition": { "expression": "${{test-gate.passed}} == true" } },
+    { "id": "e7", "type": "control", "from": { "node": "test-gate", "port": "failureType" }, "to": { "node": "failure-diagnosis", "port": "failureType" }, "condition": { "expression": "${{test-gate.passed}} == false" } },
+    { "id": "e8", "type": "control", "from": { "node": "failure-diagnosis", "port": "retry" }, "to": { "node": "fix-loop", "port": "failureType" } },
+    { "id": "e8b", "type": "control", "from": { "node": "fix-loop", "port": "done" }, "to": { "node": "cheap-dispatch" } },
+    { "id": "e9", "type": "control", "from": { "node": "failure-diagnosis", "port": "escalate" }, "to": { "node": "escalate" } },
+    { "id": "e10", "type": "data", "from": { "node": "escalate", "port": "patch" }, "to": { "node": "artifact", "port": "patch" } },
+    { "id": "e11", "type": "evidence", "from": { "node": "test-gate", "port": "failureType" }, "to": { "node": "failure-diagnosis", "port": "failureType" } }
+  ],
+  "layout": {
+    "input": { "x": 0, "y": 0 },
+    "context-pack": { "x": 200, "y": 0 },
+    "cheap-dispatch": { "x": 400, "y": 0 },
+    "apply-patch": { "x": 600, "y": 0 },
+    "test-gate": { "x": 800, "y": 0 },
+    "failure-diagnosis": { "x": 1000, "y": 0 },
+    "escalate": { "x": 1200, "y": 150 },
+    "artifact": { "x": 1200, "y": -150 }
+  },
+  "metadata": {
+    "createdAt": "2026-06-27T20:24:00.000Z",
+    "updatedAt": "2026-06-27T20:24:00.000Z",
+    "author": "kilocode",
+    "packId": "fix-failing-tests",
+    "tags": ["fix", "test", "loop", "local-first", "escalation"]
+  }
+}

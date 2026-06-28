@@ -71,6 +71,7 @@ import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistry
 import { classifyConsensusActive, type ConsensusActiveEntry } from './orchestrator/consensusActiveScan';
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
+import { registerWorkflowLabCommands } from './workflows/command';
 import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
 import { startIndexWatchService, loadConfig as loadIntelligenceConfig, type IndexWatchHandle } from './intelligence';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
@@ -1276,6 +1277,12 @@ export function activate(context: vscode.ExtensionContext) {
   registerIntelligenceCommands(
     context,
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+  );
+
+  // Register Workflow Lab commands (WL-1.4)
+  registerWorkflowLabCommands(
+    context,
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
   );
 
   // Intelligence metrics dashboard (webview view + refresh command + metrics

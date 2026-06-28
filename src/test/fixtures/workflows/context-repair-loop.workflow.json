@@ -1,0 +1,254 @@
+{
+  "schema": "autoclaw.workflow.v1",
+  "id": "context-repair-loop",
+  "name": "Context Repair Loop",
+  "description": "Detects noisy / missing / too-broad context and rewrites, decomposes, or focuses the query before re-dispatching to an agent. Mirrors the Skill-RAG failure-aware retrieval pattern. WL-0.5 fixture.",
+  "edition": "core",
+  "version": "1.0.0",
+  "contract": {
+    "inputs": [
+      { "id": "task", "type": "string", "required": true, "description": "Task that failed due to context" },
+      { "id": "originalQuery", "type": "string", "required": true, "description": "The query that produced bad context" },
+      { "id": "failureType", "type": "string", "required": true, "description": "One of context_missing, context_noisy, query_too_broad" }
+    ],
+    "outputs": [
+      { "id": "queryPlan", "type": "artifact", "description": "Query plan artifact" },
+      { "id": "repairedContext", "type": "artifact", "description": "Refreshed context pack" },
+      { "id": "dispatchReady", "type": "boolean", "description": "Whether the context is good enough to dispatch" }
+    ],
+    "invariants": [
+      { "id": "no-direct-code", "description": "This workflow never edits code; it only rewrites queries and re-dispatches" }
+    ],
+    "requiredTools": [
+      { "id": "context-pack-builder", "name": "context pack builder", "required": true },
+      { "id": "query-diagnostic", "name": "query diagnostic", "required": true }
+    ],
+    "requiredModels": [
+      { "id": "router-model", "capabilities": ["tools", "json"], "locality": "local" }
+    ],
+    "requiredPermissions": [
+      { "id": "read-code", "kind": "read", "scope": "src/**" }
+    ],
+    "successCriteria": [
+      { "id": "context-sufficient", "description": "Context pack passes sufficiency gate", "gateNodeId": "sufficiency-gate" }
+    ],
+    "recovery": { "onFailure": "route", "maxAttempts": 4 }
+  },
+  "variables": {
+    "retrievalRounds": { "type": "number", "scope": "run", "description": "Rounds of retrieval attempted" },
+    "topKUnchanged": { "type": "number", "scope": "node", "description": "Top-K results unchanged across retries" }
+  },
+  "policies": {
+    "budget": {
+      "maxCostCents": 10,
+      "maxTokens": 50000,
+      "maxWallTimeSeconds": 300,
+      "maxIterations": 4
+    },
+    "routingProfile": "local-only",
+    "allowWrites": false,
+    "allowNetwork": false,
+    "requireHumanApproval": false,
+    "maxIterations": 4,
+    "maxWallTimeSeconds": 300
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "type": "input",
+      "kind": "failure_report",
+      "label": "Failed context report",
+      "config": {
+        "task": "${{task}}",
+        "originalQuery": "${{originalQuery}}",
+        "failureType": "${{failureType}}"
+      },
+      "ports": {
+        "outputs": [
+          { "id": "task", "type": "string" },
+          { "id": "originalQuery", "type": "string" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "debug"
+    },
+    {
+      "id": "diagnose",
+      "type": "router",
+      "kind": "failure_router",
+      "label": "Diagnose context failure",
+      "config": {
+        "routes": {
+          "context_missing": "focus",
+          "context_noisy": "rewrite",
+          "query_too_broad": "decompose"
+        }
+      },
+      "ports": {
+        "inputs": [{ "id": "failureType", "type": "string" }],
+        "outputs": [
+          { "id": "rewrite", "type": "string" },
+          { "id": "decompose", "type": "string" },
+          { "id": "focus", "type": "string" }
+        ]
+      },
+      "intent": "research"
+    },
+    {
+      "id": "rewrite",
+      "type": "context",
+      "kind": "query_rewrite",
+      "label": "Rewrite query",
+      "config": {
+        "mode": "rewrite",
+        "originalQuery": "${{originalQuery}}",
+        "strategy": "narrow-and-disambiguate"
+      },
+      "ports": {
+        "inputs": [{ "id": "originalQuery", "type": "string" }],
+        "outputs": [{ "id": "query", "type": "string" }]
+      },
+      "intent": "research",
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "decompose",
+      "type": "context",
+      "kind": "query_decompose",
+      "label": "Decompose query",
+      "config": {
+        "mode": "decompose",
+        "originalQuery": "${{originalQuery}}",
+        "maxSubqueries": 3
+      },
+      "ports": {
+        "inputs": [{ "id": "originalQuery", "type": "string" }],
+        "outputs": [{ "id": "query", "type": "string" }]
+      },
+      "intent": "research",
+      "timeoutSeconds": 90
+    },
+    {
+      "id": "focus",
+      "type": "context",
+      "kind": "query_focus",
+      "label": "Focus evidence",
+      "config": {
+        "mode": "focus",
+        "originalQuery": "${{originalQuery}}",
+        "evidenceGaps": ["symbolNotFound", "fileNotRetrieved"]
+      },
+      "ports": {
+        "inputs": [{ "id": "originalQuery", "type": "string" }],
+        "outputs": [{ "id": "query", "type": "string" }]
+      },
+      "intent": "research",
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "retrieve",
+      "type": "context",
+      "kind": "build_context_pack",
+      "label": "Re-retrieve context",
+      "config": {
+        "mode": "normal",
+        "query": "${{query}}",
+        "topK": 5
+      },
+      "ports": {
+        "inputs": [{ "id": "query", "type": "string" }],
+        "outputs": [
+          { "id": "context", "type": "object" },
+          { "id": "queryPlan", "type": "object" }
+        ]
+      },
+      "intent": "research",
+      "timeoutSeconds": 90
+    },
+    {
+      "id": "sufficiency-gate",
+      "type": "gate",
+      "kind": "context_sufficiency",
+      "label": "Context sufficiency gate",
+      "config": {
+        "criterion": "hits >= 3 && topKUnchanged == 0",
+        "failureTypeOnFail": "context_noisy"
+      },
+      "ports": {
+        "inputs": [{ "id": "context", "type": "object" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "test"
+    },
+    {
+      "id": "repair-loop",
+      "type": "loop",
+      "kind": "retry",
+      "label": "Repair loop",
+      "config": {
+        "maxIterations": 4,
+        "stopOn": "sufficiency-gate.passed == true",
+        "noProgress": "topKUnchanged > 1"
+      },
+      "ports": {
+        "inputs": [
+          { "id": "failureType", "type": "string" },
+          { "id": "context", "type": "object" }
+        ],
+        "outputs": [{ "id": "done", "type": "boolean" }]
+      },
+      "intent": "research",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "exit",
+      "type": "control",
+      "kind": "halt",
+      "label": "Exit loop",
+      "config": {
+        "reason": "context repair budget exhausted",
+        "stopReason": "no_progress"
+      },
+      "ports": {
+        "inputs": [{ "id": "failureType", "type": "string" }],
+        "outputs": []
+      },
+      "intent": "coordination"
+    }
+  ],
+  "edges": [
+    { "id": "e1", "type": "data", "from": { "node": "input", "port": "task" }, "to": { "node": "diagnose" } },
+    { "id": "e2", "type": "data", "from": { "node": "input", "port": "failureType" }, "to": { "node": "diagnose", "port": "failureType" } },
+    { "id": "e3", "type": "control", "from": { "node": "diagnose", "port": "rewrite" }, "to": { "node": "rewrite", "port": "originalQuery" } },
+    { "id": "e4", "type": "control", "from": { "node": "diagnose", "port": "decompose" }, "to": { "node": "decompose", "port": "originalQuery" } },
+    { "id": "e5", "type": "control", "from": { "node": "diagnose", "port": "focus" }, "to": { "node": "focus", "port": "originalQuery" } },
+    { "id": "e6", "type": "data", "from": { "node": "rewrite", "port": "query" }, "to": { "node": "retrieve", "port": "query" } },
+    { "id": "e7", "type": "data", "from": { "node": "decompose", "port": "query" }, "to": { "node": "retrieve", "port": "query" } },
+    { "id": "e8", "type": "data", "from": { "node": "focus", "port": "query" }, "to": { "node": "retrieve", "port": "query" } },
+    { "id": "e9", "type": "control", "from": { "node": "retrieve", "port": "context" }, "to": { "node": "repair-loop", "port": "context" } },
+    { "id": "e9b", "type": "control", "from": { "node": "repair-loop", "port": "done" }, "to": { "node": "sufficiency-gate", "port": "context" } },
+    { "id": "e10", "type": "control", "from": { "node": "sufficiency-gate", "port": "passed" }, "to": { "node": "exit" }, "condition": { "expression": "${{sufficiency-gate.passed}} == true" } },
+    { "id": "e11", "type": "control", "from": { "node": "sufficiency-gate", "port": "failureType" }, "to": { "node": "diagnose", "port": "failureType" }, "condition": { "expression": "${{sufficiency-gate.passed}} == false" } },
+    { "id": "e12", "type": "evidence", "from": { "node": "sufficiency-gate", "port": "failureType" }, "to": { "node": "diagnose", "port": "failureType" } }
+  ],
+  "layout": {
+    "input": { "x": 0, "y": 0 },
+    "diagnose": { "x": 200, "y": 0 },
+    "rewrite": { "x": 400, "y": -150 },
+    "decompose": { "x": 400, "y": 0 },
+    "focus": { "x": 400, "y": 150 },
+    "retrieve": { "x": 650, "y": 0 },
+    "sufficiency-gate": { "x": 850, "y": 0 },
+    "exit": { "x": 1050, "y": 0 }
+  },
+  "metadata": {
+    "createdAt": "2026-06-27T20:24:00.000Z",
+    "updatedAt": "2026-06-27T20:24:00.000Z",
+    "author": "kilocode",
+    "packId": "context-repair",
+    "tags": ["context", "repair", "loop", "failure-aware", "rag"]
+  }
+}

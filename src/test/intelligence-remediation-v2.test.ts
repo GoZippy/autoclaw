@@ -18,7 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { indexCodebase, GitRunner } from '../intelligence/ragCode';
+import { indexCodebase, retrieveCode, GitRunner } from '../intelligence/ragCode';
 import { learnFromSessions } from '../intelligence/learn';
 import { initVectorDB } from '../intelligence/vector';
 import { getNoneEmbedding } from '../intelligence/embeddings';
@@ -352,6 +352,77 @@ suite('intelligence-remediation-v2', function () {
         gitRunner: stubGit(() => ''),
       });
       assert.strictEqual(after.staleIndex, false, 'stale signal stays cleared');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Read paths must NOT flip the recorded embedding model (the never-ending
+  // "embedding model changed → re-run /index-code --force" loop). A retrieve /
+  // RAG open used to stamp the raw `auto` SEED model onto the store, which a
+  // subsequent index flips back, ad infinitum. retrieveCode now adopts the
+  // indexer's PINNED identity, so a read leaves the store untouched.
+  // -------------------------------------------------------------------------
+
+  suite('read paths do not flip the embedding model (flap-loop regression)', function () {
+    test('a retrieve under an unresolved `auto` config honors the pin and never re-raises stale', async function () {
+      const ws = freshDir('ws-read-flap');
+      writeFile(ws, 'mod.ts', 'export const FLAPTOKEN = 1;');
+      const paths = intelligencePaths(ws);
+
+      // Index the way the real indexer does: the explicit model becomes the
+      // store's recorded identity (provider 'none' keeps it hermetic; the model
+      // NAME is what the model-change guard compares).
+      const indexed = await indexCodebase({
+        workspaceRoot: ws,
+        config: ragConfig('indexer-model'),
+        gitRunner: stubGit(() => ''),
+      });
+      assert.strictEqual(indexed.staleIndex, false, 'fresh index is not stale');
+
+      // Pin the resolver's choice to the SAME identity the indexer used — this is
+      // what resolveEmbeddingConfig persists for a real router/ollama provider.
+      fs.mkdirSync(paths.vectorDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(paths.vectorDir, 'embedding-resolved.json'),
+        JSON.stringify({
+          provider: 'ollama',
+          model: 'indexer-model',
+          dimension: DIM,
+          ollamaHost: 'http://127.0.0.1:1',
+          resolvedAt: '',
+        }),
+      );
+
+      // A read with the RAW `auto` config — provider 'auto', a seed model that
+      // DIFFERS from the store (exactly what mcp/tools.ts + contextPack pass with
+      // no resolution). Pre-fix this stamped the seed onto the store's meta
+      // `model` and raised stale; the fix makes retrieveCode adopt the pinned
+      // identity synchronously (dead host proves no network probe happens).
+      const autoCfg = defaultConfig();
+      autoCfg.embedding = {
+        provider: 'auto',
+        model: 'Xenova/seed-model',
+        dimension: DIM,
+        ollamaHost: 'http://127.0.0.1:1',
+      };
+      autoCfg.search.minSimilarity = -1;
+      await retrieveCode('FLAPTOKEN', { workspaceRoot: ws, config: autoCfg });
+
+      // Reopen with the indexer's identity: the model must be UNCHANGED and the
+      // index must NOT be stale. Pre-fix the read above poisoned it to the seed.
+      const warns: string[] = [];
+      const after = await initVectorDB(
+        paths.dbPath,
+        { model: 'indexer-model', dimension: DIM },
+        (m) => warns.push(m),
+      );
+      assert.strictEqual(after.model, 'indexer-model', 'a read must not rewrite the stored embedding model');
+      assert.strictEqual(after.staleIndex, false, 'a read must not raise the stale-index signal');
+      assert.ok(
+        !warns.some((w) => /model changed/i.test(w)),
+        `a read poisoned the store with the seed model: ${JSON.stringify(warns)}`,
+      );
+      after.close();
     });
   });
 });

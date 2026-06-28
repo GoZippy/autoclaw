@@ -38,6 +38,7 @@ import { intelligencePaths } from './paths';
 import { resolveProjectKey } from './project';
 import { redactSecrets } from './redact';
 import { getEmbedding } from './embeddings';
+import { applyEmbeddingPin } from './embeddingResolve';
 import { initVectorBackend } from './vector';
 import { CodeSearchResult, retrieveCode } from './ragCode';
 import { generateAgentStyle } from './agentStyle';
@@ -179,7 +180,12 @@ function readPreferenceLearnings(vectorDir: string): string[] {
 function defaultDeps(opts: RAGPromptOptions): Required<RAGPromptDeps> {
   const { workspaceRoot } = opts;
   const log: LogFn = opts.log ?? (() => undefined);
-  const config = opts.config ?? loadConfig(workspaceRoot, log);
+  // Honor the indexer's pinned provider on every read open + query embed. The
+  // raw `auto` seed model (`Xenova/...`) would rewrite the store's meta `model`
+  // and re-raise the stale-index signal each time retrieval/the degraded probe
+  // opens the DB — the never-converging "embedding model changed" loop. Sync,
+  // no network probe, no pin mutation (cf. {@link applyEmbeddingPin}).
+  const config = applyEmbeddingPin(opts.config ?? loadConfig(workspaceRoot, log), workspaceRoot);
   const paths = intelligencePaths(workspaceRoot);
   const project = resolveProjectKey(workspaceRoot);
   const maxLearnings = opts.maxLearnings ?? DEFAULT_MAX_LEARNINGS;

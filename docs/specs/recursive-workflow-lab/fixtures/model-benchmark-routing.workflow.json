@@ -1,0 +1,211 @@
+{
+  "schema": "autoclaw.workflow.v1",
+  "id": "model-benchmark-routing",
+  "name": "Model Benchmark Routing",
+  "description": "Runs project-specific probes against connected local/LAN/cloud models, records latency / tokens / success per intent, and emits a routing profile. WL-0.5 fixture.",
+  "edition": "pro",
+  "version": "1.0.0",
+  "contract": {
+    "inputs": [
+      { "id": "intents", "type": "array", "required": false, "description": "Intents to benchmark; defaults to the full taxonomy" },
+      { "id": "quick", "type": "boolean", "required": false, "description": "Quick mode runs fewer probes" }
+    ],
+    "outputs": [
+      { "id": "benchmarkReport", "type": "artifact", "description": "Per-model benchmark report" },
+      { "id": "routingProfile", "type": "object", "description": "Recommended routing profile" }
+    ],
+    "invariants": [
+      { "id": "no-code-write", "description": "Benchmark never edits project files" }
+    ],
+    "requiredTools": [
+      { "id": "benchmark-runner", "name": "benchmark runner", "required": true }
+    ],
+    "requiredModels": [
+      { "id": "any-local", "capabilities": ["tools", "json"], "locality": "local" },
+      { "id": "any-lan", "capabilities": ["tools", "json"], "locality": "lan" }
+    ],
+    "requiredPermissions": [
+      { "id": "read-config", "kind": "read", "scope": ".autoclaw/llm/config.yaml" }
+    ],
+    "successCriteria": [
+      { "id": "benchmark-complete", "description": "All probes attempted", "gateNodeId": "summary-gate" }
+    ],
+    "recovery": { "onFailure": "route", "maxAttempts": 1 }
+  },
+  "variables": {
+    "selectedModel": { "type": "string", "scope": "node", "description": "Model selected for probe" }
+  },
+  "policies": {
+    "budget": {
+      "maxCostCents": 50,
+      "maxTokens": 200000,
+      "maxWallTimeSeconds": 900,
+      "maxIterations": 1
+    },
+    "routingProfile": "balanced",
+    "allowWrites": false,
+    "allowNetwork": true,
+    "requireHumanApproval": false,
+    "maxIterations": 1,
+    "maxWallTimeSeconds": 900
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "type": "input",
+      "kind": "benchmark_trigger",
+      "label": "Benchmark trigger",
+      "config": {
+        "intents": "${{intents}}",
+        "quick": "${{quick}}"
+      },
+      "ports": {
+        "outputs": [
+          { "id": "intents", "type": "array" },
+          { "id": "quick", "type": "boolean" }
+        ]
+      },
+      "intent": "benchmark"
+    },
+    {
+      "id": "discover",
+      "type": "context",
+      "kind": "endpoint_discovery",
+      "label": "Discover endpoints",
+      "config": {
+        "providers": ["ollama-local", "lm-studio-lan", "zippymesh"],
+        "capabilities": ["tools", "json"]
+      },
+      "ports": {
+        "inputs": [],
+        "outputs": [{ "id": "endpoints", "type": "array" }]
+      },
+      "intent": "benchmark",
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "select-model",
+      "type": "router",
+      "kind": "model_selector",
+      "label": "Select model",
+      "config": {
+        "profile": "balanced",
+        "intents": "${{intents}}"
+      },
+      "ports": {
+        "inputs": [
+          { "id": "endpoints", "type": "array" },
+          { "id": "intents", "type": "array" }
+        ],
+        "outputs": [
+          { "id": "selectedModel", "type": "string" },
+          { "id": "selectionReason", "type": "string" }
+        ]
+      },
+      "intent": "benchmark"
+    },
+    {
+      "id": "run-probes",
+      "type": "tool",
+      "kind": "benchmark_runner",
+      "label": "Run probes",
+      "config": {
+        "action": "run_benchmark",
+        "model": "${{select-model.selectedModel}}",
+        "probes": ["json_schema", "tool_call", "code_patch", "review_quality", "summarization"],
+        "output": ".autoclaw/llm/benchmarks.jsonl"
+      },
+      "ports": {
+        "inputs": [
+          { "id": "selectedModel", "type": "string" },
+          { "id": "quick", "type": "boolean" }
+        ],
+        "outputs": [
+          { "id": "rawResults", "type": "array" },
+          { "id": "benchmarkReport", "type": "object" }
+        ]
+      },
+      "intent": "benchmark",
+      "timeoutSeconds": 600
+    },
+    {
+      "id": "summary-gate",
+      "type": "gate",
+      "kind": "acceptance",
+      "label": "Summary gate",
+      "config": {
+        "criterion": "run-probes.rawResults.length > 0",
+        "failureTypeOnFail": "artifact_invalid"
+      },
+      "ports": {
+        "inputs": [{ "id": "rawResults", "type": "array" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "benchmark"
+    },
+    {
+      "id": "route",
+      "type": "router",
+      "kind": "intent_router",
+      "label": "Build routing profile",
+      "config": {
+        "intents": "${{intents}}",
+        "benchmarkReport": "${{run-probes.benchmarkReport}}"
+      },
+      "ports": {
+        "inputs": [{ "id": "benchmarkReport", "type": "object" }],
+        "outputs": [
+          { "id": "routingProfile", "type": "object" },
+          { "id": "selectionReason", "type": "string" }
+        ]
+      },
+      "intent": "benchmark"
+    },
+    {
+      "id": "artifact",
+      "type": "artifact",
+      "kind": "review_packet",
+      "label": "Benchmark review packet",
+      "config": {
+        "include": ["routingProfile", "benchmarkReport", "cost", "duration"]
+      },
+      "ports": {
+        "inputs": [
+          { "id": "routingProfile", "type": "object" },
+          { "id": "benchmarkReport", "type": "object" }
+        ],
+        "outputs": [{ "id": "reviewPacket", "type": "object" }]
+      },
+      "intent": "benchmark"
+    }
+  ],
+  "edges": [
+    { "id": "e1", "type": "data", "from": { "node": "input", "port": "intents" }, "to": { "node": "select-model", "port": "intents" } },
+    { "id": "e2", "type": "data", "from": { "node": "input", "port": "quick" }, "to": { "node": "run-probes", "port": "quick" } },
+    { "id": "e3", "type": "data", "from": { "node": "discover", "port": "endpoints" }, "to": { "node": "select-model", "port": "endpoints" } },
+    { "id": "e4", "type": "data", "from": { "node": "select-model", "port": "selectedModel" }, "to": { "node": "run-probes", "port": "selectedModel" } },
+    { "id": "e5", "type": "data", "from": { "node": "run-probes", "port": "rawResults" }, "to": { "node": "summary-gate", "port": "rawResults" } },
+    { "id": "e6", "type": "data", "from": { "node": "run-probes", "port": "benchmarkReport" }, "to": { "node": "route", "port": "benchmarkReport" } },
+    { "id": "e7", "type": "data", "from": { "node": "route", "port": "routingProfile" }, "to": { "node": "artifact", "port": "routingProfile" } },
+    { "id": "e8", "type": "evidence", "from": { "node": "select-model", "port": "selectionReason" }, "to": { "node": "route" } }
+  ],
+  "layout": {
+    "input": { "x": 0, "y": 0 },
+    "discover": { "x": 200, "y": 0 },
+    "select-model": { "x": 400, "y": 0 },
+    "run-probes": { "x": 600, "y": 0 },
+    "summary-gate": { "x": 800, "y": 0 },
+    "route": { "x": 1000, "y": 0 },
+    "artifact": { "x": 1200, "y": 0 }
+  },
+  "metadata": {
+    "createdAt": "2026-06-27T20:24:00.000Z",
+    "updatedAt": "2026-06-27T20:24:00.000Z",
+    "author": "kilocode",
+    "packId": "model-benchmark",
+    "tags": ["benchmark", "routing", "model", "pro"]
+  }
+}

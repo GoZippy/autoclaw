@@ -246,6 +246,38 @@ export function readEmbeddingPin(workspaceRoot: string): EmbeddingPin | undefine
   return undefined;
 }
 
+/**
+ * Apply a previously-pinned `auto` resolution to `cfg` SYNCHRONOUSLY, with no
+ * network probe and no side effects — the read-path counterpart to
+ * {@link resolveEmbeddingConfig}.
+ *
+ * Read paths (retrieval, RAG-prompt assembly, the degraded probe) must open the
+ * vector store — and embed the query — with the SAME concrete provider the
+ * indexer used. A raw `auto` config carries only DEFAULT_CONFIG's seed model
+ * (`Xenova/nomic-embed-text-v1.5`); opening the store under that seed rewrites
+ * the meta `model` row and falsely raises the stale-index signal. So every read
+ * flip-flops the recorded model against every index/learn run (which resolve to,
+ * e.g., Ollama's `nomic-embed-text:latest`), producing the endless "embedding
+ * model changed — re-run /index-code --force" loop that never converges.
+ *
+ * Honoring the pin makes reads adopt the indexer's identity for free. Falls
+ * through to `cfg` unchanged when the provider is already explicit, or when
+ * nothing has been pinned yet (in which case the store is empty/unindexed and
+ * the seed is harmless). Unlike {@link resolveEmbeddingConfig} this never
+ * probes the network, never writes/clears the pin, and never blocks — safe to
+ * call on the hot retrieval path.
+ */
+export function applyEmbeddingPin(
+  cfg: IntelligenceConfig,
+  workspaceRoot: string,
+): IntelligenceConfig {
+  if (cfg.embedding.provider !== 'auto') {
+    return cfg;
+  }
+  const pin = readEmbeddingPin(workspaceRoot);
+  return pin ? withEmbedding(cfg, pinToEmbedding(pin)) : cfg;
+}
+
 // ---------------------------------------------------------------------------
 // Ladder probing
 // ---------------------------------------------------------------------------

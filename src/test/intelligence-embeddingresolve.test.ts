@@ -14,6 +14,7 @@ import * as path from 'path';
 
 import {
   resolveEmbeddingConfig,
+  applyEmbeddingPin,
   setEmbeddingProvider,
   clearEmbeddingPin,
   readEmbeddingPin,
@@ -126,6 +127,60 @@ suite('embeddingResolve: sidecar pin', function () {
     assert.strictEqual(res.source, 'probed', 'a dead pin must not be trusted');
     assert.strictEqual(res.provider, 'none', 'with no reachable provider it falls to none');
     assert.strictEqual(readEmbeddingPin(ws), undefined, 'the dead pin must be cleared');
+  });
+});
+
+suite('embeddingResolve: applyEmbeddingPin (read-path signature, no network)', function () {
+  // Regression: read paths (retrieveCode / generateRAGPrompt deps) used to open
+  // the vector store with the raw `auto` SEED model (`Xenova/...`). That rewrote
+  // the store's meta `model` row and re-raised the stale-index signal on every
+  // read, flip-flopping it against every index/learn run (which resolve to,
+  // e.g., Ollama's `nomic-embed-text:latest`) — the never-converging "embedding
+  // model changed → re-run /index-code --force" loop. applyEmbeddingPin makes a
+  // read adopt the indexer's PINNED identity, synchronously, without a probe.
+  test('an explicit (non-auto) provider passes through unchanged', function () {
+    const ws = tmpWorkspace();
+    const cfg = defaultConfig();
+    cfg.embedding = { provider: 'ollama', model: 'nomic-embed-text:latest', dimension: 768 };
+    const out = applyEmbeddingPin(cfg, ws);
+    assert.strictEqual(out.embedding.provider, 'ollama');
+    assert.strictEqual(out.embedding.model, 'nomic-embed-text:latest');
+  });
+
+  test('auto with NO pin falls through to the seed (store is unindexed anyway)', function () {
+    const ws = tmpWorkspace();
+    const out = applyEmbeddingPin(autoConfig(), ws);
+    assert.strictEqual(out.embedding.provider, 'auto');
+    assert.strictEqual(out.embedding.model, 'Xenova/nomic-embed-text-v1.5');
+  });
+
+  test('auto WITH a pin adopts the pinned model/dimension — never the Xenova seed', function () {
+    const ws = tmpWorkspace();
+    const vectorDir = path.join(ws, '.autoclaw', 'vector');
+    fs.mkdirSync(vectorDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(vectorDir, 'embedding-resolved.json'),
+      JSON.stringify({ provider: 'ollama', model: 'nomic-embed-text:latest', dimension: 768, resolvedAt: '' }),
+    );
+    // DEAD hosts: applyEmbeddingPin must read the pin SYNCHRONOUSLY and never
+    // probe — unlike resolveEmbeddingConfig it does no liveness check.
+    const out = applyEmbeddingPin(autoConfig({ routerHost: DEAD, ollamaHost: DEAD }), ws);
+    assert.strictEqual(out.embedding.provider, 'ollama');
+    assert.strictEqual(out.embedding.model, 'nomic-embed-text:latest', 'must NOT be the Xenova seed');
+    assert.strictEqual(out.embedding.dimension, 768);
+  });
+
+  test('does not write or clear the pin (pure read)', function () {
+    const ws = tmpWorkspace();
+    const vectorDir = path.join(ws, '.autoclaw', 'vector');
+    fs.mkdirSync(vectorDir, { recursive: true });
+    const pinFile = path.join(vectorDir, 'embedding-resolved.json');
+    fs.writeFileSync(
+      pinFile,
+      JSON.stringify({ provider: 'ollama', model: 'nomic-embed-text:latest', dimension: 768, resolvedAt: '' }),
+    );
+    applyEmbeddingPin(autoConfig({ routerHost: DEAD, ollamaHost: DEAD }), ws);
+    assert.ok(fs.existsSync(pinFile), 'pin must be left intact by a read');
   });
 });
 
