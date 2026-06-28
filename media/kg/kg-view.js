@@ -43,6 +43,9 @@
   let asofRatio = 1;           // 0..1 across [minTime, maxTime]; 1 = now
   let selectedId = null;
   let search = prev.search || '';
+  let searchMode = prev.searchMode || 'filter'; // 'filter' (substring) | 'semantic' (kg.searchSimilar)
+  let semanticIds = null;      // ranked thought ids from the KG engine, or null
+  let semanticPending = false;
   let fKind = '', fAgent = '', fProject = '';
   let timeMin = 0, timeMax = 0;
 
@@ -57,7 +60,8 @@
   const el = {
     health: $('kg-health'), stats: $('kg-stats'), refresh: $('kg-refresh'),
     tabs: document.querySelectorAll('.kg-tab'),
-    search: $('kg-search'), fKind: $('kg-filter-kind'), fAgent: $('kg-filter-agent'),
+    search: $('kg-search'), searchmode: $('kg-searchmode'),
+    fKind: $('kg-filter-kind'), fAgent: $('kg-filter-agent'),
     fProject: $('kg-filter-project'), derived: $('kg-derived'), count: $('kg-filter-count'),
     browser: $('kg-browser'), graphPane: $('kg-graph-pane'), list: $('kg-list'),
     graph: $('kg-graph'), legend: $('kg-legend'), detail: $('kg-detail'),
@@ -66,22 +70,45 @@
   };
 
   function persist() {
-    vscode.setState({ tab, colorBy, showDerived, search });
+    vscode.setState({ tab, colorBy, showDerived, search, searchMode });
   }
 
   // ---- filtering ----------------------------------------------------------
+  function facetPass(t) {
+    if (fKind && t.kind !== fKind) return false;
+    if (fAgent && t.agent !== fAgent) return false;
+    if (fProject && t.project !== fProject) return false;
+    return true;
+  }
   function filteredThoughts() {
-    const tokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    // Semantic mode with results in hand: honor the KG engine's rank order,
+    // then apply the facet filters on top. Substring tokens are ignored here.
+    if (searchMode === 'semantic' && semanticIds) {
+      const ordered = [];
+      for (const id of semanticIds) {
+        const t = byId.get(id);
+        if (t && facetPass(t)) ordered.push(t);
+      }
+      return ordered;
+    }
+    // Filter mode (or semantic with no query yet): substring + facets.
+    const tokens = (searchMode === 'filter' ? search : '').trim().toLowerCase().split(/\s+/).filter(Boolean);
     return raw.thoughts.filter((t) => {
-      if (fKind && t.kind !== fKind) return false;
-      if (fAgent && t.agent !== fAgent) return false;
-      if (fProject && t.project !== fProject) return false;
+      if (!facetPass(t)) return false;
       if (tokens.length) {
         const hay = `${t.text} ${t.agent} ${t.kind} ${t.task_id || ''} ${t.project} ${t.sprint || ''}`.toLowerCase();
         for (const tk of tokens) if (hay.indexOf(tk) === -1) return false;
       }
       return true;
     });
+  }
+  /** Ask the extension to run kg.searchSimilar for the current query. */
+  function triggerSemantic() {
+    const q = search.trim();
+    if (!q) { semanticIds = null; semanticPending = false; renderBrowser(); if (tab === 'graph') renderGraph(); return; }
+    semanticPending = true;
+    el.count.textContent = 'Searching…';
+    vscode.postMessage({ command: 'search', q, k: 80 });
   }
 
   function asofInstant() {
@@ -98,9 +125,13 @@
   // ---- browser ------------------------------------------------------------
   function renderBrowser() {
     const items = filteredThoughts();
-    el.count.textContent = `${items.length} of ${raw.thoughts.length} thoughts`;
+    const semantic = searchMode === 'semantic' && semanticIds;
+    el.count.textContent = `${items.length} of ${raw.thoughts.length} thoughts${semantic ? ' · ranked by similarity' : ''}`;
     if (!items.length) {
-      el.list.innerHTML = `<p class="empty">${raw.thoughts.length ? 'No thoughts match the current filters.' : 'The knowledge graph is empty. Thoughts are recorded by the orchestrator, /learn, and the kg.record MCP tool.'}</p>`;
+      const msg = !raw.thoughts.length
+        ? 'The knowledge graph is empty. Thoughts are recorded by the orchestrator, /learn, and the kg.record MCP tool.'
+        : (semantic ? 'No semantically similar thoughts.' : 'No thoughts match the current filters.');
+      el.list.innerHTML = `<p class="empty">${msg}</p>`;
       return;
     }
     const frag = document.createDocumentFragment();
@@ -394,7 +425,19 @@
   el.search.addEventListener('input', () => {
     search = el.search.value;
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(() => { renderBrowser(); if (tab === 'graph') renderGraph(); persist(); }, 160);
+    searchTimer = setTimeout(() => {
+      if (searchMode === 'semantic') { triggerSemantic(); }
+      else { renderBrowser(); if (tab === 'graph') renderGraph(); }
+      persist();
+    }, searchMode === 'semantic' ? 320 : 160);
+  });
+  el.searchmode.value = searchMode;
+  el.searchmode.addEventListener('change', () => {
+    searchMode = el.searchmode.value;
+    semanticIds = null; semanticPending = false;
+    if (searchMode === 'semantic' && search.trim()) { triggerSemantic(); }
+    else { renderBrowser(); if (tab === 'graph') renderGraph(); }
+    persist();
   });
   el.fKind.addEventListener('change', () => { fKind = el.fKind.value; renderBrowser(); if (tab === 'graph') renderGraph(); });
   el.fAgent.addEventListener('change', () => { fAgent = el.fAgent.value; renderBrowser(); if (tab === 'graph') renderGraph(); });
@@ -418,7 +461,16 @@
     if (m.type === 'data') {
       raw = m.data;
       if (selectedId && !raw.thoughts.find((t) => t.id === selectedId)) selectedId = null;
-      renderAll();
+      // A live refresh while a semantic query is active: re-run it against fresh data.
+      if (searchMode === 'semantic' && search.trim()) { renderAll(); triggerSemantic(); }
+      else { renderAll(); }
+    } else if (m.type === 'searchResults') {
+      // Drop stale responses (the query moved on since this request was sent).
+      if (searchMode !== 'semantic' || m.q !== search.trim()) return;
+      semanticPending = false;
+      semanticIds = Array.isArray(m.ids) ? m.ids : [];
+      renderBrowser();
+      if (tab === 'graph') renderGraph();
     } else if (m.type === 'error') {
       el.list.innerHTML = `<p class="empty">${esc(m.message)}</p>`;
     }

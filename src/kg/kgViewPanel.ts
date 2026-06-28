@@ -209,6 +209,28 @@ async function refresh(): Promise<void> {
 }
 
 /**
+ * Run the KG's own semantic recall (vector + full-text, ranked) for `q` and post
+ * the ranked thought ids back. This is the real engine behind the viewer's
+ * "semantic" search mode — the browser's substring filter ignores the embeddings
+ * that `kg.searchSimilar` was built to exploit.
+ */
+async function runSemanticSearch(q: string, k: number): Promise<void> {
+  if (!panel) { return; }
+  const query = q.trim();
+  if (!query) { panel.webview.postMessage({ type: 'searchResults', q, ids: [] }); return; }
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot) { panel.webview.postMessage({ type: 'searchResults', q, ids: [] }); return; }
+  try {
+    const handle = getKnowledgeGraph({ workspaceRoot });
+    const k2 = Math.max(1, Math.min(200, Math.floor(k) || 80));
+    const hits = await handle.kg.searchSimilar(query, { k: k2 });
+    panel.webview.postMessage({ type: 'searchResults', q: query, ids: hits.map((h) => h.id) });
+  } catch (err) {
+    panel.webview.postMessage({ type: 'searchResults', q: query, ids: [], error: String(err) });
+  }
+}
+
+/**
  * Open (or reveal) the Knowledge Graph viewer. Idempotent: a second call focuses
  * the existing tab rather than spawning another.
  */
@@ -233,11 +255,14 @@ export function openKgViewPanel(context: vscode.ExtensionContext): void {
   panel.webview.html = renderHtml(panel.webview, context.extensionUri);
 
   panel.webview.onDidReceiveMessage(
-    (msg: { command?: string; id?: string; text?: string }) => {
+    (msg: { command?: string; id?: string; text?: string; q?: string; k?: number }) => {
       switch (msg?.command) {
         case 'ready':
         case 'refresh':
           void refresh();
+          break;
+        case 'search':
+          void runSemanticSearch(typeof msg.q === 'string' ? msg.q : '', typeof msg.k === 'number' ? msg.k : 80);
           break;
         case 'copyId':
           if (typeof msg.id === 'string' && msg.id) {
