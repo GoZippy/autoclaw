@@ -48,7 +48,7 @@ yet and point to what foundation provides (config + on-disk contract).
 
 | Command | Status | Purpose |
 |---------|--------|---------|
-| `/learn` | Implemented (core-loop) | Sweep discovered sessions, distill kept-vs-discarded learnings, write stores. Args: `--last N` (limit to the most recent N sessions), `--focus "area"` (bias distillation toward a topic). Output: counts of sessions swept and learnings written. |
+| `/learn` | Implemented (core-loop) | Sweep discovered sessions, distill kept-vs-discarded learnings, write stores. Also enriches the **Knowledge Graph**: consensus decisions, mined successful workflow patterns, and review findings are recorded as durable, deduped KG thoughts (kind `decision`/`finding`). Args: `--last N` (limit to the most recent N sessions), `--focus "area"` (bias distillation toward a topic). Output: counts of sessions swept and learnings written. |
 | `/index-code` | Implemented (core-loop) | Chunk + embed the workspace codebase into the vector store. Args: `--force` (re-index everything, ignoring the last-index watermark). Output: files indexed and chunk count. |
 | `/retrieve` | Implemented (core-loop) | Retrieve the most relevant code/learning chunks for a query. Usage: `/retrieve <query>`. Output: the top matching chunks with their source paths. |
 | `/search` | Implemented (core-loop) | Semantic search over distilled learnings. Usage: `/search <query> [--limit N]` (cap results at N). Output: ranked learnings with scores. |
@@ -57,6 +57,17 @@ yet and point to what foundation provides (config + on-disk contract).
 | `/rag-generate` | Implemented (signal-and-rag) | Build a grounded RAG prompt for a task from retrieved code + learnings + style + memory. Degrades gracefully without a vector backend. Copied to the clipboard. |
 | `/metrics` | Implemented (metrics-dashboard) | Show learning-run counts, kept-rate, and token usage (real vs estimated). A live dashboard view is available under the AutoClaw activity-bar container. |
 | `/service` | Planned (automation-reach) | Run the continuous watch service that ingests new sessions as they land. |
+
+## Knowledge Graph
+
+Distinct from the vector stores above, the **Knowledge Graph** (`.autoclaw/kg/kg.db`)
+holds agent- and task-attributed *facts* — decisions, findings, observations, and
+learned patterns — connected by typed relations, with bi-temporal validity. It is
+fed automatically by the orchestrator (dispatch/completion), `/learn` (consensus
+decisions + mined workflow patterns + review findings), and the `kg.record` MCP
+tool. Agents recall from it with the `kg.search` / `kg.traverse` MCP tools; humans
+browse and visualize it (searchable list + force-directed graph) via the
+**AutoClaw: Knowledge Graph — Browse & Visualize** command (`autoclaw.kg.browse`).
 
 ## Configuration
 
