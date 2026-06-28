@@ -18,6 +18,7 @@ import {
 } from './orchestrate';
 import { buildCapsule, writeCapsule, summarizeCapsule, readCapsule, listCapsules } from './evidence';
 import { recordOutcomeOnce } from './reputation';
+import { recordOutcomeEdge } from './intelligence/kgRecord';
 import { buildConsensusEvent } from './hooks/hookEvents';
 import { emitHookEvent } from './hooks/hookBus';
 import { verifyBiscuitToken } from './biscuit';
@@ -582,6 +583,18 @@ export function createBridgeServer(
               rework_rounds: result.rounds,
               timestamp: capsule.evaluated_at,
             }).catch(() => { /* best-effort */ });
+            // A co-design fan-out: mirror the SAME outcome event as a structural
+            // KG edge (agent--completed-->task, agent--reviewed-->task). One
+            // event → { reputation row above + KG edge here }. Best-effort, never
+            // blocks the response. reviewers = distinct voters excluding assignee.
+            recordOutcomeEdge(path.resolve(config.commsDir, '..', '..', '..'), {
+              taskId: tid,
+              agentId: author,
+              verdict: result.final_verdict,
+              gatePassed: capsule.gates_passed,
+              resolvedAt: capsule.evaluated_at,
+              reviewers: result.votes ? Array.from(new Set(result.votes.map(v => v.agent_id).filter(a => a !== author))) : undefined,
+            }).catch(() => { /* KG edge is best-effort */ });
           }
           await appendCommsLog(config.commsDir, {
             timestamp: new Date().toISOString(),

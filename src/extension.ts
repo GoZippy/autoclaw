@@ -110,6 +110,7 @@ import { defaultAgentTypeForRunner, agentTypeProfile, AGENT_TYPES, type AgentTyp
 import { setFleetHalted, startTriggerHooksRuntime } from './hooks/triggerHooks';
 // Track-record ledger (REP-1) — record reviewed-task outcomes for reputation routing.
 import { recordTaskOutcome } from './reputation';
+import { recordOutcomeEdge } from './intelligence/kgRecord';
 import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
@@ -3961,6 +3962,20 @@ async function orchestrateReviewCommand(): Promise<void> {
       } catch (e) {
         channel.appendLine(`[orchestrate] reputation record failed for ${taskId}: ${(e as Error).message}`);
       }
+      // A co-design fan-out: mirror the SAME outcome as a structural KG edge
+      // (one event → { reputation row above + KG edge here }). Best-effort.
+      // reviewers = distinct voters (excluding the assignee) — populates the
+      // agent--reviewed--> task edges so the graph is structural, not just
+      // completed-links. No capabilities lookup at this site (agent registry
+      // join), so demonstrated-edges are not sourced here.
+      recordOutcomeEdge(workspaceRoot, {
+        taskId,
+        agentId: author,
+        verdict: result.final_verdict,
+        gatePassed: gateChecks ? gateChecks.every(g => g.passed) : undefined,
+        resolvedAt: new Date().toISOString(),
+        reviewers: result.votes ? Array.from(new Set(result.votes.map(v => v.agent_id).filter(a => a !== author))) : undefined,
+      }).catch(() => { /* KG edge is best-effort */ });
     }
 
     if (result.status !== 'consensus_reached') { allApproved = false; }
