@@ -127,6 +127,19 @@ body {
 /* ---- browser list ---- */
 #kg-browser { flex-direction: column; }
 .kg-list { width: 100%; height: 100%; overflow-y: auto; padding: 10px 12px; }
+.kg-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+  margin: 4px 2px 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--kg-border);
+}
+.kg-card-ext .kg-card-text {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+}
 .kg-card {
   border: 1px solid var(--kg-border);
   border-left-width: 3px;

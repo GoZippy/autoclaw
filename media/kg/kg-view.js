@@ -43,8 +43,10 @@
   let asofRatio = 1;           // 0..1 across [minTime, maxTime]; 1 = now
   let selectedId = null;
   let search = prev.search || '';
-  let searchMode = prev.searchMode || 'filter'; // 'filter' (substring) | 'semantic' (kg.searchSimilar)
+  // 'filter' (substring) | 'semantic' (kg.searchSimilar) | 'semantic-all' (KG + code index)
+  let searchMode = prev.searchMode || 'filter';
   let semanticIds = null;      // ranked thought ids from the KG engine, or null
+  let semanticExternal = [];   // code/index hits (file, content, score) when scope = +code
   let semanticPending = false;
   let fKind = '', fAgent = '', fProject = '';
   let timeMin = 0, timeMax = 0;
@@ -74,6 +76,8 @@
   }
 
   // ---- filtering ----------------------------------------------------------
+  function isSemantic() { return searchMode === 'semantic' || searchMode === 'semantic-all'; }
+  function searchScope() { return searchMode === 'semantic-all' ? 'kg+code' : 'kg'; }
   function facetPass(t) {
     if (fKind && t.kind !== fKind) return false;
     if (fAgent && t.agent !== fAgent) return false;
@@ -83,7 +87,7 @@
   function filteredThoughts() {
     // Semantic mode with results in hand: honor the KG engine's rank order,
     // then apply the facet filters on top. Substring tokens are ignored here.
-    if (searchMode === 'semantic' && semanticIds) {
+    if (isSemantic() && semanticIds) {
       const ordered = [];
       for (const id of semanticIds) {
         const t = byId.get(id);
@@ -102,13 +106,13 @@
       return true;
     });
   }
-  /** Ask the extension to run kg.searchSimilar for the current query. */
+  /** Ask the extension to run kg.searchSimilar (+ optional code index) for the query. */
   function triggerSemantic() {
     const q = search.trim();
-    if (!q) { semanticIds = null; semanticPending = false; renderBrowser(); if (tab === 'graph') renderGraph(); return; }
+    if (!q) { semanticIds = null; semanticExternal = []; semanticPending = false; renderBrowser(); if (tab === 'graph') renderGraph(); return; }
     semanticPending = true;
     el.count.textContent = 'Searching…';
-    vscode.postMessage({ command: 'search', q, k: 80 });
+    vscode.postMessage({ command: 'search', q, k: 80, scope: searchScope() });
   }
 
   function asofInstant() {
@@ -125,9 +129,11 @@
   // ---- browser ------------------------------------------------------------
   function renderBrowser() {
     const items = filteredThoughts();
-    const semantic = searchMode === 'semantic' && semanticIds;
-    el.count.textContent = `${items.length} of ${raw.thoughts.length} thoughts${semantic ? ' · ranked by similarity' : ''}`;
-    if (!items.length) {
+    const semantic = isSemantic() && semanticIds;
+    const external = searchMode === 'semantic-all' ? (semanticExternal || []) : [];
+    const extLabel = external.length ? ` · ${external.length} code match${external.length === 1 ? '' : 'es'}` : '';
+    el.count.textContent = `${items.length} of ${raw.thoughts.length} thoughts${semantic ? ' · ranked by similarity' : ''}${extLabel}`;
+    if (!items.length && !external.length) {
       const msg = !raw.thoughts.length
         ? 'The knowledge graph is empty. Thoughts are recorded by the orchestrator, /learn, and the kg.record MCP tool.'
         : (semantic ? 'No semantically similar thoughts.' : 'No thoughts match the current filters.');
@@ -148,6 +154,27 @@
         `<div class="kg-card-text">${esc(clip(t.text, 280))}</div>`;
       card.addEventListener('click', () => select(t.id));
       frag.appendChild(card);
+    }
+    // Unified search: code-index matches from the shared vector store, shown as a
+    // distinct section (they aren't KG thoughts, so they stay out of the graph).
+    if (external.length) {
+      const label = document.createElement('div');
+      label.className = 'kg-section-label';
+      label.textContent = 'Code & index matches';
+      frag.appendChild(label);
+      for (const x of external) {
+        const card = document.createElement('div');
+        card.className = 'kg-card kg-card-ext';
+        card.style.borderLeftColor = '#6c757d';
+        card.innerHTML =
+          `<div class="kg-card-head">` +
+          `<span class="kg-kind" style="background:#6c757d">code</span>` +
+          `<span class="kg-card-meta">${esc(x.file)} · ${Math.round((x.score || 0) * 100)}%</span>` +
+          `</div>` +
+          `<div class="kg-card-text">${esc(clip(x.content, 280))}</div>`;
+        card.addEventListener('click', () => vscode.postMessage({ command: 'openFile', file: x.file }));
+        frag.appendChild(card);
+      }
     }
     el.list.innerHTML = '';
     el.list.appendChild(frag);
@@ -426,16 +453,16 @@
     search = el.search.value;
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
-      if (searchMode === 'semantic') { triggerSemantic(); }
+      if (isSemantic()) { triggerSemantic(); }
       else { renderBrowser(); if (tab === 'graph') renderGraph(); }
       persist();
-    }, searchMode === 'semantic' ? 320 : 160);
+    }, isSemantic() ? 320 : 160);
   });
   el.searchmode.value = searchMode;
   el.searchmode.addEventListener('change', () => {
     searchMode = el.searchmode.value;
-    semanticIds = null; semanticPending = false;
-    if (searchMode === 'semantic' && search.trim()) { triggerSemantic(); }
+    semanticIds = null; semanticExternal = []; semanticPending = false;
+    if (isSemantic() && search.trim()) { triggerSemantic(); }
     else { renderBrowser(); if (tab === 'graph') renderGraph(); }
     persist();
   });
@@ -462,13 +489,14 @@
       raw = m.data;
       if (selectedId && !raw.thoughts.find((t) => t.id === selectedId)) selectedId = null;
       // A live refresh while a semantic query is active: re-run it against fresh data.
-      if (searchMode === 'semantic' && search.trim()) { renderAll(); triggerSemantic(); }
+      if (isSemantic() && search.trim()) { renderAll(); triggerSemantic(); }
       else { renderAll(); }
     } else if (m.type === 'searchResults') {
       // Drop stale responses (the query moved on since this request was sent).
-      if (searchMode !== 'semantic' || m.q !== search.trim()) return;
+      if (!isSemantic() || m.q !== search.trim()) return;
       semanticPending = false;
       semanticIds = Array.isArray(m.ids) ? m.ids : [];
+      semanticExternal = Array.isArray(m.external) ? m.external : [];
       renderBrowser();
       if (tab === 'graph') renderGraph();
     } else if (m.type === 'error') {

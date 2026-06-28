@@ -24,6 +24,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getKnowledgeGraph } from '../intelligence/kg/service';
 import type { Edge, Thought } from '../intelligence/kg/types';
+import { retrieveCode } from '../intelligence/ragCode';
 
 /** Singleton — one KG tab at a time; re-invoking reveals the existing one. */
 let panel: vscode.WebviewPanel | undefined;
@@ -213,20 +214,49 @@ async function refresh(): Promise<void> {
  * the ranked thought ids back. This is the real engine behind the viewer's
  * "semantic" search mode — the browser's substring filter ignores the embeddings
  * that `kg.searchSimilar` was built to exploit.
+ *
+ * When `scope` is `kg+code` we ALSO query the indexed codebase via `retrieveCode`.
+ * The KG and the code/learning vector store share the same embedding config, so
+ * one query spans both: KG thoughts come back as ranked ids, code matches as a
+ * distinct `external` list (file/snippet/score) the viewer shows in its own
+ * section. retrieveCode degrades to `[]` when the code index is empty/unavailable.
  */
-async function runSemanticSearch(q: string, k: number): Promise<void> {
+async function runSemanticSearch(q: string, k: number, scope: string): Promise<void> {
   if (!panel) { return; }
   const query = q.trim();
-  if (!query) { panel.webview.postMessage({ type: 'searchResults', q, ids: [] }); return; }
+  if (!query) { panel.webview.postMessage({ type: 'searchResults', q, ids: [], external: [] }); return; }
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (!workspaceRoot) { panel.webview.postMessage({ type: 'searchResults', q, ids: [] }); return; }
+  if (!workspaceRoot) { panel.webview.postMessage({ type: 'searchResults', q, ids: [], external: [] }); return; }
   try {
     const handle = getKnowledgeGraph({ workspaceRoot });
     const k2 = Math.max(1, Math.min(200, Math.floor(k) || 80));
     const hits = await handle.kg.searchSimilar(query, { k: k2 });
-    panel.webview.postMessage({ type: 'searchResults', q: query, ids: hits.map((h) => h.id) });
+
+    let external: Array<{ file: string; content: string; score: number }> = [];
+    if (scope === 'kg+code') {
+      try {
+        const code = await retrieveCode(query, { workspaceRoot, limit: 12 });
+        external = code.map((c) => ({ file: c.file, content: c.content, score: c.score }));
+      } catch {
+        external = []; // code index unavailable — KG results still stand
+      }
+    }
+    panel.webview.postMessage({ type: 'searchResults', q: query, ids: hits.map((h) => h.id), external });
   } catch (err) {
-    panel.webview.postMessage({ type: 'searchResults', q: query, ids: [], error: String(err) });
+    panel.webview.postMessage({ type: 'searchResults', q: query, ids: [], external: [], error: String(err) });
+  }
+}
+
+/** Open a workspace-relative file (from a code/index search hit) in an editor. */
+async function openWorkspaceFile(file: string): Promise<void> {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!workspaceRoot || !file) { return; }
+  try {
+    const abs = path.isAbsolute(file) ? file : path.join(workspaceRoot, file);
+    const doc = await vscode.workspace.openTextDocument(abs);
+    await vscode.window.showTextDocument(doc, { preview: true });
+  } catch (err) {
+    vscode.window.showWarningMessage(`AutoClaw KG: could not open ${file} — ${(err as Error).message}`);
   }
 }
 
@@ -255,14 +285,21 @@ export function openKgViewPanel(context: vscode.ExtensionContext): void {
   panel.webview.html = renderHtml(panel.webview, context.extensionUri);
 
   panel.webview.onDidReceiveMessage(
-    (msg: { command?: string; id?: string; text?: string; q?: string; k?: number }) => {
+    (msg: { command?: string; id?: string; text?: string; q?: string; k?: number; scope?: string; file?: string }) => {
       switch (msg?.command) {
         case 'ready':
         case 'refresh':
           void refresh();
           break;
         case 'search':
-          void runSemanticSearch(typeof msg.q === 'string' ? msg.q : '', typeof msg.k === 'number' ? msg.k : 80);
+          void runSemanticSearch(
+            typeof msg.q === 'string' ? msg.q : '',
+            typeof msg.k === 'number' ? msg.k : 80,
+            typeof msg.scope === 'string' ? msg.scope : 'kg',
+          );
+          break;
+        case 'openFile':
+          if (typeof msg.file === 'string' && msg.file) { void openWorkspaceFile(msg.file); }
           break;
         case 'copyId':
           if (typeof msg.id === 'string' && msg.id) {
