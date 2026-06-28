@@ -31,24 +31,19 @@ The easiest way to chip in, one-time or monthly:
 
 **→ https://ko-fi.com/gozippy**
 
-> **TODO (maintainer):** the Square links and wallet addresses below are still
-> placeholders — paste your real values here and in
-> [`src/support/supportConfig.ts`](src/support/supportConfig.ts) (or set them via
-> VS Code settings — see that file).
-
 ### Card / one-time (Square)
 
-- **$10 thank-you:** `https://square.link/u/REPLACE_ME`  ← TODO
-- **Custom amount:** `https://square.link/u/REPLACE_ME`  ← TODO
+- **$10 thank-you:** 'https://square.link/u/RC3rZuth'   $10 Thank you
+- **Custom amount:** 'https://x.com/ZippyNetworks' Send Zippy a DM on X.com or email Support@GoZippy.com
 
 ### Crypto
 
 | Coin | Address |
 |------|---------|
-| BTC | `REPLACE_ME` ← TODO |
-| ETH (ERC-20) | `REPLACE_ME` ← TODO |
-| SOL | `REPLACE_ME` ← TODO |
-| USDC (ERC-20) | `REPLACE_ME` ← TODO |
+| BTC | `bc1qnmd7qva5krw4we624awwfrutnujfw0jwpn50fl`  |
+| ETH (ERC-20) | `0xeE86b4dD531087C8A86Bdef3B89BFb0864D0A8C7` |
+| SOL | `5eLWTgG8eYRaPfdBZoKiomVqZfxoYa84SkvU7PsSM21w` |
+| USDC (ERC-20) | `...` ← TODO |
 
 ---
 
