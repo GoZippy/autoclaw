@@ -308,3 +308,126 @@ export async function recordLearningsToKg(
   log(`kg-record: recorded ${recorded} learning fact(s), skipped ${skipped}`);
   return { recorded, skipped };
 }
+
+// ---------------------------------------------------------------------------
+// Outcome edges (A — the KG half of "outcome -> { reputation row + KG edge }")
+//
+// A task completion is already an event (recordTaskOutcome -> reputation ledger).
+// This is the KG sink of the SAME event: it materializes structural entity nodes
+// (agent / task / capability) and the edges between them. EVENT-driven — called
+// at the outcome site, NOT from a 30s poll. See docs/specs/kg-edge-outcome-contract.md.
+//
+// Schema reality: the KG `edges` PK is (from_id, kind, to_id) and traverseFrom
+// joins edges -> thoughts, so edge endpoints MUST be thought ids. We therefore
+// materialize lightweight entity-node thoughts and relate those.
+// ---------------------------------------------------------------------------
+
+/** The minimal outcome shape this needs. The caller maps the reputation Outcome. */
+export interface OutcomeEdgeInput {
+  taskId: string;
+  /** The assignee/author the completion is attributed to. */
+  agentId: string;
+  verdict?: string;
+  gatePassed?: boolean;
+  resolvedAt?: string;
+  /** Distinct reviewers who voted (the assignee is filtered out). */
+  reviewers?: string[];
+  /** Capabilities demonstrated — mirrors the per-capability reputation the router uses. */
+  capabilities?: string[];
+}
+
+/** Stable thought ids for the entity nodes. */
+function agentNodeId(agent: string): string { return `agent:${agent}`; }
+function taskNodeId(project: string, taskId: string): string { return `task:${project}:${taskId}`; }
+function capNodeId(cap: string): string { return `capability:${cap}`; }
+
+/**
+ * Materialize the outcome's entity nodes + structural edges in the KG.
+ *
+ * Degrade-safe (no/degraded KG -> no-op), never throws, never blocks the outcome
+ * path. Nodes are idempotent by deterministic thought id (duplicate INSERT throws
+ * -> swallowed); edges are idempotent by the (from, kind, to) PK (INSERT OR REPLACE
+ * refreshes meta — the structural fact is singular, its verdict is its current
+ * state). The returned counts reflect write attempts; dedup is enforced by the
+ * store, so re-running never grows the graph.
+ */
+export async function recordOutcomeEdge(
+  workspaceRoot: string,
+  outcome: OutcomeEdgeInput,
+  opts: { log?: LogFn; deps?: RecordCoordinationDeps } = {},
+): Promise<RecordCoordinationResult> {
+  const log = opts.log ?? noop;
+  if (!outcome || typeof outcome.taskId !== 'string' || outcome.taskId === '' ||
+      typeof outcome.agentId !== 'string' || outcome.agentId === '') {
+    return { recorded: 0, skipped: 0 };
+  }
+
+  const project = resolveProjectKey(workspaceRoot);
+
+  let kg: KnowledgeGraph;
+  try {
+    if (opts.deps?.getKg) {
+      kg = await opts.deps.getKg();
+    } else {
+      const { getKnowledgeGraph } = await import('./kg/service');
+      kg = getKnowledgeGraph({ workspaceRoot }).kg;
+    }
+  } catch (err) {
+    log(`kg-record: KG unavailable — ${(err as Error).message}`);
+    return { recorded: 0, skipped: 1 };
+  }
+
+  let recorded = 0;
+  let skipped = 0;
+
+  // ensureNode: best-effort entity-node thought; duplicate id is a no-op (exists).
+  const ensureNode = async (id: string, kind: string, text: string, meta: Record<string, unknown>): Promise<void> => {
+    try {
+      await kg.recordThought({ id, project, agent: 'orchestrator', kind, text, meta });
+      recorded++;
+    } catch {
+      skipped++; // already exists (deterministic id) or transient
+    }
+  };
+  const relate = async (from: string, kind: string, to: string, meta: Record<string, unknown>): Promise<void> => {
+    try {
+      await kg.recordRelation(from, kind, to, meta);
+      recorded++;
+    } catch {
+      skipped++;
+    }
+  };
+
+  const resolvedAt = outcome.resolvedAt ?? new Date().toISOString();
+  const agentId = agentNodeId(outcome.agentId);
+  const taskId = taskNodeId(project, outcome.taskId);
+
+  await ensureNode(agentId, 'agent', outcome.agentId, { entity: 'agent' });
+  await ensureNode(taskId, 'task', outcome.taskId, { entity: 'task', project });
+
+  // agent --completed--> task
+  await relate(agentId, 'completed', taskId, {
+    verdict: outcome.verdict,
+    gate_passed: outcome.gatePassed,
+    resolved_at: resolvedAt,
+  });
+
+  // agent --reviewed--> task, for each distinct reviewer (not the assignee)
+  for (const reviewer of outcome.reviewers ?? []) {
+    if (!reviewer || reviewer === outcome.agentId) { continue; }
+    const rId = agentNodeId(reviewer);
+    await ensureNode(rId, 'agent', reviewer, { entity: 'agent' });
+    await relate(rId, 'reviewed', taskId, { resolved_at: resolvedAt });
+  }
+
+  // agent --demonstrated--> capability, for each capability the outcome credits
+  for (const cap of outcome.capabilities ?? []) {
+    if (!cap) { continue; }
+    const cId = capNodeId(cap);
+    await ensureNode(cId, 'capability', cap, { entity: 'capability' });
+    await relate(agentId, 'demonstrated', cId, { verdict: outcome.verdict, resolved_at: resolvedAt });
+  }
+
+  log(`kg-record: outcome edges for ${outcome.taskId} — recorded ${recorded}, skipped ${skipped}`);
+  return { recorded, skipped };
+}
