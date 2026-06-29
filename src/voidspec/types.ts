@@ -16,6 +16,9 @@
  *   collision with native AutoClaw task ids (which use `<Letter><digit>` form).
  */
 
+import type { ModelLocality, WorkflowIntent } from '../workflows/types';
+import type { ScaffoldRouterProfile } from '../workflows/scaffolds/types';
+
 // ---------------------------------------------------------------------------
 // VoidSpec task model
 // ---------------------------------------------------------------------------
@@ -43,11 +46,31 @@ export interface VoidSpecTask {
   owner?: string;
   /** Free-form tags. */
   tags?: string[];
+  /** Optional workflow intent used by scaffold/model routing. */
+  intent?: WorkflowIntent;
+  /** Optional success metadata, including gate ids/names expected to pass. */
+  success?: VoidSpecSuccessMetadata;
+  /** Optional scaffold/model constraints. */
+  constraints?: VoidSpecScaffoldConstraints;
+  /** Optional preferred scaffold variant id. */
+  preferredScaffold?: string;
   /**
    * Any fields present in the source YAML that we do not model explicitly.
    * Preserved so a write-back round-trip does not silently drop data.
    */
   extra?: Record<string, string>;
+}
+
+export interface VoidSpecSuccessMetadata {
+  gates?: string[];
+}
+
+export interface VoidSpecScaffoldConstraints {
+  routingProfile?: ScaffoldRouterProfile;
+  allowedLocalities?: ModelLocality[];
+  privacyLocality?: ModelLocality[];
+  maxCostCents?: number;
+  promptHarnessId?: string;
 }
 
 /** The parsed contents of a `tasks.yaml` document. */
@@ -91,6 +114,18 @@ export interface AutoClawMirroredTask {
   subtasks: string[];
   /** Mirrored dependency ids, also in shared-namespace form. */
   dependsOn: string[];
+  /** Optional workflow intent used by scaffold/model routing. */
+  intent?: WorkflowIntent;
+  /** Optional success gate ids/names mirrored from VoidSpec. */
+  successGates?: string[];
+  /** Optional scaffold/model constraints mirrored from VoidSpec. */
+  constraints?: VoidSpecScaffoldConstraints;
+  /** Optional preferred scaffold variant id mirrored from VoidSpec. */
+  preferredScaffold?: string;
+  /** Selected scaffold id, when dispatch invoked scaffold selection. */
+  selectedScaffold?: string;
+  /** Ledger-safe selector reason, when dispatch invoked scaffold selection. */
+  scaffoldSelectionReason?: string;
 }
 
 // ---------------------------------------------------------------------------

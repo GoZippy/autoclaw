@@ -31,7 +31,7 @@ import {
 } from "../vector/sqliteDriver";
 import { createKgSchema } from "./schema";
 import { KnowledgeGraphStore } from "./store";
-import type { KgCapabilities, KnowledgeGraph, SearchOpts, Thought, ThoughtId } from "./types";
+import type { Edge, KgCapabilities, KnowledgeGraph, SearchOpts, Thought, ThoughtId } from "./types";
 
 export interface OpenKgOptions {
   /** Workspace root containing `.autoclaw/`. Used to resolve the db path + config. */
@@ -80,6 +80,12 @@ const DEGRADED_KG: KnowledgeGraph = {
     return [];
   },
   async since(): Promise<Thought[]> {
+    return [];
+  },
+  async allThoughts(): Promise<Thought[]> {
+    return [];
+  },
+  async listEdges(): Promise<Edge[]> {
     return [];
   },
   // eslint-disable-next-line require-yield

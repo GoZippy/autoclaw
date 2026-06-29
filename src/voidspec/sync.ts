@@ -2,8 +2,7 @@
  * sync.ts — VoidSpec `tasks.yaml` ↔ AutoClaw sprint-YAML bidirectional sync (G1).
  *
  * Responsibilities:
- *   1. Parse a VoidSpec `tasks.yaml` document (best-effort YAML — no external
- *      library; same approach as src/orchestrator/sprintMarkdownGenerator.ts).
+ *   1. Parse a VoidSpec `tasks.yaml` document via js-yaml (G1 BL-20 upgrade).
  *   2. Map each VoidSpec task → an AutoClaw mirrored task in the shared
  *      `VS-<id>` namespace.
  *   3. Bidirectional sync against an AutoClaw "execution state" snapshot:
@@ -21,11 +20,14 @@
  */
 
 import * as fs from 'fs';
+import * as yaml from 'js-yaml';
 import {
   VoidSpecDocument,
   VoidSpecTask,
   AutoClawMirroredTask,
   AutoClawTaskStatus,
+  VoidSpecScaffoldConstraints,
+  VoidSpecSuccessMetadata,
   SyncResult,
   SyncTaskOutcome,
   toSharedId,
@@ -34,15 +36,17 @@ import {
   autoClawToVoidSpecStatus,
   normaliseVoidSpecStatus,
 } from './types';
+import type { ModelLocality, WorkflowIntent } from '../workflows/types';
+import type { ScaffoldRouterProfile } from '../workflows/scaffolds/types';
 
 // ---------------------------------------------------------------------------
-// VoidSpec tasks.yaml parser (best-effort, no external YAML dependency)
+// VoidSpec tasks.yaml parser (uses js-yaml for full YAML support — BL-20)
 // ---------------------------------------------------------------------------
 
 /**
  * Parse a VoidSpec `tasks.yaml` document.
  *
- * Expected shape (a permissive subset of YAML):
+ * Expected shape:
  *
  *   project: my-spec
  *   version: "1.0"
@@ -50,53 +54,46 @@ import {
  *     - id: T-001
  *       title: "Build the parser"
  *       status: in_progress
- *       description: "Long form spec text"
+ *       description: |
+ *         Long form spec text
+ *         with multiple lines
  *       owner: claude-code
  *       depends_on: [T-000]
  *       tags: [core, parser]
  *
  * Unknown scalar fields on a task are preserved in `task.extra` so a
  * write-back round-trip does not drop data.
+ *
+ * Parse errors return an empty document rather than throwing, matching the
+ * original best-effort behaviour.
  */
 export function parseVoidSpecYaml(content: string): VoidSpecDocument {
   // Strip a leading BOM if present.
   const text = content.replace(/^﻿/, '');
 
-  const topScalar = (key: string): string | undefined => {
-    const m = text.match(new RegExp(`^${key}:\\s*(.+)$`, 'm'));
-    return m ? unquote(m[1].trim()) : undefined;
-  };
+  const EMPTY: VoidSpecDocument = { project: undefined, version: undefined, tasks: [] };
 
-  const project = topScalar('project');
-  const version = topScalar('version');
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let parsed: any;
+  try {
+    parsed = yaml.load(text);
+  } catch {
+    return EMPTY;
+  }
+
+  if (parsed === null || parsed === undefined || typeof parsed !== 'object') {
+    return EMPTY;
+  }
+
+  const project = coerceString(parsed['project']);
+  const version = coerceString(parsed['version']);
 
   const tasks: VoidSpecTask[] = [];
-
-  // Isolate the `tasks:` block — everything indented under the `tasks:` line
-  // until a non-indented, non-blank line (or EOF). A line-based scan is used
-  // instead of a single non-greedy regex because a `(?=...\s*$)` lookahead
-  // matches the zero-width position at the very start of the block and so
-  // captures nothing useful (truncating the list to its first line).
-  const lines = text.split('\n');
-  const tasksLineIdx = lines.findIndex((l) => /^tasks:\s*$/.test(l));
-  if (tasksLineIdx !== -1) {
-    const blockLines: string[] = [];
-    for (let i = tasksLineIdx + 1; i < lines.length; i++) {
-      const line = lines[i];
-      // A blank line stays inside the block; a non-indented, non-blank line
-      // ends it (the next top-level key).
-      if (line.trim() === '' || /^\s/.test(line)) {
-        blockLines.push(line);
-      } else {
-        break;
-      }
-    }
-    // Prepend a newline so the first "- id:" entry splits cleanly.
-    const block = '\n' + blockLines.join('\n');
-    // Each task entry begins with `<indent>- ` at the list level.
-    const entries = block.split(/\n\s*-\s+/g).slice(1);
-    for (const entry of entries) {
-      const task = parseTaskEntry(entry);
+  const rawTasks = parsed['tasks'];
+  if (Array.isArray(rawTasks)) {
+    for (const raw of rawTasks) {
+      if (raw === null || raw === undefined || typeof raw !== 'object') { continue; }
+      const task = buildTask(raw as Record<string, unknown>);
       if (task) { tasks.push(task); }
     }
   }
@@ -104,43 +101,59 @@ export function parseVoidSpecYaml(content: string): VoidSpecDocument {
   return { project, version, tasks };
 }
 
-/** Parse one task list-entry (text after the leading `- `). */
-function parseTaskEntry(entry: string): VoidSpecTask | null {
-  // Collect every `key: value` line in the entry.
-  const fields = new Map<string, string>();
-  for (const line of entry.split('\n')) {
-    const m = line.match(/^\s*([A-Za-z_][\w-]*):\s*(.*)$/);
-    if (m) {
-      const key = m[1].trim();
-      // First occurrence wins; nested keys with the same name are rare.
-      if (!fields.has(key)) { fields.set(key, m[2].trim()); }
-    }
-  }
+/** Coerce any YAML scalar to a trimmed string, or undefined. */
+function coerceString(v: unknown): string | undefined {
+  if (v === null || v === undefined) { return undefined; }
+  const s = String(v).trim();
+  return s.length > 0 ? s : undefined;
+}
 
-  const id = unquote(fields.get('id') ?? '');
+/** Coerce a YAML value that may be a sequence or a scalar into a string array. */
+function coerceStringList(v: unknown): string[] {
+  if (v === null || v === undefined) { return []; }
+  if (Array.isArray(v)) {
+    return v
+      .map((item) => coerceString(item))
+      .filter((s): s is string => s !== undefined);
+  }
+  // Bare scalar (e.g. `depends_on: T-000` without brackets).
+  const s = coerceString(v);
+  return s ? [s] : [];
+}
+
+/** Build a VoidSpecTask from a raw parsed YAML object. */
+function buildTask(raw: Record<string, unknown>): VoidSpecTask | null {
+  const id = coerceString(raw['id']);
   if (!id) { return null; } // a task with no stable id is unusable
 
-  const title = unquote(fields.get('title') ?? fields.get('name') ?? id);
-  const status = normaliseVoidSpecStatus(fields.get('status'));
+  const title = coerceString(raw['title']) ?? coerceString(raw['name']) ?? id;
+  const status = normaliseVoidSpecStatus(coerceString(raw['status']));
 
-  const descRaw = fields.get('description') ?? fields.get('desc');
-  const description = descRaw ? unquote(descRaw) : undefined;
+  const descRaw = raw['description'] ?? raw['desc'];
+  const description = coerceString(descRaw);
 
-  const dependsOn = parseInlineList(
-    fields.get('depends_on') ?? fields.get('dependsOn') ?? fields.get('deps'),
-  );
-  const tags = parseInlineList(fields.get('tags'));
-  const ownerRaw = fields.get('owner') ?? fields.get('assignee');
-  const owner = ownerRaw ? unquote(ownerRaw) : undefined;
+  const dependsOn = coerceStringList(raw['depends_on'] ?? raw['dependsOn'] ?? raw['deps']);
+  const tags = coerceStringList(raw['tags']);
+  const owner = coerceString(raw['owner'] ?? raw['assignee']);
+  const intent = coerceIntent(raw['intent']);
+  const success = coerceSuccess(raw['success'] ?? raw['success_criteria'] ?? raw['successCriteria'], raw['success_gates'] ?? raw['successGates']);
+  const constraints = coerceConstraints(raw['constraints']);
+  const preferredScaffold = coerceString(raw['preferred_scaffold'] ?? raw['preferredScaffold']);
 
   // Preserve unmodelled scalar fields for loss-free write-back.
   const known = new Set([
     'id', 'title', 'name', 'status', 'description', 'desc',
     'depends_on', 'dependsOn', 'deps', 'tags', 'owner', 'assignee',
+    'intent', 'success', 'success_criteria', 'successCriteria',
+    'success_gates', 'successGates', 'constraints',
+    'preferred_scaffold', 'preferredScaffold',
   ]);
   const extra: Record<string, string> = {};
-  for (const [k, v] of fields) {
-    if (!known.has(k) && v !== '') { extra[k] = v; }
+  for (const [k, v] of Object.entries(raw)) {
+    if (!known.has(k)) {
+      const s = coerceString(v);
+      if (s !== undefined) { extra[k] = s; }
+    }
   }
 
   return {
@@ -151,33 +164,80 @@ function parseTaskEntry(entry: string): VoidSpecTask | null {
     dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
     owner,
     tags: tags.length > 0 ? tags : undefined,
+    intent,
+    success,
+    constraints,
+    preferredScaffold,
     extra: Object.keys(extra).length > 0 ? extra : undefined,
   };
 }
 
-/** Parse an inline `[a, b, c]` list, or a bare scalar, into a string array. */
-function parseInlineList(raw: string | undefined): string[] {
-  if (!raw) { return []; }
-  const trimmed = raw.trim();
-  if (trimmed === '' || trimmed === '[]') { return []; }
-  const inner = trimmed.startsWith('[') && trimmed.endsWith(']')
-    ? trimmed.slice(1, -1)
-    : trimmed;
-  return inner
-    .split(',')
-    .map((s) => unquote(s.trim()))
-    .filter((s) => s.length > 0);
+const WORKFLOW_INTENTS: readonly WorkflowIntent[] = [
+  'plan', 'code', 'debug', 'test', 'review', 'security', 'docs', 'release',
+  'refactor', 'research', 'summarize', 'coordination', 'benchmark', 'vision',
+  'tool-use', 'long-context', 'creative', 'cheap-grade',
+];
+
+const ROUTING_PROFILES: readonly ScaffoldRouterProfile[] = [
+  'cheap', 'balanced', 'quality', 'local-only', 'air-gapped', 'release-critical',
+];
+
+const LOCALITIES: readonly ModelLocality[] = ['local', 'lan', 'cloud'];
+
+function coerceIntent(v: unknown): WorkflowIntent | undefined {
+  const s = coerceString(v);
+  return WORKFLOW_INTENTS.includes(s as WorkflowIntent) ? s as WorkflowIntent : undefined;
 }
 
-/** Strip a single layer of matching single/double quotes. */
-function unquote(s: string): string {
-  if (
-    (s.startsWith('"') && s.endsWith('"') && s.length >= 2) ||
-    (s.startsWith("'") && s.endsWith("'") && s.length >= 2)
-  ) {
-    return s.slice(1, -1);
+function coerceRoutingProfile(v: unknown): ScaffoldRouterProfile | undefined {
+  const s = coerceString(v);
+  return ROUTING_PROFILES.includes(s as ScaffoldRouterProfile) ? s as ScaffoldRouterProfile : undefined;
+}
+
+function coerceLocalities(v: unknown): ModelLocality[] | undefined {
+  const out = coerceStringList(v)
+    .filter((item): item is ModelLocality => LOCALITIES.includes(item as ModelLocality));
+  return out.length > 0 ? out : undefined;
+}
+
+function coerceNumber(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) { return v; }
+  const s = coerceString(v);
+  if (!s) { return undefined; }
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function coerceSuccess(rawSuccess: unknown, rawGates: unknown): VoidSpecSuccessMetadata | undefined {
+  const gatesFromScalar = coerceStringList(rawGates);
+  if (gatesFromScalar.length > 0) {
+    return { gates: gatesFromScalar };
   }
-  return s;
+  if (!rawSuccess || typeof rawSuccess !== 'object' || Array.isArray(rawSuccess)) {
+    return undefined;
+  }
+  const obj = rawSuccess as Record<string, unknown>;
+  const gates = coerceStringList(obj['gates'] ?? obj['gateIds'] ?? obj['gate_ids']);
+  return gates.length > 0 ? { gates } : undefined;
+}
+
+function coerceConstraints(raw: unknown): VoidSpecScaffoldConstraints | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const constraints: VoidSpecScaffoldConstraints = {};
+  const routingProfile = coerceRoutingProfile(obj['routing_profile'] ?? obj['routingProfile'] ?? obj['profile']);
+  const allowedLocalities = coerceLocalities(obj['allowed_localities'] ?? obj['allowedLocalities']);
+  const privacyLocality = coerceLocalities(obj['privacy_locality'] ?? obj['privacyLocality']);
+  const maxCostCents = coerceNumber(obj['max_cost_cents'] ?? obj['maxCostCents']);
+  const promptHarnessId = coerceString(obj['prompt_harness_id'] ?? obj['promptHarnessId']);
+  if (routingProfile) { constraints.routingProfile = routingProfile; }
+  if (allowedLocalities) { constraints.allowedLocalities = allowedLocalities; }
+  if (privacyLocality) { constraints.privacyLocality = privacyLocality; }
+  if (maxCostCents !== undefined) { constraints.maxCostCents = maxCostCents; }
+  if (promptHarnessId) { constraints.promptHarnessId = promptHarnessId; }
+  return Object.keys(constraints).length > 0 ? constraints : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +264,10 @@ export function mapToAutoClawTask(vt: VoidSpecTask): AutoClawMirroredTask {
     status: voidSpecToAutoClawStatus(vt.status),
     subtasks,
     dependsOn: (vt.dependsOn ?? []).map(toSharedId),
+    intent: vt.intent,
+    successGates: vt.success?.gates,
+    constraints: vt.constraints,
+    preferredScaffold: vt.preferredScaffold,
   };
 }
 
@@ -334,6 +398,21 @@ export function syncVoidSpec(
       voidSpecFileChanged,
     },
   };
+}
+
+/**
+ * Strip a single layer of matching single/double quotes from a raw YAML scalar
+ * string. Used only by the text-level write-back functions that operate on raw
+ * YAML text rather than the parsed object tree.
+ */
+function unquote(s: string): string {
+  if (
+    (s.startsWith('"') && s.endsWith('"') && s.length >= 2) ||
+    (s.startsWith("'") && s.endsWith("'") && s.length >= 2)
+  ) {
+    return s.slice(1, -1);
+  }
+  return s;
 }
 
 /**

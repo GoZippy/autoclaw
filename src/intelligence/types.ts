@@ -270,4 +270,9 @@ export interface SourceAdapter {
   discover(env: AdapterEnv): Promise<SourcePresence>;
   extract(opts: ExtractOptions): AsyncIterable<UnifiedSession>;
   capabilities: AdapterCapabilities;
+  /**
+   * Optional: count sessions matching the current workspace vs ignored as
+   * unrelated. Used by the sources report to show workspace-scope provenance.
+   */
+  countWorkspaceSessions?(): Promise<{ matched: number; ignored: number }>;
 }

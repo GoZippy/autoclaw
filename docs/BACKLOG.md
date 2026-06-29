@@ -25,6 +25,7 @@ opt-in, golden no-op test, evidence-grounded acceptance.
 | REP-1 | Track-record ledger (join voteWriter outcomes + gate_checks + metrics + costLedger per agent×capability) | V4_PLAN §P5 | **done** (079bacc; 2026-06-13) |
 | ONB-2 | Launch Skill catalog rework (goal-oriented picker with when-to-use) | V4_PLAN §P1 | **done** (kilocode, 2026-06-13) |
 | MEM-1 | Fact provenance (`verified_by` on every memory write; 5-stage discipline) | V4_PLAN §P6 | **done** (079bacc; 2026-06-13) |
+| QLT/WL-1 | **Workflow Lab foundation** — workflow DSL, bounded recursive/reinforcement loop runner, failure-aware routing, local/LAN/cloud model routing, visual editor, workflow packs, and Pro/Teams surfaces | [specs/recursive-workflow-lab/requirements.md](specs/recursive-workflow-lab/requirements.md) / [tasks.md](specs/recursive-workflow-lab/tasks.md) | open |
 
 ### Cloud relay GA — security follow-ups (from the PA-2 audit)
 Accepted-risk residuals; tracked in

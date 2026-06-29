@@ -1,0 +1,259 @@
+{
+  "schema": "autoclaw.workflow.v1",
+  "id": "adversarial-test-loop",
+  "name": "Adversarial Test Loop",
+  "description": "Generates tests for a target, generates constrained mutants, runs tests against each mutant, and re-strengthens surviving mutants until the mutation score meets threshold or the budget expires. Mirrors the AdverTest loop. Pro showcase candidate. WL-0.5 fixture.",
+  "edition": "pro",
+  "version": "1.0.0",
+  "contract": {
+    "inputs": [
+      { "id": "task", "type": "string", "required": true, "description": "Describe behavior to test" },
+      { "id": "targetFile", "type": "string", "required": true, "description": "Source file under test" },
+      { "id": "testFile", "type": "string", "required": true, "description": "Test file to extend" }
+    ],
+    "outputs": [
+      { "id": "testPatch", "type": "artifact", "description": "Added test cases" },
+      { "id": "survivingMutants", "type": "artifact", "description": "Surviving mutant list" },
+      { "id": "mutationScore", "type": "number", "description": "Final mutation score 0-1" }
+    ],
+    "invariants": [
+      { "id": "no-src-rewrite", "description": "Source file may not be edited", "noTouchGlobs": ["${{targetFile}}"] },
+      { "id": "test-only", "description": "Only the test file may be appended to", "noTouchGlobs": ["!${{testFile}}"] }
+    ],
+    "requiredTools": [
+      { "id": "test-runner", "name": "project test runner", "required": true },
+      { "id": "mutant-runner", "name": "mutant runner", "required": true }
+    ],
+    "requiredModels": [
+      { "id": "test-gen", "capabilities": ["tools", "json"], "locality": "lan" },
+      { "id": "mutant-gen", "capabilities": ["tools", "json"], "locality": "lan" }
+    ],
+    "requiredPermissions": [
+      { "id": "exec-test", "kind": "execute", "scope": "test runner" },
+      { "id": "write-test", "kind": "write", "scope": "${{testFile}}" }
+    ],
+    "successCriteria": [
+      { "id": "mutation-score", "description": "Mutation score >= 0.8 or budget exhausted", "gateNodeId": "mutation-gate" }
+    ],
+    "recovery": { "onFailure": "route", "maxAttempts": 5 }
+  },
+  "variables": {
+    "mutationScore": { "type": "number", "scope": "run", "description": "Current mutation score" },
+    "survivors": { "type": "number", "scope": "run", "description": "Survivors across rounds" }
+  },
+  "policies": {
+    "budget": {
+      "maxCostCents": 100,
+      "maxTokens": 400000,
+      "maxWallTimeSeconds": 900,
+      "maxIterations": 5
+    },
+    "routingProfile": "quality",
+    "allowWrites": true,
+    "allowNetwork": false,
+    "requireHumanApproval": false,
+    "maxIterations": 5,
+    "maxDepth": 1,
+    "maxWallTimeSeconds": 900,
+    "premiumModelPolicy": {
+      "allowedProviders": ["ollama-local", "lm-studio-lan"],
+      "maxCostCents": 60,
+      "minAttemptsBeforeEscalation": 2,
+      "allowedFailureTriggers": ["mutation_survived", "tool_format_invalid"],
+      "requiresHumanApproval": false
+    }
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "type": "input",
+      "kind": "task",
+      "label": "Test generation task",
+      "config": {
+        "task": "${{task}}",
+        "targetFile": "${{targetFile}}",
+        "testFile": "${{testFile}}"
+      },
+      "ports": {
+        "outputs": [
+          { "id": "task", "type": "string" },
+          { "id": "targetFile", "type": "string" },
+          { "id": "testFile", "type": "string" }
+        ]
+      },
+      "intent": "test"
+    },
+    {
+      "id": "gen-tests",
+      "type": "agent",
+      "kind": "test_generate",
+      "label": "Generate tests",
+      "config": {
+        "provider": "lm-studio-lan",
+        "model": "qwen2.5:70b",
+        "intent": "tool-use",
+        "targetFile": "${{targetFile}}",
+        "testFile": "${{testFile}}",
+        "schema": "test.generate"
+      },
+      "ports": {
+        "inputs": [
+          { "id": "task", "type": "string" },
+          { "id": "targetFile", "type": "string" },
+          { "id": "testFile", "type": "string" }
+        ],
+        "outputs": [{ "id": "testPatch", "type": "object" }]
+      },
+      "intent": "test",
+      "timeoutSeconds": 240,
+      "retry": { "maxAttempts": 2, "retryOn": ["tool_format_invalid"] }
+    },
+    {
+      "id": "apply-tests",
+      "type": "tool",
+      "kind": "file_editor",
+      "label": "Append tests",
+      "config": {
+        "action": "append_tests",
+        "file": "${{testFile}}",
+        "patch": "${{gen-tests.testPatch}}"
+      },
+      "ports": {
+        "inputs": [{ "id": "testPatch", "type": "object" }],
+        "outputs": [{ "id": "applied", "type": "boolean" }]
+      },
+      "intent": "test",
+      "timeoutSeconds": 30
+    },
+    {
+      "id": "gen-mutants",
+      "type": "agent",
+      "kind": "mutation_generate",
+      "label": "Generate mutants",
+      "config": {
+        "provider": "lm-studio-lan",
+        "model": "qwen2.5:70b",
+        "intent": "creative",
+        "targetFile": "${{targetFile}}",
+        "schema": "mutation.generate",
+        "constraints": { "maxMutations": 5, "oneMutationPerLine": true }
+      },
+      "ports": {
+        "inputs": [{ "id": "targetFile", "type": "string" }],
+        "outputs": [{ "id": "mutants", "type": "array" }]
+      },
+      "intent": "test",
+      "timeoutSeconds": 180
+    },
+    {
+      "id": "mutation-gate",
+      "type": "gate",
+      "kind": "mutation",
+      "label": "Mutation gate",
+      "config": {
+        "command": "npm run mutant:check",
+        "criterion": "mutationScore >= 0.8",
+        "threshold": 0.8,
+        "failureTypeOnFail": "mutation_survived"
+      },
+      "ports": {
+        "inputs": [{ "id": "mutants", "type": "array" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "mutationScore", "type": "number" },
+          { "id": "survivors", "type": "array" }
+        ]
+      },
+      "intent": "test",
+      "timeoutSeconds": 180
+    },
+    {
+      "id": "strengthen",
+      "type": "agent",
+      "kind": "test_generate",
+      "label": "Strengthen tests against survivors",
+      "config": {
+        "provider": "lm-studio-lan",
+        "model": "qwen2.5:70b",
+        "intent": "tool-use",
+        "survivors": "${{mutation-gate.survivors}}",
+        "testFile": "${{testFile}}",
+        "schema": "test.generate"
+      },
+      "ports": {
+        "inputs": [
+          { "id": "survivors", "type": "array" },
+          { "id": "testFile", "type": "string" }
+        ],
+        "outputs": [{ "id": "testPatch", "type": "object" }]
+      },
+      "intent": "test",
+      "timeoutSeconds": 180
+    },
+    {
+      "id": "mutation-loop",
+      "type": "loop",
+      "kind": "retry",
+      "label": "Mutation loop",
+      "config": {
+        "maxIterations": 5,
+        "stopOn": "mutation-gate.passed == true",
+        "noProgress": "survivors == 0"
+      },
+      "ports": {
+        "inputs": [
+          { "id": "survivors", "type": "array" },
+          { "id": "testPatch", "type": "object" }
+        ],
+        "outputs": [{ "id": "done", "type": "boolean" }]
+      },
+      "intent": "test",
+      "timeoutSeconds": 600
+    },
+    {
+      "id": "artifact",
+      "type": "artifact",
+      "kind": "review_packet",
+      "label": "Mutation review packet",
+      "config": {
+        "include": ["mutationScore", "survivors", "testPatch", "attempts", "cost"]
+      },
+      "ports": {
+        "inputs": [{ "id": "mutationScore", "type": "number" }],
+        "outputs": [{ "id": "reviewPacket", "type": "object" }]
+      },
+      "intent": "release"
+    }
+  ],
+  "edges": [
+    { "id": "e1", "type": "data", "from": { "node": "input", "port": "targetFile" }, "to": { "node": "gen-tests", "port": "targetFile" } },
+    { "id": "e2", "type": "data", "from": { "node": "input", "port": "testFile" }, "to": { "node": "gen-tests", "port": "testFile" } },
+    { "id": "e3", "type": "data", "from": { "node": "gen-tests", "port": "testPatch" }, "to": { "node": "apply-tests", "port": "testPatch" } },
+    { "id": "e4", "type": "data", "from": { "node": "input", "port": "targetFile" }, "to": { "node": "gen-mutants", "port": "targetFile" } },
+    { "id": "e5", "type": "control", "from": { "node": "apply-tests", "port": "applied" }, "to": { "node": "gen-mutants" } },
+    { "id": "e6", "type": "data", "from": { "node": "gen-mutants", "port": "mutants" }, "to": { "node": "mutation-gate", "port": "mutants" } },
+    { "id": "e7", "type": "control", "from": { "node": "mutation-gate", "port": "passed" }, "to": { "node": "artifact", "port": "mutationScore" }, "condition": { "expression": "${{mutation-gate.passed}} == true" } },
+    { "id": "e8", "type": "data", "from": { "node": "mutation-gate", "port": "survivors" }, "to": { "node": "strengthen", "port": "survivors" } },
+    { "id": "e9", "type": "data", "from": { "node": "strengthen", "port": "testPatch" }, "to": { "node": "mutation-loop", "port": "testPatch" } },
+    { "id": "e9b", "type": "control", "from": { "node": "mutation-gate", "port": "survivors" }, "to": { "node": "mutation-loop", "port": "survivors" }, "condition": { "expression": "${{mutation-gate.passed}} == false" } },
+    { "id": "e9c", "type": "control", "from": { "node": "mutation-loop", "port": "done" }, "to": { "node": "apply-tests", "port": "testPatch" } },
+    { "id": "e10", "type": "control", "from": { "node": "apply-tests", "port": "applied" }, "to": { "node": "gen-mutants" } },
+    { "id": "e11", "type": "evidence", "from": { "node": "mutation-gate", "port": "mutationScore" }, "to": { "node": "artifact", "port": "mutationScore" } }
+  ],
+  "layout": {
+    "input": { "x": 0, "y": 0 },
+    "gen-tests": { "x": 200, "y": 0 },
+    "apply-tests": { "x": 400, "y": 0 },
+    "gen-mutants": { "x": 600, "y": 0 },
+    "mutation-gate": { "x": 800, "y": 0 },
+    "strengthen": { "x": 1000, "y": 150 },
+    "artifact": { "x": 1000, "y": -150 }
+  },
+  "metadata": {
+    "createdAt": "2026-06-27T20:24:00.000Z",
+    "updatedAt": "2026-06-27T20:24:00.000Z",
+    "author": "kilocode",
+    "packId": "adversarial-tests",
+    "tags": ["test", "mutant", "loop", "adversarial", "showcase"]
+  }
+}

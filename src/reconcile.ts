@@ -10,6 +10,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
 
 const fsPromises = fs.promises;
 
@@ -75,14 +76,9 @@ async function readSprintYamlStatuses(workspaceRoot: string): Promise<Map<string
     try {
       content = await fsPromises.readFile(path.join(sprintsDir, f), 'utf8');
     } catch { continue; }
-    // Best-effort YAML pluck: extract the sprint-level `status:` and any task
-    // entries with id/status. The sprint YAML is structured roughly as:
-    //   status: in_progress
-    //   assignments:
-    //     - tasks:
-    //         - id: T1
-    //           status: pending
-    // We look for `id:` followed by `status:` within the same indent block.
+    try {
+      yaml.load(content, { filename: f });
+    } catch { continue; }
     const sprintStatusMatch = content.match(/^status:\s*([\w-]+)\s*$/m);
     const sprintStatus = sprintStatusMatch ? sprintStatusMatch[1] : 'pending';
     // Walk task blocks: `id: <X>` then optionally a nearby `status:`.

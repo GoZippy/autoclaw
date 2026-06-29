@@ -2,6 +2,13 @@
 
 **Status:** draft for decision · **Owner:** the user (eric@gozippy) · **Date:** 2026-06-09
 
+> **Superseded on pricing (2026-06-26):** the consumer *subscription* proposed
+> below was reversed — **Pro is now a one-time perpetual-major license** (buy once,
+> 12 months of updates, keep forever); recurring billing lives only in
+> Teams/Enterprise. See [PRICING.md](../PRICING.md) + [COMMERCIAL_TERMS.md](../COMMERCIAL_TERMS.md).
+> The open-core thesis (paywall the *hosted coordination*) still stands; the
+> price/model specifics in this doc are historical.
+
 This is a planning doc, kept local (not a public roadmap). It proposes how
 AutoClaw funds its own long-term development + hosting without poisoning the
 free, open, local-first experience that drives adoption.

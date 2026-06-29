@@ -1,0 +1,135 @@
+{
+  "schema": "autoclaw.packManifest.v1",
+  "id": "recursive-workflow-lab-starter",
+  "title": "Recursive Workflow Lab — Starter Pack",
+  "version": "1.0.0",
+  "edition": "core",
+  "author": "kilocode",
+  "license": "MIT",
+  "description": "Starter workflow pack skeletons for the AutoClaw Workflow Lab. Exercises recursive multi-agent / multi-LLM loops without requiring paid model calls. All workflows run in mock / local mode against fixtures.",
+  "trustLevel": "built-in",
+  "compatibility": {
+    "autoclawVersions": ">=3.6.5",
+    "requiredTools": [
+      "file-editor",
+      "test-runner",
+      "context-pack-builder",
+      "endpoint-discovery",
+      "benchmark-runner",
+      "mutant-runner",
+      "secret-scanner",
+      "vsix-packager"
+    ],
+    "requiredProviders": [
+      "ollama-local",
+      "lm-studio-lan"
+    ],
+    "optionalProviders": [
+      "zippymesh",
+      "anthropic",
+      "openai"
+    ]
+  },
+  "permissions": {
+    "allowWrites": true,
+    "allowNetwork": false,
+    "allowShell": true,
+    "allowedCommands": [
+      "npm run compile",
+      "npm test",
+      "npm run build",
+      "node scripts/check-no-secrets.js",
+      "node scripts/check-vsix-size.js",
+      "vsce package --no-dependencies --dry-run"
+    ],
+    "deniedCommands": [
+      "vsce publish",
+      "git push --force"
+    ],
+    "writeScopes": [
+      "test/**",
+      "fixtures/**"
+    ],
+    "humanApprovalRequiredFor": [
+      "publish",
+      "destructive-git",
+      "network-egress"
+    ]
+  },
+  "safetyLimits": {
+    "maxIterationsPerLoop": 5,
+    "maxCostCents": 200,
+    "maxWallTimeSeconds": 1800,
+    "maxTokens": 500000,
+    "maxConcurrentAgents": 1,
+    "maxDepth": 1,
+    "requireHumanApprovalForPublish": true,
+    "allowNetworkEscalation": false,
+    "allowCloudModelEscalation": false
+  },
+  "expectedInputs": [
+    { "id": "task", "type": "string", "description": "Task description" },
+    { "id": "targetFile", "type": "string", "description": "Target file path" },
+    { "id": "testCommand", "type": "string", "description": "Test command" },
+    { "id": "version", "type": "string", "description": "Release version" },
+    { "id": "branch", "type": "string", "description": "Release branch" }
+  ],
+  "expectedArtifacts": [
+    { "id": "reviewPacket", "kind": "review", "description": "Review packet" },
+    { "id": "benchmarkReport", "kind": "report", "description": "Benchmark report" },
+    { "id": "releasePacket", "kind": "report", "description": "Release packet" },
+    { "id": "queryPlan", "kind": "data", "description": "Query plan" }
+  ],
+  "workflows": [
+    {
+      "id": "cheap-fix-loop",
+      "path": "cheap-fix-loop.workflow.json",
+      "intents": ["debug", "code", "test"],
+      "looping": true,
+      "escalation": true,
+      "humanApprovalRequired": false
+    },
+    {
+      "id": "context-repair-loop",
+      "path": "context-repair-loop.workflow.json",
+      "intents": ["research", "debug"],
+      "looping": true,
+      "escalation": false,
+      "humanApprovalRequired": false
+    },
+    {
+      "id": "adversarial-test-loop",
+      "path": "adversarial-test-loop.workflow.json",
+      "intents": ["test"],
+      "looping": true,
+      "escalation": false,
+      "humanApprovalRequired": false
+    },
+    {
+      "id": "release-gate",
+      "path": "release-gate.workflow.json",
+      "intents": ["release", "security"],
+      "looping": false,
+      "escalation": false,
+      "humanApprovalRequired": true
+    },
+    {
+      "id": "model-benchmark-routing",
+      "path": "model-benchmark-routing.workflow.json",
+      "intents": ["benchmark"],
+      "looping": false,
+      "escalation": false,
+      "humanApprovalRequired": false
+    }
+  ],
+  "tags": [
+    "workflow-lab",
+    "recursive",
+    "loop",
+    "local-first",
+    "fixture",
+    "starter"
+  ],
+  "createdAt": "2026-06-27T20:24:00.000Z",
+  "updatedAt": "2026-06-27T20:24:00.000Z"
+}

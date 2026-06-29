@@ -94,6 +94,11 @@ export interface KnowledgeGraph {
   forProject(project: string, opts?: { since?: string }): Promise<Thought[]>;
   since(iso: string): Promise<Thought[]>;
 
+  /** All thoughts, newest first — for the viewer/visualizer. Bounded by `limit` (default 2000). */
+  allThoughts(opts?: { limit?: number }): Promise<Thought[]>;
+  /** All stored relations/edges — for the viewer/visualizer. Bounded by `limit` (default 5000). */
+  listEdges(opts?: { limit?: number }): Promise<Edge[]>;
+
   export(opts?: {
     project?: string;
     format?: "jsonl" | "md";

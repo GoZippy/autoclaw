@@ -58,6 +58,17 @@
     });
   });
 
+  // Health-row action buttons (e.g. "Change" beside the provider row) post a
+  // run-action with the VS Code command id stored in data-action-id.
+  document.querySelectorAll('button[data-action-id]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      const commandId = btn.getAttribute('data-action-id');
+      if (commandId) {
+        vscode.postMessage({ command: 'run-action', commandId: commandId });
+      }
+    });
+  });
+
   // ---- Message handling ---------------------------------------------------
   window.addEventListener('message', function (event) {
     const msg = event.data || {};
@@ -277,7 +288,17 @@
     els.healthProvider.textContent = provider.detail || provider.resolved || provider.configured || 'unknown';
 
     // Index row.
-    renderHealthIndex(health.index || {});
+    const index = health.index || {};
+    renderHealthIndex(index);
+
+    // If the DB was auto-recovered from corruption, switch the Online pill to
+    // the amber Reset pill so the user sees the degraded state immediately.
+    if (index.dbCorruptRecovered) {
+      const onlinePill = document.getElementById('backend-online');
+      const resetPill = document.getElementById('backend-reset');
+      if (onlinePill) { onlinePill.hidden = true; }
+      if (resetPill) { resetPill.hidden = false; }
+    }
 
     // Nudges.
     renderHealthNudges(health.nudges || []);

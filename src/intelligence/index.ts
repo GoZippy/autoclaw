@@ -45,6 +45,7 @@ export {
   ResolveOptions,
   DEFAULT_EMBED_MODEL,
   resolveEmbeddingConfig,
+  applyEmbeddingPin,
   setEmbeddingProvider,
   clearEmbeddingPin,
   readEmbeddingPin,

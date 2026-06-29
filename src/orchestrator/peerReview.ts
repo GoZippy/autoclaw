@@ -208,6 +208,23 @@ export function buildConsensusStub(
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Handoff note guard                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Return true when a `task_complete` payload includes a handoff note reference.
+ * A handoff note is required by §3.3 of the agent session protocol — its
+ * absence means the completing agent did not document which files it changed,
+ * which are clean, or what tests ran. The watcher uses this to emit a
+ * `finding_report` and flag the consensus stub so reviewers know the brief
+ * is missing.
+ */
+export function hasHandoffNote(tc: TaskCompleteLike): boolean {
+  const ref = tc.payload?.handoff_note;
+  return typeof ref === 'string' && ref.trim().length > 0;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Filename helper                                                           */
 /* -------------------------------------------------------------------------- */
 

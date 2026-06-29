@@ -37,6 +37,7 @@ Everything else is reachable from here.
 
 | Doc | Date | Status |
 |---|---|---|
+| [research/2026-06-27-agentic-ai-workflows/synthesis.md](research/2026-06-27-agentic-ai-workflows/synthesis.md) | 2026-06-27 | active — informs Workflow Lab, failure-aware routing, verifier loops, and model-routing work |
 | [research/2026-05-22-cross-project-survey.md](research/2026-05-22-cross-project-survey.md) | 2026-05-22 | active — informs v3.1 roadmap |
 | [research/2026-06-11-fable-5-agent-patterns.md](research/2026-06-11-fable-5-agent-patterns.md) | 2026-06-11 | active — informs V4_PLAN P5–P8 + the gates spec |
 | [research/2026-06-11-loss-function-development.md](research/2026-06-11-loss-function-development.md) | 2026-06-11 | active — rubric/harness design playbook; informs QLT epics |
@@ -50,6 +51,7 @@ Everything else is reachable from here.
 |---|---|
 | [specs/_template.spec.md](specs/_template.spec.md) | Spec-as-contract template. Use for every Phase-A onward feature. |
 | `specs/<feature>/spec.md` | One per feature. Written by the architect persona; consumed by implementer personas. |
+| [specs/recursive-workflow-lab/requirements.md](specs/recursive-workflow-lab/requirements.md) + [tasks.md](specs/recursive-workflow-lab/tasks.md) + [design-review-addendum.md](specs/recursive-workflow-lab/design-review-addendum.md) | Workflow Lab: recursive/reinforcement agent loops, local/LAN/cloud model routing, visual flow authoring, workflow packs, and Pro/Teams surfaces. Status: draft. |
 | [specs/orchestrate-gates-and-routing.spec.md](specs/orchestrate-gates-and-routing.spec.md) | Evidence-grounded review gates (reviewer≠author, acceptance commands) + tier×phase routing. Status: pilot — A live, C/B lib landed. |
 | [specs/agent-trigger-hooks.spec.md](specs/agent-trigger-hooks.spec.md) | Event→action hooks (wake agents on comms/build events) + fleet HALT kill switch + audit. Status: draft (V4 HKS pillar). |
 

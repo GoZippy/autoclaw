@@ -21,6 +21,9 @@
         <div class="health-row" id="health-provider-row">
           <span class="health-row-label">Provider</span>
           <span class="health-row-value" id="health-provider"></span>
+          <button type="button" class="health-row-btn" id="health-provider-change"
+            data-action-id="autoclaw.intelligence.setEmbeddingProvider"
+            title="Change embedding provider or model — note: switching models requires a full re-index">Change</button>
         </div>
         <div class="health-row" id="health-index-row">
           <span class="health-row-label">Index</span>
@@ -44,8 +47,10 @@
       <button type="button" class="action" data-action="status" title="Status / Manage — where data lives, sizes, stats">Status</button>
       <button type="button" class="action" data-action="install-backend" title="Install the vector backend (sqlite-vec) — project-local">Backend</button>
       <span id="backend-online" class="backend-pill" hidden title="Vector backend online — RAG enabled">&#x25cf; Online</span>
+      <span id="backend-reset" class="backend-pill backend-pill-warn" hidden title="Vector backend installed but index was reset after corruption — re-index to restore RAG">&#x26A0; Reset</span>
       <button type="button" class="action" data-action="relocate" title="Relocate the vector backend to another drive">Relocate</button>
       <button type="button" class="action" data-action="system-tier" title="Cross-project system tier (set systemDir to enable)">System</button>
+      <button type="button" class="action ghost" data-action="pick-system-dir" title="Browse for the system intelligence directory — opens a native folder picker pre-set to the best location on your machine">&#x1F4C2;</button>
       <button type="button" class="action" data-action="steering" title="Generate a steering file from learned conventions">Steering</button>
       <button type="button" class="action" data-action="scaffold" title="Scaffold a new skill/tool seeded with learned conventions">Scaffold</button>
       <button type="button" class="action ghost" data-action="settings" title="Open Intelligence settings (backendDir, systemDir)">&#x2699;</button>

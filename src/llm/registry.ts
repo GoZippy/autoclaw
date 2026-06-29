@@ -31,6 +31,7 @@ import { ZippyMeshProvider } from './zippymesh';
 import { OllamaProvider } from './ollama';
 import { LmStudioProvider } from './lmstudio';
 import { Oracle } from './oracle';
+import { CostLedger, type LedgerRow } from './costLedger';
 
 export interface RegistryOptions {
   workspaceRoot: string;
@@ -62,11 +63,14 @@ export class LlmRegistry {
   private readonly providers: Map<ProviderId, LlmProvider> = new Map();
   private readonly oracle: Oracle;
   private readonly workspaceRoot: string;
+  /** Cost ledger — every chat() call appends one row (counts only, no content). */
+  private readonly costLedger: CostLedger;
   /** Detection results from the last `detect()` call. */
   private detections: Map<ProviderId, DetectionResult> = new Map();
 
   constructor(opts: RegistryOptions) {
     this.workspaceRoot = opts.workspaceRoot;
+    this.costLedger = new CostLedger(opts.workspaceRoot);
     this.oracle = opts.oracle ?? new Oracle({ workspaceRoot: opts.workspaceRoot });
     const providers = opts.providers ?? [
       new ZippyMeshProvider(),
@@ -236,6 +240,12 @@ export class LlmRegistry {
 
     const result = await pick.provider.chat({ ...opts, model: opts.model ?? pick.model });
 
+    // Append one cost-ledger row per chat() call (counts only — no prompt/response
+    // content). This is the single production writer the readers (budget ceiling,
+    // agentCost, fleetMetrics, intelligence ledgerBridge) consume — without it,
+    // cost/budget enforcement and per-agent rollups had no data. Best-effort.
+    await this.recordCost(opts, pick, result);
+
     // On 429, record the rate limit so subsequent calls skip this model.
     if (!result.ok && result.httpStatus === 429) {
       const endpointId = providerIdToEndpointId(pick.provider.id);
@@ -243,6 +253,31 @@ export class LlmRegistry {
       this.oracle.recordRateLimit(result.model, endpointId, retryAfterSec);
     }
     return result;
+  }
+
+  /**
+   * Append one ledger row for a completed chat() call. Never throws — a ledger
+   * write failure must not break the chat path (CostLedger.append also swallows).
+   */
+  private async recordCost(opts: ChatOptions, pick: PreferredPick, result: ChatResult): Promise<void> {
+    try {
+      const row: LedgerRow = {
+        timestamp: new Date().toISOString(),
+        provider: result.servedBy ?? pick.provider.id,
+        model: result.model ?? pick.model,
+        operation: 'chat',
+        tokens: { input: result.tokens?.input ?? 0, output: result.tokens?.output ?? 0 },
+        costCents: result.costCents ?? 0,
+        failsafe: pick.failsafe,
+      };
+      if (opts.runId) { row.runId = opts.runId; }
+      if (opts.sessionId) { row.sessionId = opts.sessionId; }
+      if (opts.callerPersonaId) { row.callerPersonaId = opts.callerPersonaId; }
+      if (!result.ok && result.errorClass) { row.notes = `error:${result.errorClass}`; }
+      await this.costLedger.append(row);
+    } catch {
+      /* ledger write must never break a chat */
+    }
   }
 
   /** Expose the oracle so callers (persona loader) can record 429s themselves. */

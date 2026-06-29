@@ -71,11 +71,13 @@ import type { Manifest, PlannerConfig, PlanResult, ValidationVote, AgentRegistry
 import { classifyConsensusActive, type ConsensusActiveEntry } from './orchestrator/consensusActiveScan';
 import { registerChatParticipant } from './chatparticipant';
 import { registerIntelligenceCommands } from './intelligence-commands';
+import { registerWorkflowLabCommands } from './workflows/command';
 import { startIntelligenceRefreshService, type RefreshServiceHandle } from './intelligence';
 import { startIndexWatchService, loadConfig as loadIntelligenceConfig, type IndexWatchHandle } from './intelligence';
 import { registerIntelligenceDashboard } from './views/intelligenceDashboard';
 import { registerIntelligenceHealthSurface } from './intelligence/healthSurface';
 import { registerManagerPanel } from './manager/managerPanel';
+import { registerKgViewPanel } from './kg/kgViewPanel';
 import { registerSupport } from './support/support';
 import { registerLicensing } from './licensing/licensing';
 import { GateService } from './licensing/gateService';
@@ -93,6 +95,8 @@ import {
   readRelayConfig, writeRelayConfig, endpointIsSecure, defaultRelayConfig,
 } from './cloud';
 import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS, dispatchViaRegistry } from './runners';
+import { dispatchPreferredByReputation } from './runners/reputationPreference';
+import { ReviewFleetController } from './reviewfleet/activate';
 import { recordDispatchCost, gatherFleetData } from './panel/fleetData';
 import {
   buildFleetDigest,
@@ -108,6 +112,7 @@ import { defaultAgentTypeForRunner, agentTypeProfile, AGENT_TYPES, type AgentTyp
 import { setFleetHalted, startTriggerHooksRuntime } from './hooks/triggerHooks';
 // Track-record ledger (REP-1) — record reviewed-task outcomes for reputation routing.
 import { recordTaskOutcome } from './reputation';
+import { recordOutcomeEdge } from './intelligence/kgRecord';
 import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
@@ -231,6 +236,9 @@ let activeRefreshService: RefreshServiceHandle | null = null;
  * filesystem mailbox always remains the canonical durable record.
  */
 let activeFabric: FabricBus | null = null;
+// Review Fleet activation controller (RF-4d) — singleton; dormant until the
+// user runs autoclaw.reviewFleet.start with enabled + a budget set. Stopped in deactivate().
+let reviewFleetController: ReviewFleetController | null = null;
 let currentIde: IdeId = 'other';
 let currentWorkspace: string = '';
 
@@ -703,6 +711,50 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // Review Fleet (RF-4d): start/stop the automated reviewer watcher. DORMANT
+  // by default — nothing dispatches a paid model unless BOTH autoclaw.reviewFleet.enabled
+  // is true AND autoclaw.reviewFleet.budgetCents > 0 (the two-gate $0 safety).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.reviewFleet.start', async () => {
+      const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!ws) {
+        vscode.window.showErrorMessage('AutoClaw Review Fleet: open a workspace folder first.');
+        return;
+      }
+      const cfg = vscode.workspace.getConfiguration('autoclaw.reviewFleet');
+      const enabled = cfg.get<boolean>('enabled', false);
+      const budgetCents = cfg.get<number>('budgetCents', 0);
+      if (enabled && budgetCents <= 0) {
+        vscode.window.showWarningMessage(
+          'AutoClaw Review Fleet: enabled but budget is 0¢ — reviewers fail safe to human (no spend). ' +
+            'Set autoclaw.reviewFleet.budgetCents > 0 to allow paid dispatch.',
+        );
+      }
+      if (!reviewFleetController) { reviewFleetController = new ReviewFleetController(); }
+      const hostAgentId = activeHostAgentId() ?? 'claude-code';
+      const res = await reviewFleetController.start(ws, {
+        enabled,
+        budgetCents,
+        intervalMs: cfg.get<number>('intervalMs', 15000),
+        maxCycles: cfg.get<number>('maxCycles', 50),
+        agentId: hostAgentId,
+        sessionId: extScopeSession(),
+      });
+      vscode.window.showInformationMessage(`AutoClaw Review Fleet: ${res.reason}`);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.reviewFleet.stop', () => {
+      const res = reviewFleetController?.stop() ?? { stopped: false };
+      vscode.window.showInformationMessage(
+        res.stopped
+          ? 'AutoClaw Review Fleet: stopping at the next cycle boundary…'
+          : 'AutoClaw Review Fleet: not running.',
+      );
+    }),
+  );
+
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.orchestrate.merge', () =>
       withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateMergeCommand),
@@ -862,6 +914,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', () => fleetJoinPromptCommand()),
     // Add a whole agent team from a ready-made template (gallery → preview → fan-out).
     vscode.commands.registerCommand('autoclaw.fleet.addTeam', () => fleetAddTeamCommand()),
+    // Open the "Build your first agent team" getting-started walkthrough.
+    vscode.commands.registerCommand('autoclaw.openWalkthrough', () => openGettingStartedWalkthrough()),
     // Wire an arbitrary (non-extension) agent id into the comms tree.
     vscode.commands.registerCommand('autoclaw.fleet.scaffoldAgent', () => fleetScaffoldAgentCommand()),
     // Toggle the MCP server's allowWrites gate (lets MCP-lane agents claim/vote).
@@ -938,26 +992,39 @@ export function activate(context: vscode.ExtensionContext) {
         // via the existing dispatch path (the established way runners start work).
         spawnRunner: async (decision) => {
           const target = decision.target ?? '';
+          // BL-7: a hook with no explicit target (or 'auto'/'best') selects the best
+          // runner by REPUTATION instead of erroring — the production caller that
+          // finally makes getPreferred's §5.5 `reputation` criterion fire (the
+          // flagship reputation-aware assignment was built but called nowhere).
+          const wantsReputationPick = target === '' || target === 'auto' || target === 'best';
           const known = (BUILTIN_RUNNER_IDS as readonly string[]).includes(target);
-          if (!known) { throw new Error(`unknown runner "${target}"`); }
-          vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": spawning runner ${target}.`);
+          if (!wantsReputationPick && !known) { throw new Error(`unknown runner "${target}"`); }
+          vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": spawning runner ${wantsReputationPick ? '(reputation-preferred)' : target}.`);
           // Opt-in direct dispatch through the runner contract (§5.5 preference
           // order + Runner.dispatch). Off by default because it can launch a real
           // host process; the default path below wakes via the work queue. When
           // enabled, a completed dispatch auto-feeds the per-agent cost ledger.
           if (process.env.AUTOCLAW_RUNNER_DIRECT_DISPATCH === 'true') {
-            const outcome = await dispatchViaRegistry(createDefaultRunnerRegistry(), {
-              runnerId: target,
-              prompt: `[AutoClaw hook "${decision.rule.id}"] Resume assigned work (trigger: ${decision.rule.on}).`,
-              workingDir: hooksRoot,
-              trust: 'auto',
-              onResult: (runnerId, result) =>
-                recordDispatchCost(hooksRoot, runnerId, result, {
-                  sprint: Number(decision.event.payload.sprint ?? 1) || 1,
-                }),
-            });
-            if (outcome === null) { throw new Error(`runner "${target}" not detected or disabled`); }
-            if (!outcome.result.ok) { throw new Error(`runner ${target} dispatch failed (exit ${outcome.result.exitCode})`); }
+            const sprint = Number(decision.event.payload.sprint ?? 1) || 1;
+            const prompt = `[AutoClaw hook "${decision.rule.id}"] Resume assigned work (trigger: ${decision.rule.on}).`;
+            const registry = createDefaultRunnerRegistry();
+            // reputation-preferred selection (no explicit runnerId so the §5.5
+            // order decides) vs. a targeted wake of the named runner.
+            const outcome = wantsReputationPick
+              ? await dispatchPreferredByReputation(registry, {
+                  workspaceRoot: hooksRoot, prompt, workingDir: hooksRoot, trust: 'auto',
+                  onResult: (runnerId, result) => recordDispatchCost(hooksRoot, runnerId, result, { sprint }),
+                })
+              : await dispatchViaRegistry(registry, {
+                  runnerId: target, prompt, workingDir: hooksRoot, trust: 'auto',
+                  onResult: (runnerId, result) => recordDispatchCost(hooksRoot, runnerId, result, { sprint }),
+                });
+            if (outcome === null) {
+              throw new Error(wantsReputationPick
+                ? 'no runner selectable by reputation (none detected/enabled)'
+                : `runner "${target}" not detected or disabled`);
+            }
+            if (!outcome.result.ok) { throw new Error(`runner ${outcome.runnerId} dispatch failed (exit ${outcome.result.exitCode})`); }
             return;
           }
           const pkg = {
@@ -1276,6 +1343,12 @@ export function activate(context: vscode.ExtensionContext) {
     () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
   );
 
+  // Register Workflow Lab commands (WL-1.4)
+  registerWorkflowLabCommands(
+    context,
+    () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+  );
+
   // Intelligence metrics dashboard (webview view + refresh command + metrics
   // file watcher). Registration only — no I/O until the view is opened.
   registerIntelligenceDashboard(context);
@@ -1292,6 +1365,10 @@ export function activate(context: vscode.ExtensionContext) {
   // Full-tab Manager Surface (autoclaw.manager.open) — roomy single pane for
   // overseeing the fleet. Command registration only; no I/O until opened.
   registerManagerPanel(context);
+
+  // Knowledge Graph viewer (autoclaw.kg.browse) — browse + visualize the
+  // in-process KG (thoughts + relations). Command registration only.
+  registerKgViewPanel(context);
 
   // First-run welcome with IDE-specific guidance
   showWelcomeIfNeeded(context);
@@ -2892,8 +2969,27 @@ async function autobuildTailCommand(): Promise<void> {
 // Welcome / Onboarding
 // ---------------------------------------------------------------------------
 
+/**
+ * Open the AutoClaw getting-started walkthrough. Best-effort: VS Code forks /
+ * non-Microsoft hosts may not support `workbench.action.openWalkthrough`, so a
+ * failure is swallowed rather than surfaced. Exposed as `autoclaw.openWalkthrough`
+ * so the first-run nudge, the panel, and the docs can all link to it.
+ */
+async function openGettingStartedWalkthrough(): Promise<void> {
+  try {
+    await vscode.commands.executeCommand(
+      'workbench.action.openWalkthrough',
+      'ZippyTechnologiesLLC.autoclaw#autoclaw.fleet.getStarted',
+      false,
+    );
+  } catch { /* host doesn't support walkthroughs — non-fatal */ }
+}
+
 async function showWelcomeIfNeeded(context: vscode.ExtensionContext): Promise<void> {
-  const WELCOME_KEY = 'autoclaw.welcomeShown.2.0.0';
+  // Bump the key suffix whenever this message changes so existing installs see
+  // the new onboarding exactly once (the old `.2.0.0` key is intentionally left
+  // behind). Promotes the team-onboarding flow that is now the headline feature.
+  const WELCOME_KEY = 'autoclaw.welcomeShown.3.6';
   if (context.globalState.get<boolean>(WELCOME_KEY)) { return; }
 
   const ide = vscode.env.appName || 'VS Code';
@@ -2902,21 +2998,26 @@ async function showWelcomeIfNeeded(context: vscode.ExtensionContext): Promise<vo
 
   let tip: string;
   if (isKiro) {
-    tip = 'In Kiro chat: use # to attach steering files (kdream, orchestrate, etc.). In Kilo Code: type skill names naturally (e.g. "kdream start").';
+    tip = 'In Kiro chat, use # to attach steering files (kdream, orchestrate).';
   } else if (isCursor) {
-    tip = 'Skills are loaded from .cursor/rules/. Type skill commands in chat (e.g. "kdream start", "orchestrate plan").';
+    tip = 'Skills load from .cursor/rules/ — type commands in chat (e.g. "orchestrate plan").';
   } else {
-    tip = 'Use /kdream, /autobuild, /mateam, /orchestrate in VS Code chat. Or run "AutoClaw: Launch Skill" from the command palette.';
+    tip = 'Or use /kdream, /orchestrate, or "AutoClaw: Launch Skill" in chat.';
   }
 
+  const ADD_TEAM = 'Add a team';
+  const WALKTHROUGH = 'Open walkthrough';
   const action = await vscode.window.showInformationMessage(
-    `AutoClaw v2.0.0 ready (${ide}). ${tip}`,
-    'Launch Skill',
-    'Dismiss'
+    `AutoClaw is ready (${ide}). Put a small team of AI agents on this repo — start with "Solo + Reviewer". ${tip}`,
+    ADD_TEAM,
+    WALKTHROUGH,
+    'Dismiss',
   );
 
-  if (action === 'Launch Skill') {
-    await vscode.commands.executeCommand('autoclaw.launchSkill');
+  if (action === ADD_TEAM) {
+    await vscode.commands.executeCommand('autoclaw.fleet.addTeam');
+  } else if (action === WALKTHROUGH) {
+    await openGettingStartedWalkthrough();
   }
 
   await context.globalState.update(WELCOME_KEY, true);
@@ -3923,6 +4024,20 @@ async function orchestrateReviewCommand(): Promise<void> {
       } catch (e) {
         channel.appendLine(`[orchestrate] reputation record failed for ${taskId}: ${(e as Error).message}`);
       }
+      // A co-design fan-out: mirror the SAME outcome as a structural KG edge
+      // (one event → { reputation row above + KG edge here }). Best-effort.
+      // reviewers = distinct voters (excluding the assignee) — populates the
+      // agent--reviewed--> task edges so the graph is structural, not just
+      // completed-links. No capabilities lookup at this site (agent registry
+      // join), so demonstrated-edges are not sourced here.
+      recordOutcomeEdge(workspaceRoot, {
+        taskId,
+        agentId: author,
+        verdict: result.final_verdict,
+        gatePassed: gateChecks ? gateChecks.every(g => g.passed) : undefined,
+        resolvedAt: new Date().toISOString(),
+        reviewers: result.votes ? Array.from(new Set(result.votes.map(v => v.agent_id).filter(a => a !== author))) : undefined,
+      }).catch(() => { /* KG edge is best-effort */ });
     }
 
     if (result.status !== 'consensus_reached') { allApproved = false; }
@@ -4271,14 +4386,18 @@ async function kgRestartCommand(extensionPath: string): Promise<void> {
 }
 
 /**
- * RV-3: explicit `autoclaw.kg.openDashboard` — focus the AutoClaw panel where
- * the KG (kg:) fabric-health badge lives, then surface a live health line so
- * the user can see daemon status. There is no separate KG webview; the unified
- * dashboard is the surface.
+ * `autoclaw.kg.openDashboard` — open the Knowledge Graph viewer (browse +
+ * visualize). This is the surface the `kg:` fabric-health chip dispatches to.
+ * Falls back to focusing the unified dashboard + a health line if the viewer
+ * can't open (e.g. headless).
  */
 async function kgOpenDashboardCommand(): Promise<void> {
-  try { await vscode.commands.executeCommand('kdreamDashboard.focus'); } catch { /* panel may be unavailable in headless */ }
-  await kgHealthCheckCommand();
+  try {
+    await vscode.commands.executeCommand('autoclaw.kg.browse');
+  } catch {
+    try { await vscode.commands.executeCommand('kdreamDashboard.focus'); } catch { /* panel may be unavailable in headless */ }
+    await kgHealthCheckCommand();
+  }
 }
 
 async function bridgeAddAgentCommand(): Promise<void> {
@@ -6430,10 +6549,13 @@ function startInboxWatcher(context: vscode.ExtensionContext): void {
             session_id: typeof msg.session_id === 'string' ? msg.session_id : undefined,
             completed_at: typeof msg.timestamp === 'string' ? msg.timestamp : new Date().toISOString(),
             sprint: sprintNum ?? undefined,
-            title: typeof payload.summary === 'string' ? payload.summary
-                 : typeof payload.title === 'string' ? payload.title : undefined,
+            title: typeof payload.title === 'string' ? payload.title : undefined,
             review_status: typeof payload.review_status === 'string' ? payload.review_status : undefined,
             branch: typeof payload.branch === 'string' ? payload.branch : undefined,
+            gates: Array.isArray(payload.gates) ? payload.gates.filter((g: unknown) => typeof g === 'string') : undefined,
+            tests_run: typeof payload.tests_run === 'number' ? payload.tests_run : undefined,
+            task_ids: Array.isArray(payload.task_ids) ? payload.task_ids.filter((t: unknown) => typeof t === 'string') : undefined,
+            summary: typeof payload.summary === 'string' ? payload.summary : undefined,
           });
         } catch { /* ledger is best-effort */ }
 
@@ -6478,6 +6600,10 @@ function startInboxWatcher(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate() {
+  if (reviewFleetController) {
+    reviewFleetController.stop();
+    reviewFleetController = null;
+  }
   if (stateWatcher) {
     stateWatcher.dispose();
   }

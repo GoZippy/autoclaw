@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [3.6.12] - 2026-06-29
+
+Review Fleet go-live activation (RF-4d) — the fleet can now be turned on from a
+command, and stays dormant until you opt in with a budget.
+
+- **`AutoClaw: Review Fleet — Start / Stop Automated Reviewer`** commands plus a
+  new **Review Fleet** settings group (`autoclaw.reviewFleet.enabled`,
+  `.budgetCents`, `.intervalMs`, `.maxCycles`). The watcher only scans or
+  dispatches when **both** `enabled` is true **and** `budgetCents > 0` — the
+  two-gate $0-until-funded safety. Bounded by `maxCycles`; stopped on deactivate.
+
+## [3.6.11] - 2026-06-29
+
+Review Fleet (automated, dormant-by-default reviewer layer) + the first live
+wiring of reputation-aware dispatch + a validated board refresh.
+
+- **Review Fleet RF-1→RF-4c** (`src/reviewfleet/*`): capability roster, tiered
+  cross-provider review router, service core, production-default dispatch
+  (off-by-default behind an explicit `enabled` + budget cap), a bounded dormant
+  watcher loop, and the inbox adapter that runs it against the real comms tree.
+  133 fleet tests; nothing dispatches a paid model until explicitly enabled.
+- **BL-7a — reputation-aware dispatch goes live**: the `spawnRunner` trigger
+  hook now selects the best runner by reputation when no explicit target is
+  given (`dispatchPreferredByReputation`), giving the previously-inert flagship
+  engine its first production caller. Broad orchestrator-assignment reach (BL-7b)
+  is tracked as a follow-up.
+- **Scaffold-learning scorer (OSL)**: `ScaffoldScore` reward rows with
+  false-accept/false-reject penalties and anti-hacking handling.
+- **Board refresh**: 92 stale consensus votes + 56 claims triaged against sprint
+  status / landed tests / live code; stale residue archived reversibly. The
+  triage caught the BL-7 flagship as built-but-unwired before it could be
+  discarded.
+
 ## [3.6.6] - 2026-06-26
 
 Builds on 3.6.5: local-LLM ergonomics, ready-made agent teams, and a wave of
@@ -30,6 +63,17 @@ coordination + intelligence hardening.
   safety rails.
 - **Settings** — grouped into navigable categories; maintainer/product config
   hidden from the Settings UI.
+- **Onboarding** — a first-run nudge now promotes the team flow and links the new
+  **Build your first agent team** walkthrough (`AutoClaw: Open Getting-Started
+  Walkthrough`); the fleet panel gains an **Add Team** button + an empty-state
+  call-to-action; the README quick-start covers teams + the playbook.
+
+### Changed
+
+- **Licensing model finalized.** Pro is now a **one-time perpetual-major** license
+  (buy once, 12 months of updates, keep forever) rather than a subscription;
+  Teams/Enterprise remain annual. `PRICING.md` + `LICENSE` Schedule A updated.
+  Feature-gate enforcement remains **off** by default — nothing is gated yet.
 
 ### Fixed
 

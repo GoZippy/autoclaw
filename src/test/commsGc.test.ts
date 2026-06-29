@@ -160,7 +160,7 @@ suite('commsGc — archiveSharedInbox', () => {
   test('missing tree is tolerated (no throw, zero counts)', async () => {
     const root = mkWorkspace();
     const res = await archiveSharedInbox(root, { now: NOW });
-    assert.deepStrictEqual(res, { scanned: 0, archivedTelemetry: 0, archivedAgedSignals: 0 });
+    assert.deepStrictEqual(res, { scanned: 0, archivedTelemetry: 0, archivedAgedSignals: 0, purgedHandoffNotes: 0 });
   });
 
   test('archives aged autobuild-heartbeat finding_reports + auto task_claim nudges', async () => {
@@ -264,5 +264,72 @@ suite('commsGc — archiveSharedInbox', () => {
     assert.strictEqual(res.archivedTelemetry, 1);
     // The malformed file is still in shared (never moved).
     assert.ok(listShared(root).includes('broken.json'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// commsGc — handoff note GC (§3.3 retention)
+// ---------------------------------------------------------------------------
+
+function handoffsDir(root: string): string {
+  return path.join(root, '.autoclaw', 'orchestrator', 'comms', 'handoffs');
+}
+
+function writeHandoffNote(root: string, taskId: string, timestamp: string): void {
+  const dir = handoffsDir(root);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = `${taskId}-abcd1234.json`;
+  fs.writeFileSync(path.join(dir, file), JSON.stringify({ task_id: taskId, timestamp }), 'utf8');
+}
+
+function listHandoffs(root: string): string[] {
+  try { return fs.readdirSync(handoffsDir(root)).filter(f => f.endsWith('.json')).sort(); }
+  catch { return []; }
+}
+
+suite('commsGc — handoff note purge', () => {
+  const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+
+  test('missing handoffs dir is tolerated', async () => {
+    const root = mkWorkspace();
+    const res = await archiveSharedInbox(root, { now: NOW });
+    assert.strictEqual(res.purgedHandoffNotes, 0);
+  });
+
+  test('purges notes older than handoffMaxAgeMs', async () => {
+    const root = mkWorkspace();
+    writeHandoffNote(root, 'old-task', iso(-THIRTY_DAYS - 1000));
+    writeHandoffNote(root, 'fresh-task', iso(-1 * DAY));
+
+    const res = await archiveSharedInbox(root, { now: NOW });
+    assert.strictEqual(res.purgedHandoffNotes, 1, 'old note purged');
+    const remaining = listHandoffs(root);
+    assert.strictEqual(remaining.length, 1);
+    assert.ok(remaining[0].startsWith('fresh-task'), 'fresh note kept');
+  });
+
+  test('keeps notes within the retention window', async () => {
+    const root = mkWorkspace();
+    writeHandoffNote(root, 'recent', iso(-7 * DAY));
+    const res = await archiveSharedInbox(root, { now: NOW });
+    assert.strictEqual(res.purgedHandoffNotes, 0);
+    assert.strictEqual(listHandoffs(root).length, 1);
+  });
+
+  test('respects custom handoffMaxAgeMs override', async () => {
+    const root = mkWorkspace();
+    writeHandoffNote(root, 'task-a', iso(-2 * DAY));  // 2 days old
+    const res = await archiveSharedInbox(root, { now: NOW, handoffMaxAgeMs: 1 * DAY });
+    assert.strictEqual(res.purgedHandoffNotes, 1, 'purged when custom window is shorter');
+  });
+
+  test('malformed handoff note files are skipped (not purged)', async () => {
+    const root = mkWorkspace();
+    const dir = handoffsDir(root);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'bad-task-abcd1234.json'), '{ invalid json', 'utf8');
+    const res = await archiveSharedInbox(root, { now: NOW });
+    assert.strictEqual(res.purgedHandoffNotes, 0, 'malformed files are never purged');
+    assert.ok(fs.existsSync(path.join(dir, 'bad-task-abcd1234.json')), 'malformed file left in place');
   });
 });

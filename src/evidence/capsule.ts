@@ -70,6 +70,8 @@ export interface EvidenceCapsule {
   gate_checks?: GateCheckResult[];
   /** True iff a gate ran and every check passed; undefined when no gate ran. */
   gates_passed?: boolean;
+  /** Number of gate checks that passed as weak-pass (skipped/no-op). */
+  gates_weak?: number;
 
   timing?: CapsuleTiming;
 
@@ -126,6 +128,9 @@ export function buildCapsule(
     ? gate.reduce((s, g) => s + (g.duration_ms || 0), 0)
     : undefined;
   const gates_passed = gate && gate.length > 0 ? gate.every(g => g.passed) : undefined;
+  const gates_weak = gate && gate.length > 0
+    ? gate.filter(g => g.verdict === 'weak-pass').length
+    : undefined;
 
   const votes_dir = opts.votes_dir ?? ACTIVE_SUBDIR;
   const capsule_path = opts.capsule_path
@@ -144,6 +149,7 @@ export function buildCapsule(
     acceptance_checks: opts.acceptance_checks,
     gate_checks: gate,
     gates_passed,
+    gates_weak: gates_weak && gates_weak > 0 ? gates_weak : undefined,
     timing: (opts.total_ms !== undefined || gate_ms !== undefined)
       ? { total_ms: opts.total_ms, gate_ms }
       : undefined,
@@ -176,6 +182,9 @@ export function captureCapsule(input: {
   const gate = input.gate_checks;
   const gate_ms = gate && gate.length > 0 ? gate.reduce((s, g) => s + (g.duration_ms || 0), 0) : undefined;
   const gates_passed = gate && gate.length > 0 ? gate.every(g => g.passed) : undefined;
+  const gates_weak = gate && gate.length > 0
+    ? gate.filter(g => g.verdict === 'weak-pass').length
+    : undefined;
   const final_verdict = input.final_verdict
     ?? (gates_passed === false ? 'needs_changes' : gates_passed === true ? 'approved' : 'abstain');
 
@@ -191,6 +200,7 @@ export function captureCapsule(input: {
     acceptance_checks: input.acceptance_checks,
     gate_checks: gate,
     gates_passed,
+    gates_weak: gates_weak && gates_weak > 0 ? gates_weak : undefined,
     timing: gate_ms !== undefined ? { gate_ms } : undefined,
     artifacts: {
       capsule_path: path.join(RESULTS_SUBDIR, `${safeTaskId(input.task_id)}-${run_id}.json`),

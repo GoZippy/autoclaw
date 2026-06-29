@@ -54,6 +54,15 @@ export interface SourceRow {
   sessionCount?: number;
   /** Availability/remediation hint. */
   hint?: string;
+  /**
+   * Workspace scope provenance (only when `countSessions` is requested and the
+   * source is available + enabled). Reports how many of the source's sessions
+   * matched the current workspace vs how many were ignored as unrelated.
+   */
+  workspaceScope?: {
+    matched: number;
+    ignored: number;
+  };
 }
 
 /** Options shared by the `/sources` operations. */
@@ -129,6 +138,11 @@ export async function listSources(opts: ListSourcesOptions): Promise<SourceRow[]
 
     if (opts.countSessions && presence.available && enabled) {
       row.sessionCount = await countSessions(adapter, env, watermarks, project, cap, log);
+      if (typeof adapter.countWorkspaceSessions === 'function') {
+        try {
+          row.workspaceScope = await adapter.countWorkspaceSessions();
+        } catch { /* best-effort */ }
+      }
     }
     rows.push(row);
   }
@@ -202,8 +216,11 @@ export function renderSourcesReport(rows: SourceRow[]): string {
     const avail = r.available ? 'available' : 'unavailable';
     const count = typeof r.sessionCount === 'number' ? `, ${r.sessionCount} session(s)` : '';
     const loc = r.locations.length ? ` @ ${r.locations[0]}` : '';
+    const ws = r.workspaceScope
+      ? `, workspace: ${r.workspaceScope.matched} matched / ${r.workspaceScope.ignored} ignored`
+      : '';
     lines.push(
-      `  [tier ${r.tier}] ${r.displayName} (${r.id}): ${state}, ${avail}${count}${loc}` +
+      `  [tier ${r.tier}] ${r.displayName} (${r.id}): ${state}, ${avail}${count}${ws}${loc}` +
         (r.hint && !r.available ? ` — ${r.hint}` : ''),
     );
   }

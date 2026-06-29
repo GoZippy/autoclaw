@@ -1,0 +1,297 @@
+{
+  "schema": "autoclaw.workflow.v1",
+  "id": "release-gate",
+  "name": "Release Gate",
+  "description": "Structured release prep: compile, unit tests, changelog check, secret scan, VSIX size check, dry-run publish, then human approval before publish. WL-0.5 fixture.",
+  "edition": "teams",
+  "version": "1.0.0",
+  "contract": {
+    "inputs": [
+      { "id": "version", "type": "string", "required": true, "description": "Release version (e.g. 3.7.0)" },
+      { "id": "branch", "type": "string", "required": true, "description": "Release branch" }
+    ],
+    "outputs": [
+      { "id": "releasePacket", "type": "artifact", "description": "Release packet with all gate results" },
+      { "id": "publishDecision", "type": "string", "description": "approved | rejected" }
+    ],
+    "invariants": [
+      { "id": "no-publish-without-approval", "description": "Publish node requires human approval" }
+    ],
+    "requiredTools": [
+      { "id": "compiler", "name": "TypeScript compiler", "required": true },
+      { "id": "test-runner", "name": "project test runner", "required": true },
+      { "id": "secret-scanner", "name": "secret scanner", "required": true },
+      { "id": "vsix-packager", "name": "vsix packager", "required": true }
+    ],
+    "requiredModels": [
+      { "id": "reviewer-model", "capabilities": ["tools", "json", "long-context"], "locality": "lan" }
+    ],
+    "requiredPermissions": [
+      { "id": "exec-build", "kind": "execute", "scope": "npm run build" },
+      { "id": "exec-test", "kind": "execute", "scope": "npm test" },
+      { "id": "publish-marketplace", "kind": "publish", "scope": "vsce publish" }
+    ],
+    "successCriteria": [
+      { "id": "all-gates-pass", "description": "All gates pass", "gateNodeId": "final-gate" },
+      { "id": "human-approval", "description": "Human approved the release", "gateNodeId": "human-approval" }
+    ],
+    "recovery": { "onFailure": "human", "maxAttempts": 1 }
+  },
+  "variables": {
+    "lastGateResult": { "type": "string", "scope": "run", "description": "Last gate verdict" }
+  },
+  "policies": {
+    "budget": {
+      "maxCostCents": 20,
+      "maxTokens": 100000,
+      "maxWallTimeSeconds": 600,
+      "maxIterations": 1
+    },
+    "routingProfile": "release-critical",
+    "allowWrites": false,
+    "allowNetwork": false,
+    "requireHumanApproval": true,
+    "maxIterations": 1,
+    "maxWallTimeSeconds": 600
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "type": "input",
+      "kind": "release_trigger",
+      "label": "Release trigger",
+      "config": {
+        "version": "${{version}}",
+        "branch": "${{branch}}"
+      },
+      "ports": {
+        "outputs": [
+          { "id": "version", "type": "string" },
+          { "id": "branch", "type": "string" }
+        ]
+      },
+      "intent": "release"
+    },
+    {
+      "id": "compile-gate",
+      "type": "gate",
+      "kind": "compile",
+      "label": "Compile gate",
+      "config": {
+        "command": "npm run compile",
+        "criterion": "exit_code == 0",
+        "failureTypeOnFail": "compile_error"
+      },
+      "ports": {
+        "inputs": [{ "id": "branch", "type": "string" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "release",
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "test-gate",
+      "type": "gate",
+      "kind": "test_command",
+      "label": "Test gate",
+      "config": {
+        "command": "npm test",
+        "criterion": "exit_code == 0",
+        "failureTypeOnFail": "test_failure"
+      },
+      "ports": {
+        "inputs": [{ "id": "passed", "type": "boolean" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "test",
+      "timeoutSeconds": 300
+    },
+    {
+      "id": "changelog-gate",
+      "type": "gate",
+      "kind": "artifact",
+      "label": "Changelog gate",
+      "config": {
+        "criterion": "changelog contains entry for ${{version}}",
+        "check": "grep -q \"${{version}}\" CHANGELOG.md",
+        "failureTypeOnFail": "artifact_invalid"
+      },
+      "ports": {
+        "inputs": [{ "id": "version", "type": "string" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "release",
+      "timeoutSeconds": 30
+    },
+    {
+      "id": "secret-scan",
+      "type": "gate",
+      "kind": "secret_scan",
+      "label": "Secret scan",
+      "config": {
+        "command": "node scripts/check-no-secrets.js",
+        "criterion": "exit_code == 0",
+        "failureTypeOnFail": "tool_action_illegal"
+      },
+      "ports": {
+        "inputs": [{ "id": "passed", "type": "boolean" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "security",
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "vsix-check",
+      "type": "gate",
+      "kind": "vsix_size",
+      "label": "VSIX size gate",
+      "config": {
+        "command": "node scripts/check-vsix-size.js",
+        "criterion": "exit_code == 0",
+        "failureTypeOnFail": "perf_regression"
+      },
+      "ports": {
+        "inputs": [{ "id": "passed", "type": "boolean" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "release",
+      "timeoutSeconds": 60
+    },
+    {
+      "id": "dry-run-publish",
+      "type": "gate",
+      "kind": "publish_dry_run",
+      "label": "Dry-run publish",
+      "config": {
+        "command": "vsce package --no-dependencies --dry-run",
+        "criterion": "exit_code == 0",
+        "failureTypeOnFail": "artifact_invalid"
+      },
+      "ports": {
+        "inputs": [{ "id": "passed", "type": "boolean" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "release",
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "human-approval",
+      "type": "human",
+      "kind": "approve",
+      "label": "Human approval",
+      "config": {
+        "prompt": "Approve release ${{version}}?",
+        "options": ["approve", "reject"],
+        "requireAck": true
+      },
+      "ports": {
+        "inputs": [{ "id": "version", "type": "string" }],
+        "outputs": [
+          { "id": "approved", "type": "boolean" },
+          { "id": "decision", "type": "string" }
+        ]
+      },
+      "intent": "release"
+    },
+    {
+      "id": "final-gate",
+      "type": "gate",
+      "kind": "acceptance",
+      "label": "Final release gate",
+      "config": {
+        "criterion": "human-approval.approved == true && compile-gate.passed && test-gate.passed && changelog-gate.passed && secret-scan.passed && vsix-check.passed && dry-run-publish.passed",
+        "failureTypeOnFail": "acceptance_failure"
+      },
+      "ports": {
+        "inputs": [{ "id": "approved", "type": "boolean" }],
+        "outputs": [
+          { "id": "passed", "type": "boolean" },
+          { "id": "failureType", "type": "string" }
+        ]
+      },
+      "intent": "release"
+    },
+    {
+      "id": "publish",
+      "type": "tool",
+      "kind": "publish",
+      "label": "Publish",
+      "config": {
+        "action": "vsce publish",
+        "version": "${{version}}",
+        "requiresApproval": true
+      },
+      "ports": {
+        "inputs": [{ "id": "passed", "type": "boolean" }],
+        "outputs": [{ "id": "published", "type": "boolean" }]
+      },
+      "intent": "release",
+      "timeoutSeconds": 120
+    },
+    {
+      "id": "artifact",
+      "type": "artifact",
+      "kind": "review_packet",
+      "label": "Release packet",
+      "config": {
+        "include": ["version", "branch", "gates", "cost", "decision"]
+      },
+      "ports": {
+        "inputs": [{ "id": "published", "type": "boolean" }],
+        "outputs": [{ "id": "releasePacket", "type": "object" }]
+      },
+      "intent": "release"
+    }
+  ],
+  "edges": [
+    { "id": "e1", "type": "data", "from": { "node": "input", "port": "version" }, "to": { "node": "compile-gate" } },
+    { "id": "e2", "type": "control", "from": { "node": "compile-gate", "port": "passed" }, "to": { "node": "test-gate" }, "condition": { "expression": "${{compile-gate.passed}} == true" } },
+    { "id": "e3", "type": "control", "from": { "node": "test-gate", "port": "passed" }, "to": { "node": "changelog-gate" }, "condition": { "expression": "${{test-gate.passed}} == true" } },
+    { "id": "e4", "type": "control", "from": { "node": "changelog-gate", "port": "passed" }, "to": { "node": "secret-scan" }, "condition": { "expression": "${{changelog-gate.passed}} == true" } },
+    { "id": "e5", "type": "control", "from": { "node": "secret-scan", "port": "passed" }, "to": { "node": "vsix-check" }, "condition": { "expression": "${{secret-scan.passed}} == true" } },
+    { "id": "e6", "type": "control", "from": { "node": "vsix-check", "port": "passed" }, "to": { "node": "dry-run-publish" }, "condition": { "expression": "${{vsix-check.passed}} == true" } },
+    { "id": "e7", "type": "control", "from": { "node": "dry-run-publish", "port": "passed" }, "to": { "node": "human-approval" }, "condition": { "expression": "${{dry-run-publish.passed}} == true" } },
+    { "id": "e8", "type": "control", "from": { "node": "human-approval", "port": "approved" }, "to": { "node": "final-gate" }, "condition": { "expression": "${{human-approval.approved}} == true" } },
+    { "id": "e9", "type": "control", "from": { "node": "final-gate", "port": "passed" }, "to": { "node": "publish" }, "condition": { "expression": "${{final-gate.passed}} == true" } },
+    { "id": "e10", "type": "data", "from": { "node": "publish", "port": "published" }, "to": { "node": "artifact", "port": "published" } },
+    { "id": "e11", "type": "evidence", "from": { "node": "human-approval", "port": "decision" }, "to": { "node": "final-gate" } }
+  ],
+  "layout": {
+    "input": { "x": 0, "y": 0 },
+    "compile-gate": { "x": 200, "y": 0 },
+    "test-gate": { "x": 400, "y": 0 },
+    "changelog-gate": { "x": 600, "y": 0 },
+    "secret-scan": { "x": 800, "y": 0 },
+    "vsix-check": { "x": 1000, "y": 0 },
+    "dry-run-publish": { "x": 1200, "y": 0 },
+    "human-approval": { "x": 1400, "y": 0 },
+    "final-gate": { "x": 1600, "y": 0 },
+    "publish": { "x": 1800, "y": 0 },
+    "artifact": { "x": 2000, "y": 0 }
+  },
+  "metadata": {
+    "createdAt": "2026-06-27T20:24:00.000Z",
+    "updatedAt": "2026-06-27T20:24:00.000Z",
+    "author": "kilocode",
+    "packId": "release-gate",
+    "tags": ["release", "gate", "human-approval", "publish"]
+  }
+}

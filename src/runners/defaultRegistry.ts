@@ -18,10 +18,18 @@ import { GeminiCliRunner } from './gemini-cli';
 import { HermesRunner } from './hermes';
 import { OpenClawRunner } from './openclaw';
 import { AutoGptRunner } from './autogpt';
+import { loopServiceRunnersFromConfig } from './loop-service-adapter';
 
 export interface DefaultRegistryOptions {
   /** Reserved for future per-runner config. */
   workingDir?: string;
+  /**
+   * The deserialized `loop_services[]` value from the AutoClaw config (e.g.
+   * the array parsed from `.autoclaw/config.yaml`). When provided, each
+   * well-formed entry is built into a {@link LoopServiceAdapter} and
+   * registered alongside the built-in runners. Absent or empty ⇒ no-op.
+   */
+  loopServices?: unknown;
 }
 
 /** The ids of every built-in platform runner, for menus + onboarding. */
@@ -30,7 +38,7 @@ export const BUILTIN_RUNNER_IDS = [
   'gemini-cli', 'hermes', 'openclaw', 'autogpt',
 ] as const;
 
-export function createDefaultRunnerRegistry(_opts: DefaultRegistryOptions = {}): RunnerRegistry {
+export function createDefaultRunnerRegistry(opts: DefaultRegistryOptions = {}): RunnerRegistry {
   const reg = new RunnerRegistry();
   reg.register(new ClaudeCodeRunner());
   reg.register(new ClaudeDesktopRunner());
@@ -41,5 +49,8 @@ export function createDefaultRunnerRegistry(_opts: DefaultRegistryOptions = {}):
   reg.register(new HermesRunner());
   reg.register(new OpenClawRunner());
   reg.register(new AutoGptRunner());
+  for (const runner of loopServiceRunnersFromConfig(opts.loopServices)) {
+    reg.register(runner);
+  }
   return reg;
 }

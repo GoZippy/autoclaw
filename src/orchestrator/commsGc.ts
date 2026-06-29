@@ -43,6 +43,11 @@ export interface ArchiveOptions {
   signalMaxAgeMs?: number;
   /** Keep at most this many newest signals; archive the oldest beyond it. Default 200. */
   signalCap?: number;
+  /**
+   * Handoff notes older than this are purged (deleted, not archived — they have
+   * no recovery value after the signal window). Default 30d.
+   */
+  handoffMaxAgeMs?: number;
 }
 
 export interface ArchiveResult {
@@ -52,6 +57,8 @@ export interface ArchiveResult {
   archivedTelemetry: number;
   /** Signal files moved to `_archive/` (aged out OR beyond the cap). */
   archivedAgedSignals: number;
+  /** Handoff note sidecars deleted because they aged past `handoffMaxAgeMs`. */
+  purgedHandoffNotes: number;
 }
 
 /** A scanned shared-inbox entry, with the time we ranked/aged it by. */
@@ -140,6 +147,8 @@ async function moveToArchive(src: string, archiveDir: string, fileName: string):
  * @returns Counts of what was scanned and archived. On a missing tree returns
  *   `{ scanned: 0, archivedTelemetry: 0, archivedAgedSignals: 0 }`.
  */
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+
 export async function archiveSharedInbox(
   workspaceRoot: string,
   opts: ArchiveOptions = {}
@@ -148,6 +157,7 @@ export async function archiveSharedInbox(
   const telemetryMaxAgeMs = opts.telemetryMaxAgeMs ?? ONE_HOUR_MS;
   const signalMaxAgeMs = opts.signalMaxAgeMs ?? FOURTEEN_DAYS_MS;
   const signalCap = opts.signalCap ?? DEFAULT_SIGNAL_CAP;
+  const handoffMaxAgeMs = opts.handoffMaxAgeMs ?? THIRTY_DAYS_MS;
 
   const sharedDir = path.join(
     workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'inboxes', 'shared'
@@ -156,13 +166,13 @@ export async function archiveSharedInbox(
     workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'inboxes', '_archive'
   );
 
-  const result: ArchiveResult = { scanned: 0, archivedTelemetry: 0, archivedAgedSignals: 0 };
+  const result: ArchiveResult = { scanned: 0, archivedTelemetry: 0, archivedAgedSignals: 0, purgedHandoffNotes: 0 };
 
   let files: string[];
   try {
     files = (await fsp.readdir(sharedDir)).filter(f => f.endsWith('.json'));
   } catch {
-    return result; // missing dir tolerated
+    files = []; // missing shared inbox tolerated — still run handoff purge below
   }
 
   // Read + classify every file. Skip (but count) unreadable ones — we never
@@ -205,6 +215,29 @@ export async function archiveSharedInbox(
       if (await moveToArchive(s.fullPath, archiveDir, s.file)) { result.archivedAgedSignals++; }
     }
   }
+
+  // 3) Handoff note sidecars: purge (delete) when older than handoffMaxAgeMs.
+  //    These are not archived — they have no recovery value after the signal
+  //    window and are purely context for the next claimant while a task is active.
+  const handoffsDir = path.join(
+    workspaceRoot, '.autoclaw', 'orchestrator', 'comms', 'handoffs'
+  );
+  try {
+    const handoffFiles = (await fsp.readdir(handoffsDir)).filter(f => f.endsWith('.json'));
+    for (const file of handoffFiles) {
+      const fullPath = path.join(handoffsDir, file);
+      try {
+        const raw = await fsp.readFile(fullPath, 'utf8');
+        const note = JSON.parse(raw) as { timestamp?: string };
+        const ms = note.timestamp ? Date.parse(note.timestamp) : NaN;
+        const ageMs = Number.isFinite(ms) ? now - ms : Infinity;
+        if (ageMs > handoffMaxAgeMs) {
+          await fsp.unlink(fullPath).catch(() => undefined);
+          result.purgedHandoffNotes++;
+        }
+      } catch { /* malformed or unreadable — skip */ }
+    }
+  } catch { /* handoffs dir missing — nothing to purge */ }
 
   return result;
 }

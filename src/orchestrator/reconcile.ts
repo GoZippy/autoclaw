@@ -23,6 +23,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
+import { runDoctorChecks, type DoctorFinding } from './doctor';
+import { materializeOpsTasks } from './opsTasks';
 import { generateMessageId, sendMessage, type Message, type MessageType } from '../comms';
 
 const fsPromises = fs.promises;
@@ -37,7 +40,8 @@ export type DriftType =
   | 'task_in_state_not_in_yaml'     // state.json tracks task not in any sprint YAML
   | 'task_status_mismatch'          // task status differs between state.json and sprint YAML
   | 'task_complete_in_comms_not_yaml' // comms-log shows task_complete but YAML still pending
-  | 'task_complete_in_comms_not_state'; // comms-log shows task_complete but state.json not updated
+  | 'task_complete_in_comms_not_state' // comms-log shows task_complete but state.json not updated
+  | 'yaml_parse_error';             // a manifest/registry/sprint YAML file is syntactically invalid
 
 export interface DriftRecord {
   type: DriftType;
@@ -45,12 +49,16 @@ export interface DriftRecord {
   description: string;
   /** Source that appears to lag. */
   laggard: 'state_json' | 'sprint_yaml' | 'comms_log';
+  /** Absolute path to the file that failed to parse (yaml_parse_error only). */
+  file?: string;
 }
 
 export interface ReconcileReport {
   generated_at: string;
   sweep_duration_ms: number;
   drifts: DriftRecord[];
+  /** Config vs reality findings from the doctor lane (when config is provided). */
+  findings: DoctorFinding[];
 }
 
 export interface OrchestratorReconcileOptions {
@@ -62,6 +70,14 @@ export interface OrchestratorReconcileOptions {
    * Called after each sweep completes (useful for testing / external hooks).
    */
   onSweepComplete?: (report: ReconcileReport) => void;
+  /**
+   * Config values for doctor checks. When provided, doctor findings are
+   * appended to the reconcile report's `findings` array.
+   */
+  doctorConfig?: {
+    baseBranch?: string;
+    gitEnabled?: boolean;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -126,27 +142,43 @@ async function loadStateJson(orchestratorDir: string): Promise<StateJson | null>
   } catch { return null; }
 }
 
-/** Load all sprint-N.yaml files and union their task sets. */
-async function loadSprintYamlTasks(sprintsDir: string): Promise<Map<string, string>> {
-  const union = new Map<string, string>();
+interface SprintYamlResult {
+  tasks: Map<string, string>;
+  parseErrors: Array<{ file: string; error: string }>;
+}
+
+/** Load all sprint-N.yaml files and union their task sets. Validates parseability. */
+async function loadSprintYamlTasks(sprintsDir: string): Promise<SprintYamlResult> {
+  const result: SprintYamlResult = { tasks: new Map(), parseErrors: [] };
   let files: string[];
   try {
     files = (await fsPromises.readdir(sprintsDir)).filter(f => /^sprint-\d+\.yaml$/.test(f));
-  } catch { return union; }
+  } catch { return result; }
 
   for (const f of files) {
+    const filePath = path.join(sprintsDir, f);
+    let content: string;
     try {
-      const content = await fsPromises.readFile(path.join(sprintsDir, f), 'utf8');
+      content = await fsPromises.readFile(filePath, 'utf8');
+    } catch { continue; }
+
+    try {
+      yaml.load(content, { filename: f });
+    } catch (err) {
+      result.parseErrors.push({ file: filePath, error: (err as Error).message });
+      continue;
+    }
+
+    try {
       const tasks = parseSprintYamlTasks(content);
       for (const [id, status] of tasks) {
-        // If a task appears in multiple sprints (migration), keep the latest status.
-        if (!union.has(id) || isTerminalStatus(status)) {
-          union.set(id, status);
+        if (!result.tasks.has(id) || isTerminalStatus(status)) {
+          result.tasks.set(id, status);
         }
       }
     } catch { /* skip unreadable */ }
   }
-  return union;
+  return result;
 }
 
 /** Extract task-complete task_ids from the last 1 000 comms-log lines. */
@@ -176,23 +208,48 @@ async function loadCommsLogCompletions(commsDir: string): Promise<Set<string>> {
  * Run one reconciliation sweep across state.json / sprint YAMLs / comms-log.
  * Returns the drift report. Never throws (errors are captured as drifts).
  */
-export async function runOrchestratorReconcile(workspaceRoot: string): Promise<ReconcileReport> {
+export async function runOrchestratorReconcile(
+  workspaceRoot: string,
+  opts: { doctorConfig?: { baseBranch?: string; gitEnabled?: boolean } } = {},
+): Promise<ReconcileReport> {
   const startMs = Date.now();
   const drifts: DriftRecord[] = [];
+  const findings: DoctorFinding[] = [];
 
   if (!workspaceRoot) {
-    return { generated_at: new Date().toISOString(), sweep_duration_ms: 0, drifts };
+    return { generated_at: new Date().toISOString(), sweep_duration_ms: 0, drifts, findings };
   }
 
   const orchestratorDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator');
   const sprintsDir = path.join(orchestratorDir, 'sprints');
   const commsDir = path.join(orchestratorDir, 'comms');
 
-  const [stateJson, yamlTasks, commsCompleted] = await Promise.all([
+  const [stateJson, sprintResult, commsCompleted] = await Promise.all([
     loadStateJson(orchestratorDir),
     loadSprintYamlTasks(sprintsDir),
     loadCommsLogCompletions(commsDir),
   ]);
+
+  const yamlTasks = sprintResult.tasks;
+
+  // Doctor lane: config vs reality checks.
+  if (opts.doctorConfig) {
+    findings.push(...runDoctorChecks(workspaceRoot, {
+      configuredBaseBranch: opts.doctorConfig.baseBranch,
+      gitEnabled: opts.doctorConfig.gitEnabled,
+    }));
+  }
+
+  // Surface YAML parse errors as drifts.
+  for (const pe of sprintResult.parseErrors) {
+    drifts.push({
+      type: 'yaml_parse_error',
+      task_id: '',
+      description: `Invalid YAML in ${path.basename(pe.file)}: ${pe.error}`,
+      laggard: 'sprint_yaml',
+      file: pe.file,
+    });
+  }
 
   // Build state.json task map.
   const stateTasks = new Map<string, string>();
@@ -277,6 +334,7 @@ export async function runOrchestratorReconcile(workspaceRoot: string): Promise<R
     generated_at: new Date().toISOString(),
     sweep_duration_ms: Date.now() - startMs,
     drifts,
+    findings,
   };
 
   return report;
@@ -336,6 +394,7 @@ export function createOrchestratorReconciler(opts: OrchestratorReconcileOptions)
     workspaceRoot,
     intervalMs = 5 * 60 * 1000,
     onSweepComplete,
+    doctorConfig,
   } = opts;
 
   const orchestratorDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator');
@@ -344,10 +403,17 @@ export function createOrchestratorReconciler(opts: OrchestratorReconcileOptions)
   let _timer: ReturnType<typeof setInterval> | null = null;
 
   async function runNow(): Promise<ReconcileReport> {
-    const report = await runOrchestratorReconcile(workspaceRoot);
+    const report = await runOrchestratorReconcile(workspaceRoot, {
+      doctorConfig: opts.doctorConfig,
+    });
 
     // Persist report regardless of drift count.
     await writeReconcileReport(orchestratorDir, report).catch(() => { /* non-fatal */ });
+
+    // Materialize ops tasks from drifts + findings so they become claimable.
+    if (report.drifts.length > 0 || report.findings.length > 0) {
+      await materializeOpsTasks(orchestratorDir, report.drifts, report.findings).catch(() => { /* non-fatal */ });
+    }
 
     // Broadcast drifts to shared inbox.
     if (report.drifts.length > 0) {

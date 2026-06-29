@@ -135,6 +135,8 @@ export interface BoardCapsule {
   verdict: string;
   /** true/false when a gate ran; undefined when none did. */
   gates_passed?: boolean;
+  /** Number of gate checks that were weak-pass (skipped/no-op). */
+  gates_weak?: number;
   votes_count: number;
   evaluated_at: string;
 }
@@ -474,7 +476,14 @@ export function renderBoardMarkdown(board: BoardModel): string {
     out.push('| Task | Verdict | Gate | Votes | Source | Run |');
     out.push('|---|---|---|---|---|---|');
     for (const c of capsules) {
-      const gate = c.gates_passed === undefined ? '—' : c.gates_passed ? '✓' : '✗';
+      let gate: string;
+      if (c.gates_passed === undefined) {
+        gate = '—';
+      } else if (c.gates_passed && c.gates_weak && c.gates_weak > 0) {
+        gate = `✓ (${c.gates_weak} weak)`;
+      } else {
+        gate = c.gates_passed ? '✓' : '✗';
+      }
       out.push(`| \`${c.task_id}\` | ${c.verdict} | ${gate} | ${c.votes_count} | ${escapeCell(c.source)} | \`${escapeCell(c.run_id)}\` |`);
     }
     out.push('');

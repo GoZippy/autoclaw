@@ -16,7 +16,7 @@
 
 import * as assert from 'assert';
 
-import { recordCoordinationToKg, recordOrchestrationEventsToKg, OrchestrationEvent } from '../intelligence/kgRecord';
+import { recordCoordinationToKg, recordOrchestrationEventsToKg, recordLearningsToKg, recordOutcomeEdge, OrchestrationEvent } from '../intelligence/kgRecord';
 import { CoordinationSignals } from '../intelligence/coordinationSignals';
 import type { KnowledgeGraph } from '../intelligence/kg/types';
 
@@ -40,10 +40,12 @@ function signals(overrides: Partial<CoordinationSignals> = {}): CoordinationSign
   };
 }
 
-/** In-memory KG that mimics the real store: duplicate id → throw (plain INSERT). */
+/** In-memory KG that mimics the real store: duplicate thought id → throw (plain
+ *  INSERT); edges INSERT OR REPLACE by (from,kind,to) so re-adding never grows. */
 function fakeKg() {
   const recorded: Array<{ id?: string; project: string; agent?: string; task_id?: string; kind: string; text: string; meta?: Record<string, unknown> }> = [];
   const ids = new Set<string>();
+  const edges = new Map<string, { from: string; kind: string; to: string; meta?: Record<string, unknown> }>();
   const kg = {
     async recordThought(t: any) {
       const id = t.id;
@@ -54,8 +56,11 @@ function fakeKg() {
       recorded.push(t);
       return id ?? `auto-${recorded.length}`;
     },
+    async recordRelation(from: string, kind: string, to: string, meta?: Record<string, unknown>) {
+      edges.set(`${from}|${kind}|${to}`, { from, kind, to, meta }); // upsert (PK = triple)
+    },
   } as unknown as KnowledgeGraph;
-  return { kg, recorded, ids };
+  return { kg, recorded, ids, edges };
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +184,104 @@ suite('intelligence-kgrecord', function () {
         await recordOrchestrationEventsToKg(WS, [], { deps: { getKg: () => f.kg } }),
         { recorded: 0, skipped: 0 },
       );
+    });
+  });
+
+  suite('recordLearningsToKg', () => {
+    function workflow(seq: string[], shipped: number, discarded: number): any {
+      const total = shipped + discarded;
+      return { sequence: seq, label: seq.join(' → '), shipped, discarded, unknown: 0, total, shipRate: total ? shipped / (shipped + discarded) : 0 };
+    }
+
+    test('records workflow patterns + review findings as finding thoughts', async () => {
+      const f = fakeKg();
+      const res = await recordLearningsToKg(WS, {
+        workflows: [workflow(['Read', 'Edit', 'Bash'], 6, 1)],
+        findings: [{ from: 'kilocode', severity: 'high', description: 'inbox watcher race on same-second writes' }],
+      }, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(res.recorded, 2);
+      assert.strictEqual(f.recorded.length, 2);
+
+      const wf = f.recorded.find((t) => t.id!.startsWith('workflow:'))!;
+      assert.strictEqual(wf.kind, 'finding');
+      assert.ok(wf.text.includes('Read → Edit → Bash') && wf.text.includes('ships'), 'reuses workflowPatternLabel');
+      assert.strictEqual((wf.meta as any).source, 'workflow');
+
+      const find = f.recorded.find((t) => t.id!.startsWith('finding:'))!;
+      assert.strictEqual(find.kind, 'finding');
+      assert.strictEqual(find.text, 'inbox watcher race on same-second writes');
+      assert.strictEqual((find.meta as any).severity, 'high');
+      assert.strictEqual(find.agent, 'kilocode');
+    });
+
+    test('idempotent on re-run', async () => {
+      const f = fakeKg();
+      const facts = { workflows: [workflow(['Read', 'Edit'], 3, 0)], findings: [{ from: 'x', severity: 'low', description: 'note' }] };
+      const first = await recordLearningsToKg(WS, facts, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(first.recorded, 2);
+      const second = await recordLearningsToKg(WS, facts, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(second.recorded, 0, 'duplicate ids skipped on re-run');
+      assert.strictEqual(second.skipped, 2);
+    });
+
+    test('empty learnings record nothing; a failing KG never throws', async () => {
+      const f = fakeKg();
+      assert.deepStrictEqual(await recordLearningsToKg(WS, {}, { deps: { getKg: () => f.kg } }), { recorded: 0, skipped: 0 });
+      const res = await recordLearningsToKg(WS, { findings: [{ from: 'x', severity: 'low', description: 'd' }] }, {
+        deps: { getKg: () => { throw new Error('no driver'); } },
+      });
+      assert.strictEqual(res.recorded, 0);
+      assert.strictEqual(res.skipped, 1);
+    });
+  });
+
+  suite('recordOutcomeEdge', () => {
+    const outcome = {
+      taskId: 'B1', agentId: 'claude-code', verdict: 'approved', gatePassed: true,
+      resolvedAt: '2026-06-28T00:00:00.000Z', reviewers: ['kilocode', 'claude-code'], capabilities: ['typescript', 'testing'],
+    };
+
+    test('materializes entity nodes + completed/reviewed/demonstrated edges', async () => {
+      const f = fakeKg();
+      const res = await recordOutcomeEdge(WS, outcome, { deps: { getKg: () => f.kg } });
+      assert.ok(res.recorded > 0);
+
+      // entity nodes exist as thoughts with deterministic ids
+      assert.ok(f.ids.has('agent:claude-code'), 'agent node');
+      assert.ok([...f.ids].some((id) => id.startsWith('task:') && id.endsWith(':B1')), 'task node');
+      assert.ok(f.ids.has('agent:kilocode'), 'reviewer node');
+      assert.ok(f.ids.has('capability:typescript') && f.ids.has('capability:testing'), 'capability nodes');
+
+      const kinds = [...f.edges.values()].map((e) => e.kind).sort();
+      // completed(1) + reviewed(1, assignee filtered out) + demonstrated(2)
+      assert.deepStrictEqual(kinds, ['completed', 'demonstrated', 'demonstrated', 'reviewed']);
+      const completed = [...f.edges.values()].find((e) => e.kind === 'completed')!;
+      assert.strictEqual(completed.from, 'agent:claude-code');
+      assert.ok(completed.to.endsWith(':B1'));
+      assert.strictEqual((completed.meta as any).verdict, 'approved');
+      assert.strictEqual((completed.meta as any).gate_passed, true);
+      // the assignee is NOT recorded as its own reviewer
+      assert.ok(![...f.edges.values()].some((e) => e.kind === 'reviewed' && e.from === 'agent:claude-code'));
+    });
+
+    test('idempotent — re-run does not grow the graph', async () => {
+      const f = fakeKg();
+      await recordOutcomeEdge(WS, outcome, { deps: { getKg: () => f.kg } });
+      const nodes1 = f.ids.size, edges1 = f.edges.size;
+      await recordOutcomeEdge(WS, outcome, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(f.ids.size, nodes1, 'no new nodes (deterministic ids)');
+      assert.strictEqual(f.edges.size, edges1, 'no new edges (PK = from,kind,to)');
+    });
+
+    test('skips malformed input and survives a KG open failure', async () => {
+      const f = fakeKg();
+      assert.deepStrictEqual(
+        await recordOutcomeEdge(WS, { taskId: '', agentId: 'x' }, { deps: { getKg: () => f.kg } }),
+        { recorded: 0, skipped: 0 },
+      );
+      const res = await recordOutcomeEdge(WS, outcome, { deps: { getKg: () => { throw new Error('no driver'); } } });
+      assert.strictEqual(res.recorded, 0);
+      assert.strictEqual(res.skipped, 1);
     });
   });
 });

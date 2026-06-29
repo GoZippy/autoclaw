@@ -20,6 +20,7 @@
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
@@ -1007,6 +1008,66 @@ function systemDirSetting(): string | undefined {
 }
 
 /**
+ * Returns a smart default path for the system intelligence directory, tailored
+ * to the current machine rather than any hardcoded drive letter.
+ *
+ * On Windows: walks D:→Z: looking for the first reachable non-system drive,
+ * so the store lands on a data drive instead of C:. Falls back to a subfolder
+ * of the user profile when C: is the only drive.
+ *
+ * On macOS / Linux: uses the user's home directory.
+ */
+function suggestSystemDir(): string {
+  const home = os.homedir();
+  if (process.platform === 'win32') {
+    const candidates = 'DEFGHIJKLMNOPQRSTUVWXYZB'.split('');
+    for (const letter of candidates) {
+      try {
+        if (fs.existsSync(`${letter}:\\`)) {
+          return `${letter}:\\autoclaw-intelligence`;
+        }
+      } catch {
+        // inaccessible — skip
+      }
+    }
+    return path.join(home, 'autoclaw-intelligence');
+  }
+  return path.join(home, 'autoclaw-intelligence');
+}
+
+/**
+ * `autoclaw.intelligence.pickSystemDir` — opens a native OS folder picker
+ * pre-navigated to the best available location for this machine, then writes
+ * the chosen path to `autoclaw.intelligence.systemDir` globally.
+ */
+async function runPickSystemDir(): Promise<void> {
+  const current = systemDirSetting();
+  const suggestion = current ?? suggestSystemDir();
+
+  const picked = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    defaultUri: vscode.Uri.file(suggestion),
+    openLabel: 'Set as System Intelligence Directory',
+    title: 'AutoClaw: Choose System Intelligence Directory',
+  });
+
+  if (!picked || picked.length === 0) {
+    return;
+  }
+
+  const chosen = picked[0].fsPath;
+  await vscode.workspace
+    .getConfiguration('autoclaw.intelligence')
+    .update('systemDir', chosen, vscode.ConfigurationTarget.Global);
+
+  void vscode.window.showInformationMessage(
+    `AutoClaw: system intelligence directory set to ${chosen}`,
+  );
+}
+
+/**
  * Where the `sqlite-vec` native peer installs. Defaults PROJECT-LOCAL
  * (`<workspace>/.autoclaw/native`) so nothing is forced onto C:; the
  * `backendDir` setting overrides; the extension globalStorage is only a
@@ -1724,6 +1785,7 @@ export function registerIntelligenceCommands(
       runDiagnostics(context, getWorkspaceRoot()),
     ),
     vscode.commands.registerCommand('autoclaw.intelligence.systemTier', () => runSystemTier()),
+    vscode.commands.registerCommand('autoclaw.intelligence.pickSystemDir', () => runPickSystemDir()),
     vscode.commands.registerCommand('autoclaw.intelligence.relocateBackend', () =>
       runRelocateBackend(context, getWorkspaceRoot()),
     ),

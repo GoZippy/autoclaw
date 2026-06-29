@@ -35,7 +35,7 @@ import { intelligencePaths, ensureDir, toForwardSlash } from './paths';
 import { resolveProjectKey } from './project';
 import { redactSecrets } from './redact';
 import { getEmbedding, detectRouter, detectOllama } from './embeddings';
-import { resolveEmbeddingConfig } from './embeddingResolve';
+import { resolveEmbeddingConfig, applyEmbeddingPin } from './embeddingResolve';
 import { acquireLock } from './fileLock';
 import { initVectorDB, initVectorBackend, VectorRecord } from './vector';
 
@@ -762,7 +762,13 @@ export async function retrieveCode(
 ): Promise<CodeSearchResult[]> {
   const { workspaceRoot } = options;
   const log: LogFn = options.log ?? (() => undefined);
-  const config = options.config ?? loadConfig(workspaceRoot, log);
+  // Open + embed with the provider the indexer PINNED, not the raw `auto` seed
+  // model. Opening under the seed (`Xenova/...`) would rewrite the store's meta
+  // `model` row and re-raise the stale-index signal on every retrieve — the
+  // endless "embedding model changed → re-index" loop. Cheap + side-effect-free:
+  // honors the on-disk pin, never probes the network (cf. indexCodebase, which
+  // does the full resolve because it is a writer).
+  const config = applyEmbeddingPin(options.config ?? loadConfig(workspaceRoot, log), workspaceRoot);
   const project = resolveProjectKey(workspaceRoot);
   const paths = intelligencePaths(workspaceRoot);
   const signature = getActiveEmbeddingSignature(config);

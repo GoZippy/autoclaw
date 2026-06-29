@@ -11,8 +11,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import {
-  buildBoard,
+import { buildBoard,
   renderBoardMarkdown,
   BOARD_CAPSULES_MAX,
   type BoardCapsule,
@@ -23,6 +22,8 @@ import {
   type BoardTask,
 } from './board';
 import { listCapsules } from '../evidence';
+import { ingestTaskCatalog } from './taskCatalogIngest';
+import { readOpsTasks, type OpsTask } from './opsTasks';
 
 const fsp = fs.promises;
 
@@ -121,10 +122,10 @@ interface RawState {
 }
 
 /**
- * Derive the BoardTask list from state.json plus discovered task ids in
- * claims / consensus. Authoritative metadata (title/deps/priority) comes from
- * an optional `state.tasks` array; falls back to inferred status from agent
- * task lists otherwise.
+ * Derive the BoardTask list from state.json + discovered task ids in
+ * claims / consensus + ops tasks (drift/finding-backed). Authoritative metadata
+ * (title/deps/priority) comes from an optional `state.tasks` array; falls back
+ * to inferred status from agent task lists otherwise.
  */
 async function readTasks(
   workspaceRoot: string,
@@ -174,7 +175,21 @@ async function readTasks(
     if (!out.has(id)) { out.set(id, { id, depends_on: [], files: [] }); }
   }
 
-  // 4. Infer status when not set.
+  // 4. Merge ops tasks (drift/finding-backed claimable items).
+  const opsTasks = await readOpsTasks(orchestratorDir(workspaceRoot));
+  for (const op of opsTasks) {
+    if (out.has(op.id)) { continue; }
+    out.set(op.id, {
+      id: op.id,
+      title: op.title,
+      priority: op.priority,
+      status: 'open',
+      depends_on: [],
+      files: op.file ? [op.file] : [],
+    });
+  }
+
+  // 5. Infer status when not set.
   for (const t of out.values()) {
     if (t.status) { continue; }
     if (consensusTaskIds.has(t.id)) { t.status = 'in_review'; continue; }
@@ -307,6 +322,7 @@ async function readRecentCapsules(workspaceRoot: string): Promise<BoardCapsule[]
     source: c.source,
     verdict: c.final_verdict,
     gates_passed: c.gates_passed,
+    gates_weak: c.gates_weak,
     votes_count: c.votes_count,
     evaluated_at: c.evaluated_at,
   }));
@@ -339,6 +355,10 @@ export interface WriteBoardResult {
  */
 export async function writeBoard(opts: WriteBoardOptions): Promise<WriteBoardResult> {
   const { workspaceRoot } = opts;
+
+  // Ensure state.tasks reflects current sprint YAMLs + spec tasks.md before reading.
+  // Digest-gated: a no-op when the catalog is unchanged, so the hot path stays cheap.
+  await ingestTaskCatalog({ workspaceRoot }).catch(() => { /* non-fatal */ });
 
   const [claims, consensus, heartbeats, capsules] = await Promise.all([
     readClaims(workspaceRoot),
