@@ -164,22 +164,44 @@ Acceptance:
 
 ### OSL-5.1 - Anti-Hacking Monitor
 
-Status: open
+Status: review
+
+Owner: codex
 
 Scope:
 
 - `src/workflows/scaffolds/monitor.ts`
+- `src/workflows/scaffolds/index.ts`
 - `src/workflows/contracts.ts`
 - `src/orchestrator/scopeLease.ts`
 - `src/test/workflow-antiHackingMonitor.test.ts`
+- `package.json`
 
 Acceptance:
 
 - Monitor blocks reads of hidden verifier paths.
 - Monitor blocks writes to verifier, hidden tests, run ledger, score ledger, and
   policy files unless explicitly allowed.
-- Out-of-scope edits map to `scope_conflict` or a specific monitor violation.
+- Out-of-scope edits map to `scope_violation` or a specific monitor violation.
 - Violation emits a finding_report payload shape and zeroes reward.
+
+Implementation:
+
+- `evaluateScaffoldMonitor()` checks declared reads/writes against hidden
+  verifier, hidden-test, run-ledger, score-ledger, policy, and declared-scope
+  globs.
+- Explicit `allowedWriteGlobs` exceptions can permit protected writes for
+  orchestrator-owned maintenance tasks.
+- Monitor findings carry `task_id`, `scaffold_id`, `agent`, severity, and the
+  underlying `AntiHackingViolation` so report writers can emit deterministic
+  `finding_report` payloads.
+- Reward integration is through the OSL-2.1 scorer: any anti-hacking violation
+  forces non-pass and reward `-1`.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/workflow-antiHackingMonitor.test.js out/test/workflow-scaffoldScore.test.js out/test/scopeLease.test.js out/test/workflow-contracts.test.js` - 35 passing.
 
 ### OSL-6.1 - VoidSpec Scaffold Metadata
 
