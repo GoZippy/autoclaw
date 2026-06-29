@@ -731,12 +731,14 @@ export function activate(context: vscode.ExtensionContext) {
         );
       }
       if (!reviewFleetController) { reviewFleetController = new ReviewFleetController(); }
+      const hostAgentId = activeHostAgentId() ?? 'claude-code';
       const res = await reviewFleetController.start(ws, {
         enabled,
         budgetCents,
         intervalMs: cfg.get<number>('intervalMs', 15000),
         maxCycles: cfg.get<number>('maxCycles', 50),
-        agentId: 'claude-code',
+        agentId: hostAgentId,
+        sessionId: extScopeSession(),
       });
       vscode.window.showInformationMessage(`AutoClaw Review Fleet: ${res.reason}`);
     }),
