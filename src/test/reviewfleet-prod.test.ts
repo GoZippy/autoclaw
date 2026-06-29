@@ -494,7 +494,7 @@ suite('RF-4a writeVote — file output', () => {
     const vote = makeVote({ voter: 'automated:fleet', task_id: 'A1' });
     await deps.writeVote(vote);
 
-    const expectedFile = path.join(commsDir, 'consensus', 'active', 'A1-automated-fleet.json');
+    const expectedFile = path.join(path.dirname(commsDir), 'consensus', 'active', 'A1-automated-fleet.json');
     assert.ok(
       fs.existsSync(expectedFile),
       `expected file at ${expectedFile}`,
@@ -508,7 +508,7 @@ suite('RF-4a writeVote — file output', () => {
     const vote = makeVote({ task_id: 'A2', voter: 'bot', vote: 'request_changes' });
     await deps.writeVote(vote);
 
-    const dir = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active');
+    const dir = path.join(ws, '.autoclaw', 'orchestrator', 'consensus', 'active');
     const file = path.join(dir, 'A2-bot.json');
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
 
@@ -530,7 +530,7 @@ suite('RF-4a writeVote — file output', () => {
     });
     await deps.writeVote(vote);
 
-    const dir = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active');
+    const dir = path.join(ws, '.autoclaw', 'orchestrator', 'consensus', 'active');
     const file = path.join(dir, 'A3-autoclaw-bot.json');
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
 
@@ -551,7 +551,7 @@ suite('RF-4a writeVote — file output', () => {
     // Dir doesn't exist yet — writeVote must create it.
     await deps.writeVote(vote);
 
-    const dir = path.join(commsDir, 'consensus', 'active');
+    const dir = path.join(path.dirname(commsDir), 'consensus', 'active');
     assert.ok(fs.existsSync(dir), 'consensus/active dir must be created');
   });
 
@@ -562,7 +562,7 @@ suite('RF-4a writeVote — file output', () => {
     const vote = makeVote({ task_id: 'A5', voter: 'fleet/review@bot' });
     await deps.writeVote(vote);
 
-    const dir = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'consensus', 'active');
+    const dir = path.join(ws, '.autoclaw', 'orchestrator', 'consensus', 'active');
     // "fleet/review@bot" → "fleet-review-bot"
     const file = path.join(dir, 'A5-fleet-review-bot.json');
     assert.ok(fs.existsSync(file), `sanitized file must exist at ${file}`);
@@ -576,13 +576,13 @@ suite('RF-4a writeVote — file output', () => {
     const ws = tmpDir();
     const commsDir = path.join(ws, '.autoclaw', 'orchestrator', 'comms');
     const deps = defaultReviewFleetDeps(baseProdOpts(ws, { commsDir }));
-    const activeDir = path.join(commsDir, 'consensus', 'active');
+    const activeDir = path.join(path.dirname(commsDir), 'consensus', 'active');
 
     const vote = makeVote({ task_id: '../../../evil', voter: 'bot' });
     await deps.writeVote(vote);
 
     // Nothing may be written outside the active dir.
-    assert.ok(!fs.existsSync(path.join(commsDir, 'consensus', 'evil-bot.json')), 'must NOT write one level up');
+    assert.ok(!fs.existsSync(path.join(path.dirname(commsDir), 'consensus', 'evil-bot.json')), 'must NOT write one level up');
     assert.ok(!fs.existsSync(path.join(ws, 'evil-bot.json')), 'must NOT traverse to workspace root');
 
     // Exactly one file, and it resolves to within active/.
@@ -600,7 +600,7 @@ suite('RF-4a writeVote — file output', () => {
     const ws = tmpDir();
     const commsDir = path.join(ws, '.autoclaw', 'orchestrator', 'comms');
     const deps = defaultReviewFleetDeps(baseProdOpts(ws, { commsDir }));
-    const activeDir = path.join(commsDir, 'consensus', 'active');
+    const activeDir = path.join(path.dirname(commsDir), 'consensus', 'active');
 
     await deps.writeVote(makeVote({ task_id: '..', voter: '..' }));
 

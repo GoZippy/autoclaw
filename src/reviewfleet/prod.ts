@@ -69,8 +69,10 @@ export interface ReviewFleetProdOpts {
    */
   llmChat?: LlmChatFn;
   /**
-   * Directory for consensus vote files.
+   * Directory for comms files.
    * Defaults to <workspaceRoot>/.autoclaw/orchestrator/comms.
+   * Automated consensus votes are written to the sibling live consensus tree:
+   * <workspaceRoot>/.autoclaw/orchestrator/consensus/active.
    */
   commsDir?: string;
   /** Session id stamped on written vote files. */
@@ -251,7 +253,7 @@ export function defaultReviewFleetDeps(opts: ReviewFleetProdOpts): ReviewFleetDe
 
   /* ── writeVote ─────────────────────────────────────────────────────────── */
   const writeVote = async (vote: AutomatedVote): Promise<void> => {
-    const consensusActiveDir = path.join(commsDir, 'consensus', 'active');
+    const consensusActiveDir = path.join(path.dirname(commsDir), 'consensus', 'active');
     await fs.promises.mkdir(consensusActiveDir, { recursive: true });
 
     const filename = `${sanitizeSegment(vote.task_id)}-${sanitizeSegment(vote.voter)}.json`;
