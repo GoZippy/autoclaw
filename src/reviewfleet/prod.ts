@@ -69,6 +69,19 @@ export interface ReviewFleetProdOpts {
    */
   llmChat?: LlmChatFn;
   /**
+   * Optional context provider (RF-5).  When set, called AFTER the safety gate
+   * but BEFORE the model call to fetch a content-safe grounding summary for
+   * the task.  The returned string is already content-safe (produced by
+   * buildReviewContext) and is appended to the review prompt as a clearly-
+   * labeled "Context:" section.
+   *
+   * A failure in contextProvider MUST NOT break dispatch — errors are silently
+   * swallowed and the call proceeds with the base prompt only.
+   *
+   * When absent, behavior is exactly as before RF-5 (no change to the prompt).
+   */
+  contextProvider?: (taskId: string, intent?: string) => Promise<string>;
+  /**
    * Directory for comms files.
    * Defaults to <workspaceRoot>/.autoclaw/orchestrator/comms.
    * Automated consensus votes are written to the sibling live consensus tree:
@@ -198,6 +211,7 @@ export function defaultReviewFleetDeps(opts: ReviewFleetProdOpts): ReviewFleetDe
   const dispatchReviewer = async (
     reviewer: ReviewerCapacity,
     taskId: string,
+    intent?: string,
   ): Promise<ReviewVerdict> => {
     // SAFETY GATE 1 — master kill switch.
     if (!enabled) {
@@ -229,7 +243,20 @@ export function defaultReviewFleetDeps(opts: ReviewFleetProdOpts): ReviewFleetDe
       resolvedLlmChat = await buildDefaultLlmChat();
     }
 
-    const prompt = buildReviewPrompt(taskId);
+    // RF-5 — append content-safe context if a contextProvider is wired.
+    // Errors from contextProvider MUST NOT break dispatch.
+    let prompt = buildReviewPrompt(taskId, intent);
+    if (opts.contextProvider) {
+      try {
+        const ctx = await opts.contextProvider(taskId, intent);
+        if (ctx && ctx.trim().length > 0) {
+          prompt = prompt + '\n\nContext:\n' + ctx.trim();
+        }
+      } catch {
+        // Context failure is silently swallowed — dispatch continues unaffected.
+      }
+    }
+
     let text = '';
     let rawCostCents: number | undefined;
 
