@@ -183,7 +183,9 @@ Acceptance:
 
 ### OSL-6.1 - VoidSpec Scaffold Metadata
 
-Status: open
+Status: review
+
+Owner: codex
 
 Scope:
 
@@ -200,6 +202,11 @@ Acceptance:
 - Sync preserves the metadata into mirrored AutoClaw tasks.
 - Dispatch can invoke scaffold selection before native task conversion.
 - Existing VoidSpec fixtures continue to pass.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/voidspec.test.js out/test/voidspec-yaml.test.js out/test/workflow-scaffoldSelector.test.js`
 
 ### OSL-6.2 - ZMLR Scaffold-Aware Recommendation
 
