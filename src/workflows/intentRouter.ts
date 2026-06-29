@@ -1,4 +1,10 @@
 import type { FailureType } from '../diagnostics/failureTypes';
+import {
+  selectScaffoldVariant,
+  type ScaffoldSelectionDecision,
+  type ScaffoldSelectionConstraints,
+} from './scaffolds/select';
+import type { PromptHarnessContract, ScaffoldScore, ScaffoldVariant } from './scaffolds/types';
 import type { ModelCapability, ModelLocality, WorkflowIntent, WorkflowPolicies } from './types';
 
 export type RoutingProfile = NonNullable<WorkflowPolicies['routingProfile']>;
@@ -12,6 +18,7 @@ export interface IntentRouterRequest {
   attempts?: number;
   escalation?: EscalationHint;
   recommendModel?: ZippyMeshRecommendModel;
+  scaffoldSelection?: IntentScaffoldSelectionInput;
 }
 
 export interface IntentRequirements {
@@ -48,6 +55,8 @@ export interface ZippyMeshRecommendModel {
 
 export interface IntentRouterDecision {
   selected?: CandidateModel;
+  selectedScaffold?: ScaffoldVariant;
+  scaffoldDecision?: ScaffoldSelectionDecision;
   reason: string;
   rejected: RejectedModel[];
   usedRecommendation: boolean;
@@ -59,11 +68,19 @@ export interface RejectedModel {
   reason: string;
 }
 
+export interface IntentScaffoldSelectionInput {
+  variants: ScaffoldVariant[];
+  scores?: ScaffoldScore[];
+  promptHarnesses?: PromptHarnessContract[];
+  constraints?: ScaffoldSelectionConstraints;
+}
+
 export function routeWorkflowIntent(request: IntentRouterRequest): IntentRouterDecision {
   const rejected: RejectedModel[] = [];
   const requiredCapabilities = capabilitiesForIntent(request.intent, request.requirements?.capabilities ?? []);
   const allowedLocalities = localityPolicy(request.profile, request.requirements);
   const escalationActive = shouldEscalate(request);
+  const scaffoldDecision = routeScaffold(request);
 
   const eligible = request.candidates.filter((candidate) => {
     const rejection = rejectionReason(candidate, request, requiredCapabilities, allowedLocalities, escalationActive);
@@ -80,9 +97,14 @@ export function routeWorkflowIntent(request: IntentRouterRequest): IntentRouterD
     if (selected) {
       return {
         selected,
+        selectedScaffold: scaffoldDecision?.selected,
+        scaffoldDecision,
         rejected,
         usedRecommendation: true,
-        reason: recommendation.reason ?? `ZippyMesh recommended ${selected.providerId}:${selected.model}.`,
+        reason: withScaffoldReason(
+          recommendation.reason ?? `ZippyMesh recommended ${selected.providerId}:${selected.model}.`,
+          scaffoldDecision,
+        ),
       };
     }
   }
@@ -97,7 +119,12 @@ export function routeWorkflowIntent(request: IntentRouterRequest): IntentRouterD
     return {
       rejected,
       usedRecommendation: false,
-      reason: 'No eligible model satisfied health, locality, budget, context, and capability requirements.',
+      selectedScaffold: scaffoldDecision?.selected,
+      scaffoldDecision,
+      reason: withScaffoldReason(
+        'No eligible model satisfied health, locality, budget, context, and capability requirements.',
+        scaffoldDecision,
+      ),
     };
   }
 
@@ -105,10 +132,34 @@ export function routeWorkflowIntent(request: IntentRouterRequest): IntentRouterD
   const selected = ranked[0];
   return {
     selected,
+    selectedScaffold: scaffoldDecision?.selected,
+    scaffoldDecision,
     rejected,
     usedRecommendation: false,
-    reason: selectionReason(selected, request, escalationActive, eligible.length === 0),
+    reason: withScaffoldReason(selectionReason(selected, request, escalationActive, eligible.length === 0), scaffoldDecision),
   };
+}
+
+function routeScaffold(request: IntentRouterRequest): ScaffoldSelectionDecision | undefined {
+  if (!request.scaffoldSelection) {
+    return undefined;
+  }
+  return selectScaffoldVariant({
+    intent: request.intent,
+    profile: request.profile,
+    variants: request.scaffoldSelection.variants,
+    scores: request.scaffoldSelection.scores,
+    promptHarnesses: request.scaffoldSelection.promptHarnesses,
+    constraints: request.scaffoldSelection.constraints,
+    previousFailureType: request.previousFailures?.[0],
+  });
+}
+
+function withScaffoldReason(reason: string, scaffoldDecision: ScaffoldSelectionDecision | undefined): string {
+  if (!scaffoldDecision?.selected) {
+    return reason;
+  }
+  return `${reason}; scaffold=${scaffoldDecision.selected.id}`;
 }
 
 function rejectionReason(
