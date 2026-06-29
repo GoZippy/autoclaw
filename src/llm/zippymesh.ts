@@ -71,6 +71,7 @@ export class ZippyMeshProvider extends OpenAiCompatibleProvider {
         reportsCost: true,
         contextWindow: 200_000,
         modelFamilies: ['llama', 'qwen', 'claude', 'gpt', 'gemini', 'groq-llama'],
+        promptHarnesses: ['openai-tools', 'claude-tools', 'qwen-xml-tools', 'deepseek-r1'],
       },
       extraHeaders: { 'X-Client': 'autoclaw' },
       augmentHeaders: zippyMeshAugmentHeaders,

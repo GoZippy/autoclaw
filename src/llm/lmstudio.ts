@@ -36,6 +36,7 @@ export class LmStudioProvider extends OpenAiCompatibleProvider {
         reportsCost: false,
         contextWindow: 8192,
         modelFamilies: [],
+        promptHarnesses: ['openai-tools'],
       },
       fetchImpl: opts.fetchImpl,
     };

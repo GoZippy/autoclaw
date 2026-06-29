@@ -143,57 +143,55 @@ export function checkHarnessCompatibility(
 ): Incompatibility[] {
   const issues: Incompatibility[] = [];
 
-  if (harness.modelFamilies.length > 0 && !harness.modelFamilies.some(f => modelFamily.startsWith(f) || f === modelFamily)) {
-    if (modelFamily.startsWith('gpt') || modelFamily.startsWith('o1') || modelFamily.startsWith('o3') || modelFamily.startsWith('o4')) {
-      if (harness.toolCall !== 'openai-json-tools') {
-        issues.push({
-          field: 'toolCall',
-          harnessFormat: harness.toolCall,
-          expectedFormat: 'openai-json-tools',
-          reason: `GPT/o-series models require JSON tool calls; harness '${harness.id}' uses '${harness.toolCall}'`,
-        });
-      }
-      if (harness.role !== 'openai-system-message') {
-        issues.push({
-          field: 'role',
-          harnessFormat: harness.role,
-          expectedFormat: 'openai-system-message',
-          reason: `GPT/o-series models use a system message; harness '${harness.id}' uses '${harness.role}'`,
-        });
-      }
+  if (modelFamily.startsWith('gpt') || modelFamily.startsWith('o1') || modelFamily.startsWith('o3') || modelFamily.startsWith('o4')) {
+    if (harness.toolCall !== 'openai-json-tools') {
+      issues.push({
+        field: 'toolCall',
+        harnessFormat: harness.toolCall,
+        expectedFormat: 'openai-json-tools',
+        reason: `GPT/o-series models require JSON tool calls; harness '${harness.id}' uses '${harness.toolCall}'`,
+      });
     }
-
-    if (modelFamily.startsWith('claude')) {
-      if (harness.toolCall !== 'anthropic-json-tools' && harness.toolCall !== 'openai-json-tools') {
-        issues.push({
-          field: 'toolCall',
-          harnessFormat: harness.toolCall,
-          expectedFormat: 'anthropic-json-tools',
-          reason: `Claude models require Anthropic or OpenAI-compatible JSON tool calls; harness '${harness.id}' uses '${harness.toolCall}'`,
-        });
-      }
+    if (harness.role !== 'openai-system-message') {
+      issues.push({
+        field: 'role',
+        harnessFormat: harness.role,
+        expectedFormat: 'openai-system-message',
+        reason: `GPT/o-series models use a system message; harness '${harness.id}' uses '${harness.role}'`,
+      });
     }
+  }
 
-    if (modelFamily.startsWith('qwen')) {
-      if (harness.toolCall === 'openai-json-tools') {
-        issues.push({
-          field: 'toolCall',
-          harnessFormat: harness.toolCall,
-          expectedFormat: 'qwen-xml-tools',
-          reason: `Qwen models typically use XML tool calls; harness '${harness.id}' uses JSON tool calls which may not be supported. Use 'qwen-xml-tools' harness instead.`,
-        });
-      }
+  if (modelFamily.startsWith('claude')) {
+    if (harness.toolCall !== 'anthropic-json-tools' && harness.toolCall !== 'openai-json-tools') {
+      issues.push({
+        field: 'toolCall',
+        harnessFormat: harness.toolCall,
+        expectedFormat: 'anthropic-json-tools',
+        reason: `Claude models require Anthropic or OpenAI-compatible JSON tool calls; harness '${harness.id}' uses '${harness.toolCall}'`,
+      });
     }
+  }
 
-    if (modelFamily.startsWith('deepseek-r1')) {
-      if (harness.reasoning !== 'deepseek-r1-think-tag' && harness.reasoning !== 'none') {
-        issues.push({
-          field: 'reasoning',
-          harnessFormat: harness.reasoning,
-          expectedFormat: 'deepseek-r1-think-tag',
-          reason: `DeepSeek R1 uses <think> tags for reasoning; harness '${harness.id}' uses '${harness.reasoning}'`,
-        });
-      }
+  if (modelFamily.startsWith('qwen')) {
+    if (harness.toolCall === 'openai-json-tools') {
+      issues.push({
+        field: 'toolCall',
+        harnessFormat: harness.toolCall,
+        expectedFormat: 'qwen-xml-tools',
+        reason: `Qwen models typically use XML tool calls; harness '${harness.id}' uses JSON tool calls which may not be supported. Use 'qwen-xml-tools' harness instead.`,
+      });
+    }
+  }
+
+  if (modelFamily.startsWith('deepseek-r1')) {
+    if (harness.reasoning !== 'deepseek-r1-think-tag' && harness.reasoning !== 'none') {
+      issues.push({
+        field: 'reasoning',
+        harnessFormat: harness.reasoning,
+        expectedFormat: 'deepseek-r1-think-tag',
+        reason: `DeepSeek R1 uses <think> tags for reasoning; harness '${harness.id}' uses '${harness.reasoning}'`,
+      });
     }
   }
 

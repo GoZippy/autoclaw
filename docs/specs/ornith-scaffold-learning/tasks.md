@@ -147,13 +147,21 @@ Acceptance:
 
 ### OSL-4.1 - Prompt Harness Registry
 
-Status: open
+Status: review
+
+Owner: kilocode; revision: codex
 
 Scope:
 
 - `src/llm/promptHarness.ts`
-- `src/llm/modelCatalog.ts`
+- `src/llm/types.ts`
+- `src/llm/zippymesh.ts`
+- `src/llm/ollama.ts`
+- `src/llm/lmstudio.ts`
 - `src/test/llm-promptHarness.test.ts`
+- `src/test/llm-types.test.ts`
+- `src/test/llm-zippymesh.test.ts`
+- `src/test/llm-ollama.test.ts`
 
 Acceptance:
 
@@ -161,6 +169,23 @@ Acceptance:
   tool use, reasoning fields, think tags, and tool response wrapping.
 - Providers can advertise supported harnesses.
 - Unsupported harness/model combinations are rejected with an actionable reason.
+
+Implementation:
+
+- `PromptHarnessContract` and `PromptHarnessRegistry` define and select
+  built-in OpenAI, Claude, Qwen XML, and DeepSeek R1 prompt harnesses.
+- `checkHarnessCompatibility()` applies model-family format rules even when a
+  custom harness declares a matching family, so misdeclared harnesses cannot
+  bypass role/tool/reasoning validation.
+- `ProviderCapabilities.promptHarnesses` lets providers and routers advertise
+  the harness ids they can safely serve.
+- ZippyMesh advertises the multi-family router harness set; Ollama and LM
+  Studio conservatively advertise OpenAI-compatible harness support.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/llm-promptHarness.test.js out/test/llm-types.test.js out/test/llm-zippymesh.test.js out/test/llm-ollama.test.js` - 65 passing.
 
 ### OSL-5.1 - Anti-Hacking Monitor
 

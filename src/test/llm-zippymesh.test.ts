@@ -359,6 +359,13 @@ suite('ZippyMeshProvider — embed() (first-class /v1/embeddings)', () => {
     assert.strictEqual(p.capabilities.embeddings, true);
     assert.strictEqual(typeof p.embed, 'function');
   });
+
+  test('capabilities advertise supported prompt harnesses', () => {
+    const p = new ZippyMeshProvider({ fetchImpl: (async () => new Response('{}')) as typeof fetch });
+    assert.ok(p.capabilities.promptHarnesses?.includes('openai-tools'));
+    assert.ok(p.capabilities.promptHarnesses?.includes('qwen-xml-tools'));
+    assert.ok(p.capabilities.promptHarnesses?.includes('claude-tools'));
+  });
 });
 
 suite('zippyMeshAugmentHeaders pure function', () => {

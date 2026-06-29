@@ -115,4 +115,9 @@ suite('OllamaProvider — chat path uses /v1/chat/completions', () => {
     assert.strictEqual(r.tokens?.output, 2);
     assert.ok(capture[0].url.includes('/v1/chat/completions'));
   });
+
+  test('capabilities advertise OpenAI prompt harness support', () => {
+    const p = new OllamaProvider({ fetchImpl: (async () => new Response('{}')) as typeof fetch });
+    assert.deepStrictEqual(p.capabilities.promptHarnesses, ['openai-tools']);
+  });
 });

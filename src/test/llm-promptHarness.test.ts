@@ -142,6 +142,26 @@ suite('PromptHarnessRegistry', () => {
     assert.ok(result.issues.length > 0);
   });
 
+  test('selectAndValidate rejects misdeclared custom harness formats', () => {
+    const reg = new PromptHarnessRegistry();
+    reg.register({
+      id: 'fake-gpt-xml',
+      name: 'Misdeclared GPT XML',
+      role: 'qwen-system-prefix',
+      toolCall: 'qwen-xml-tools',
+      reasoning: 'none',
+      toolResponse: 'qwen-xml-result',
+      modelFamilies: ['gpt'],
+      parallelToolCalls: false,
+    });
+
+    const result = reg.selectAndValidate('gpt-4o', 'fake-gpt-xml');
+
+    assert.strictEqual(result.harness, undefined);
+    assert.ok(result.issues.some((issue) => issue.field === 'toolCall'));
+    assert.ok(result.issues.some((issue) => issue.field === 'role'));
+  });
+
   test('selectAndValidate with unknown harness id returns issue', () => {
     const result = defaultPromptHarnessRegistry.selectAndValidate('gpt-4o', 'no-such-harness');
     assert.strictEqual(result.harness, undefined);
