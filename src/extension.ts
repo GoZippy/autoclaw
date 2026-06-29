@@ -96,6 +96,7 @@ import {
 } from './cloud';
 import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS, dispatchViaRegistry } from './runners';
 import { dispatchPreferredByReputation } from './runners/reputationPreference';
+import { ReviewFleetController } from './reviewfleet/activate';
 import { recordDispatchCost, gatherFleetData } from './panel/fleetData';
 import {
   buildFleetDigest,
@@ -235,6 +236,9 @@ let activeRefreshService: RefreshServiceHandle | null = null;
  * filesystem mailbox always remains the canonical durable record.
  */
 let activeFabric: FabricBus | null = null;
+// Review Fleet activation controller (RF-4d) — singleton; dormant until the
+// user runs autoclaw.reviewFleet.start with enabled + a budget set. Stopped in deactivate().
+let reviewFleetController: ReviewFleetController | null = null;
 let currentIde: IdeId = 'other';
 let currentWorkspace: string = '';
 
@@ -705,6 +709,48 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('autoclaw.orchestrate.review', () =>
       withGate(context, 'pro.orchestrate.advanced', 'Advanced Orchestration', orchestrateReviewCommand),
     )
+  );
+
+  // Review Fleet (RF-4d): start/stop the automated reviewer watcher. DORMANT
+  // by default — nothing dispatches a paid model unless BOTH autoclaw.reviewFleet.enabled
+  // is true AND autoclaw.reviewFleet.budgetCents > 0 (the two-gate $0 safety).
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.reviewFleet.start', async () => {
+      const ws = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!ws) {
+        vscode.window.showErrorMessage('AutoClaw Review Fleet: open a workspace folder first.');
+        return;
+      }
+      const cfg = vscode.workspace.getConfiguration('autoclaw.reviewFleet');
+      const enabled = cfg.get<boolean>('enabled', false);
+      const budgetCents = cfg.get<number>('budgetCents', 0);
+      if (enabled && budgetCents <= 0) {
+        vscode.window.showWarningMessage(
+          'AutoClaw Review Fleet: enabled but budget is 0¢ — reviewers fail safe to human (no spend). ' +
+            'Set autoclaw.reviewFleet.budgetCents > 0 to allow paid dispatch.',
+        );
+      }
+      if (!reviewFleetController) { reviewFleetController = new ReviewFleetController(); }
+      const res = await reviewFleetController.start(ws, {
+        enabled,
+        budgetCents,
+        intervalMs: cfg.get<number>('intervalMs', 15000),
+        maxCycles: cfg.get<number>('maxCycles', 50),
+        agentId: 'claude-code',
+      });
+      vscode.window.showInformationMessage(`AutoClaw Review Fleet: ${res.reason}`);
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.reviewFleet.stop', () => {
+      const res = reviewFleetController?.stop() ?? { stopped: false };
+      vscode.window.showInformationMessage(
+        res.stopped
+          ? 'AutoClaw Review Fleet: stopping at the next cycle boundary…'
+          : 'AutoClaw Review Fleet: not running.',
+      );
+    }),
   );
 
   context.subscriptions.push(
@@ -6552,6 +6598,10 @@ function startInboxWatcher(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate() {
+  if (reviewFleetController) {
+    reviewFleetController.stop();
+    reviewFleetController = null;
+  }
   if (stateWatcher) {
     stateWatcher.dispose();
   }

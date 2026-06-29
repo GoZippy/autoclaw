@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [3.6.12] - 2026-06-29
+
+Review Fleet go-live activation (RF-4d) — the fleet can now be turned on from a
+command, and stays dormant until you opt in with a budget.
+
+- **`AutoClaw: Review Fleet — Start / Stop Automated Reviewer`** commands plus a
+  new **Review Fleet** settings group (`autoclaw.reviewFleet.enabled`,
+  `.budgetCents`, `.intervalMs`, `.maxCycles`). The watcher only scans or
+  dispatches when **both** `enabled` is true **and** `budgetCents > 0` — the
+  two-gate $0-until-funded safety. Bounded by `maxCycles`; stopped on deactivate.
+
 ## [3.6.11] - 2026-06-29
 
 Review Fleet (automated, dormant-by-default reviewer layer) + the first live
