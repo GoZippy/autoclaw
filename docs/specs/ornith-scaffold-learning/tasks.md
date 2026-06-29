@@ -129,14 +129,16 @@ Verification:
 
 ### OSL-3.2 - Scaffold Mutations
 
-Status: open
+Status: complete
+
+Owner: Codex
 
 Scope:
 
 - `src/workflows/scaffolds/mutate.ts`
-- `src/workflows/loops.ts`
-- `src/intelligence/contextPack.ts`
+- `src/workflows/scaffolds/index.ts`
 - `src/test/workflow-scaffoldMutations.test.ts`
+- `package.json`
 
 Acceptance:
 
@@ -144,6 +146,21 @@ Acceptance:
   best-of-N count, tool lane, and reviewer independence.
 - Mutation output is bounded and validates before execution.
 - No mutation may widen file scope or bypass policy without human approval.
+
+Implementation:
+
+- `mutateScaffoldVariant()` produces child `ScaffoldVariant`s with
+  `parentScaffoldId`, mutation metadata, deterministic child ids, and parseable
+  scaffold output.
+- Supported mutations update context mode, loop policy metadata, router
+  profile, best-of-N count, tool lane ids, and reviewer independence.
+- Validation rejects unbounded best-of-N, loop-policy, and tool-lane payloads.
+- Scope widening and policy relaxation require `humanApproved: true`.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/workflow-scaffoldMutations.test.js out/test/workflow-scaffoldSelector.test.js out/test/workflow-scaffolds.test.js out/test/workflow-loops.test.js`
 
 ### OSL-4.1 - Prompt Harness Registry
 
