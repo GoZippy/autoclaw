@@ -87,6 +87,23 @@ export {
 } from './failsafe-install';
 
 export {
+  PromptHarnessRegistry,
+  defaultPromptHarnessRegistry,
+  OPENAI_TOOLS_HARNESS,
+  CLAUDE_TOOLS_HARNESS,
+  QWEN_XML_TOOLS_HARNESS,
+  DEEPSEEK_R1_HARNESS,
+  BUILT_IN_HARNESSES,
+  checkHarnessCompatibility,
+  type PromptHarnessContract,
+  type RoleFormat,
+  type ToolCallFormat,
+  type ReasoningFormat,
+  type ToolResponseFormat,
+  type Incompatibility,
+} from './promptHarness';
+
+export {
   installLlm,
   formatLlmInstallReport,
   parseConfig,
