@@ -26,6 +26,8 @@ import {
   VoidSpecTask,
   AutoClawMirroredTask,
   AutoClawTaskStatus,
+  VoidSpecScaffoldConstraints,
+  VoidSpecSuccessMetadata,
   SyncResult,
   SyncTaskOutcome,
   toSharedId,
@@ -34,6 +36,8 @@ import {
   autoClawToVoidSpecStatus,
   normaliseVoidSpecStatus,
 } from './types';
+import type { ModelLocality, WorkflowIntent } from '../workflows/types';
+import type { ScaffoldRouterProfile } from '../workflows/scaffolds/types';
 
 // ---------------------------------------------------------------------------
 // VoidSpec tasks.yaml parser (uses js-yaml for full YAML support — BL-20)
@@ -131,11 +135,18 @@ function buildTask(raw: Record<string, unknown>): VoidSpecTask | null {
   const dependsOn = coerceStringList(raw['depends_on'] ?? raw['dependsOn'] ?? raw['deps']);
   const tags = coerceStringList(raw['tags']);
   const owner = coerceString(raw['owner'] ?? raw['assignee']);
+  const intent = coerceIntent(raw['intent']);
+  const success = coerceSuccess(raw['success'] ?? raw['success_criteria'] ?? raw['successCriteria'], raw['success_gates'] ?? raw['successGates']);
+  const constraints = coerceConstraints(raw['constraints']);
+  const preferredScaffold = coerceString(raw['preferred_scaffold'] ?? raw['preferredScaffold']);
 
   // Preserve unmodelled scalar fields for loss-free write-back.
   const known = new Set([
     'id', 'title', 'name', 'status', 'description', 'desc',
     'depends_on', 'dependsOn', 'deps', 'tags', 'owner', 'assignee',
+    'intent', 'success', 'success_criteria', 'successCriteria',
+    'success_gates', 'successGates', 'constraints',
+    'preferred_scaffold', 'preferredScaffold',
   ]);
   const extra: Record<string, string> = {};
   for (const [k, v] of Object.entries(raw)) {
@@ -153,8 +164,80 @@ function buildTask(raw: Record<string, unknown>): VoidSpecTask | null {
     dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
     owner,
     tags: tags.length > 0 ? tags : undefined,
+    intent,
+    success,
+    constraints,
+    preferredScaffold,
     extra: Object.keys(extra).length > 0 ? extra : undefined,
   };
+}
+
+const WORKFLOW_INTENTS: readonly WorkflowIntent[] = [
+  'plan', 'code', 'debug', 'test', 'review', 'security', 'docs', 'release',
+  'refactor', 'research', 'summarize', 'coordination', 'benchmark', 'vision',
+  'tool-use', 'long-context', 'creative', 'cheap-grade',
+];
+
+const ROUTING_PROFILES: readonly ScaffoldRouterProfile[] = [
+  'cheap', 'balanced', 'quality', 'local-only', 'air-gapped', 'release-critical',
+];
+
+const LOCALITIES: readonly ModelLocality[] = ['local', 'lan', 'cloud'];
+
+function coerceIntent(v: unknown): WorkflowIntent | undefined {
+  const s = coerceString(v);
+  return WORKFLOW_INTENTS.includes(s as WorkflowIntent) ? s as WorkflowIntent : undefined;
+}
+
+function coerceRoutingProfile(v: unknown): ScaffoldRouterProfile | undefined {
+  const s = coerceString(v);
+  return ROUTING_PROFILES.includes(s as ScaffoldRouterProfile) ? s as ScaffoldRouterProfile : undefined;
+}
+
+function coerceLocalities(v: unknown): ModelLocality[] | undefined {
+  const out = coerceStringList(v)
+    .filter((item): item is ModelLocality => LOCALITIES.includes(item as ModelLocality));
+  return out.length > 0 ? out : undefined;
+}
+
+function coerceNumber(v: unknown): number | undefined {
+  if (typeof v === 'number' && Number.isFinite(v)) { return v; }
+  const s = coerceString(v);
+  if (!s) { return undefined; }
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function coerceSuccess(rawSuccess: unknown, rawGates: unknown): VoidSpecSuccessMetadata | undefined {
+  const gatesFromScalar = coerceStringList(rawGates);
+  if (gatesFromScalar.length > 0) {
+    return { gates: gatesFromScalar };
+  }
+  if (!rawSuccess || typeof rawSuccess !== 'object' || Array.isArray(rawSuccess)) {
+    return undefined;
+  }
+  const obj = rawSuccess as Record<string, unknown>;
+  const gates = coerceStringList(obj['gates'] ?? obj['gateIds'] ?? obj['gate_ids']);
+  return gates.length > 0 ? { gates } : undefined;
+}
+
+function coerceConstraints(raw: unknown): VoidSpecScaffoldConstraints | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return undefined;
+  }
+  const obj = raw as Record<string, unknown>;
+  const constraints: VoidSpecScaffoldConstraints = {};
+  const routingProfile = coerceRoutingProfile(obj['routing_profile'] ?? obj['routingProfile'] ?? obj['profile']);
+  const allowedLocalities = coerceLocalities(obj['allowed_localities'] ?? obj['allowedLocalities']);
+  const privacyLocality = coerceLocalities(obj['privacy_locality'] ?? obj['privacyLocality']);
+  const maxCostCents = coerceNumber(obj['max_cost_cents'] ?? obj['maxCostCents']);
+  const promptHarnessId = coerceString(obj['prompt_harness_id'] ?? obj['promptHarnessId']);
+  if (routingProfile) { constraints.routingProfile = routingProfile; }
+  if (allowedLocalities) { constraints.allowedLocalities = allowedLocalities; }
+  if (privacyLocality) { constraints.privacyLocality = privacyLocality; }
+  if (maxCostCents !== undefined) { constraints.maxCostCents = maxCostCents; }
+  if (promptHarnessId) { constraints.promptHarnessId = promptHarnessId; }
+  return Object.keys(constraints).length > 0 ? constraints : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +264,10 @@ export function mapToAutoClawTask(vt: VoidSpecTask): AutoClawMirroredTask {
     status: voidSpecToAutoClawStatus(vt.status),
     subtasks,
     dependsOn: (vt.dependsOn ?? []).map(toSharedId),
+    intent: vt.intent,
+    successGates: vt.success?.gates,
+    constraints: vt.constraints,
+    preferredScaffold: vt.preferredScaffold,
   };
 }
 

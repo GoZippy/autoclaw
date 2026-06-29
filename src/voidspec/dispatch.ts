@@ -32,6 +32,15 @@ import {
   ExecutionStateSnapshot,
 } from './sync';
 import { AutoClawMirroredTask, SyncResult } from './types';
+import {
+  selectScaffoldVariant,
+  type ScaffoldSelectionDecision,
+} from '../workflows/scaffolds/select';
+import type {
+  PromptHarnessContract,
+  ScaffoldScore,
+  ScaffoldVariant,
+} from '../workflows/scaffolds/types';
 
 // ---------------------------------------------------------------------------
 // Conventional locations
@@ -84,6 +93,8 @@ export interface DispatchResult {
   tasks: AutoClawMirroredTask[];
   /** Per-task dispatch status — only populated in `runner` mode. */
   dispatched?: Record<string, string>;
+  /** Selector decisions keyed by mirrored task id, when scaffold selection ran. */
+  scaffoldDecisions?: Record<string, ScaffoldSelectionDecision>;
 }
 
 /** Options for {@link dispatchVoidSpecTasks}. */
@@ -93,8 +104,17 @@ export interface DispatchOptions {
    * uses native-task conversion. Injecting a stub is the test seam.
    */
   runner?: VoidSpecRunner | null;
+  /** Optional scaffold selector inputs. When present, native conversion annotates eligible tasks. */
+  scaffoldSelection?: VoidSpecDispatchScaffoldSelection;
   /** Logger seam. Defaults to `console`. */
   logger?: { info: (m: string) => void; warn: (m: string) => void };
+}
+
+export interface VoidSpecDispatchScaffoldSelection {
+  variants: ScaffoldVariant[];
+  scores?: ScaffoldScore[];
+  promptHarnesses?: PromptHarnessContract[];
+  now?: string;
 }
 
 /**
@@ -110,6 +130,7 @@ export async function dispatchVoidSpecTasks(
 ): Promise<DispatchResult> {
   const logger = opts.logger ?? console;
   const runner = opts.runner ?? null;
+  const selected = applyScaffoldSelection(tasks, opts.scaffoldSelection);
 
   if (runner) {
     let available = false;
@@ -122,8 +143,8 @@ export async function dispatchVoidSpecTasks(
       logger.info(
         `voidspec: dispatching ${tasks.length} task(s) to ${runner.id}.`,
       );
-      const dispatched = await runner.dispatch(tasks);
-      return { mode: 'runner', tasks, dispatched };
+      const dispatched = await runner.dispatch(selected.tasks);
+      return { mode: 'runner', tasks: selected.tasks, dispatched, scaffoldDecisions: selected.decisions };
     }
   }
 
@@ -134,7 +155,49 @@ export async function dispatchVoidSpecTasks(
     `voidspec: no runner-voidspec available — ${tasks.length} task(s) ` +
       `converted to native AutoClaw tasks.`,
   );
-  return { mode: 'native', tasks };
+  return { mode: 'native', tasks: selected.tasks, scaffoldDecisions: selected.decisions };
+}
+
+function applyScaffoldSelection(
+  tasks: AutoClawMirroredTask[],
+  selection: VoidSpecDispatchScaffoldSelection | undefined,
+): { tasks: AutoClawMirroredTask[]; decisions?: Record<string, ScaffoldSelectionDecision> } {
+  if (!selection) {
+    return { tasks };
+  }
+  const decisions: Record<string, ScaffoldSelectionDecision> = {};
+  const annotated = tasks.map((task) => {
+    if (!task.intent && !task.preferredScaffold) {
+      return task;
+    }
+    const variants = task.preferredScaffold
+      ? selection.variants.filter((variant) => variant.id === task.preferredScaffold)
+      : selection.variants;
+    if (variants.length === 0 || !task.intent) {
+      return task;
+    }
+    const decision = selectScaffoldVariant({
+      intent: task.intent,
+      profile: task.constraints?.routingProfile ?? 'balanced',
+      variants,
+      scores: selection.scores,
+      promptHarnesses: selection.promptHarnesses,
+      constraints: task.constraints,
+      now: selection.now,
+    });
+    decisions[task.id] = decision;
+    if (!decision.selected) {
+      return task;
+    }
+    return {
+      ...task,
+      selectedScaffold: decision.selected.id,
+      scaffoldSelectionReason: decision.reason,
+    };
+  });
+  return Object.keys(decisions).length > 0
+    ? { tasks: annotated, decisions }
+    : { tasks: annotated };
 }
 
 // ---------------------------------------------------------------------------

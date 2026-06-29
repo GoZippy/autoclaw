@@ -38,6 +38,7 @@ import {
   VoidSpecRunner,
 } from '../voidspec/dispatch';
 import type { AutoClawMirroredTask } from '../voidspec/types';
+import { SCAFFOLD_SCHEMA, SCAFFOLD_SCORE_SCHEMA, type ScaffoldScore, type ScaffoldVariant } from '../workflows/scaffolds';
 
 const SILENT = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -61,6 +62,24 @@ tasks:
   - id: T-003
     title: "Ship it"
     status: done
+`;
+
+const SCAFFOLD_YAML = `project: scaffold-spec
+tasks:
+  - id: S-001
+    title: "Review the merge"
+    status: todo
+    intent: review
+    success:
+      gates:
+        - compile
+        - unit
+    constraints:
+      routing_profile: cheap
+      allowed_localities: [local, lan]
+      max_cost_cents: 3
+      prompt_harness_id: qwen-local
+    preferred_scaffold: scaffold-review-local
 `;
 
 // ---------------------------------------------------------------------------
@@ -117,6 +136,18 @@ suite('VoidSpec — parseVoidSpecYaml', () => {
     assert.strictEqual(doc.tasks[0].extra!.priority, 'high');
   });
 
+  test('parses scaffold metadata fields', () => {
+    const doc = parseVoidSpecYaml(SCAFFOLD_YAML);
+    const task = doc.tasks[0];
+    assert.strictEqual(task.intent, 'review');
+    assert.deepStrictEqual(task.success?.gates, ['compile', 'unit']);
+    assert.strictEqual(task.constraints?.routingProfile, 'cheap');
+    assert.deepStrictEqual(task.constraints?.allowedLocalities, ['local', 'lan']);
+    assert.strictEqual(task.constraints?.maxCostCents, 3);
+    assert.strictEqual(task.constraints?.promptHarnessId, 'qwen-local');
+    assert.strictEqual(task.preferredScaffold, 'scaffold-review-local');
+  });
+
   test('a task with no id is dropped', () => {
     const doc = parseVoidSpecYaml('tasks:\n  - title: "no id here"\n');
     assert.strictEqual(doc.tasks.length, 0);
@@ -137,6 +168,14 @@ suite('VoidSpec — mapping', () => {
     const mapped = mapDocument(parseVoidSpecYaml(SAMPLE_YAML));
     assert.strictEqual(mapped.length, 3);
     assert.strictEqual(mapped[2].status, 'complete'); // done -> complete
+  });
+
+  test('mapToAutoClawTask preserves scaffold metadata', () => {
+    const mapped = mapToAutoClawTask(parseVoidSpecYaml(SCAFFOLD_YAML).tasks[0]);
+    assert.strictEqual(mapped.intent, 'review');
+    assert.deepStrictEqual(mapped.successGates, ['compile', 'unit']);
+    assert.strictEqual(mapped.constraints?.routingProfile, 'cheap');
+    assert.strictEqual(mapped.preferredScaffold, 'scaffold-review-local');
   });
 });
 
@@ -250,6 +289,52 @@ suite('VoidSpec — dispatch', () => {
     };
     const r = await dispatchVoidSpecTasks(mirrored, { runner, logger: SILENT });
     assert.strictEqual(r.mode, 'native');
+  });
+
+  test('native conversion can select a scaffold before returning tasks', async () => {
+    const scaffold: ScaffoldVariant = {
+      schema: SCAFFOLD_SCHEMA,
+      id: 'scaffold-review-local',
+      workflowId: 'wf-review',
+      taskIntent: 'review',
+      routerProfile: 'cheap',
+      toolLaneIds: ['filesystem'],
+      createdAt: '2026-06-29T00:00:00.000Z',
+      promptHarnessId: 'qwen-local',
+      metadata: { localities: ['local'], expectedCostCents: 0 },
+    };
+    const score: ScaffoldScore = {
+      schema: SCAFFOLD_SCORE_SCHEMA,
+      scaffoldId: 'scaffold-review-local',
+      runId: 'run-1',
+      workflowId: 'wf-review',
+      taskIntent: 'review',
+      createdAt: '2026-06-29T00:05:00.000Z',
+      pass: true,
+      reward: 0.8,
+      verifierPass: true,
+      judgeVeto: false,
+      scopeViolation: false,
+      costCents: 0,
+      durationMs: 1000,
+      retryCount: 0,
+      reworkCount: 0,
+    };
+    const task = mapToAutoClawTask(parseVoidSpecYaml(SCAFFOLD_YAML).tasks[0]);
+
+    const r = await dispatchVoidSpecTasks([task], {
+      logger: SILENT,
+      scaffoldSelection: {
+        variants: [scaffold],
+        scores: [score],
+        now: '2026-06-29T00:10:00.000Z',
+      },
+    });
+
+    assert.strictEqual(r.mode, 'native');
+    assert.strictEqual(r.tasks[0].selectedScaffold, 'scaffold-review-local');
+    assert.ok(r.tasks[0].scaffoldSelectionReason?.includes('scaffold-review-local'));
+    assert.ok(r.scaffoldDecisions?.['VS-S-001'].selected);
   });
 });
 
