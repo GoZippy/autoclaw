@@ -7,3 +7,4 @@ export * from './tests';
 export * from './simulate';
 export * from './intentRouter';
 export * from './escalationPolicy';
+export * from './scaffolds';

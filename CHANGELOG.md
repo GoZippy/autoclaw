@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [3.6.11] - 2026-06-29
+
+Review Fleet (automated, dormant-by-default reviewer layer) + the first live
+wiring of reputation-aware dispatch + a validated board refresh.
+
+- **Review Fleet RF-1→RF-4c** (`src/reviewfleet/*`): capability roster, tiered
+  cross-provider review router, service core, production-default dispatch
+  (off-by-default behind an explicit `enabled` + budget cap), a bounded dormant
+  watcher loop, and the inbox adapter that runs it against the real comms tree.
+  133 fleet tests; nothing dispatches a paid model until explicitly enabled.
+- **BL-7a — reputation-aware dispatch goes live**: the `spawnRunner` trigger
+  hook now selects the best runner by reputation when no explicit target is
+  given (`dispatchPreferredByReputation`), giving the previously-inert flagship
+  engine its first production caller. Broad orchestrator-assignment reach (BL-7b)
+  is tracked as a follow-up.
+- **Scaffold-learning scorer (OSL)**: `ScaffoldScore` reward rows with
+  false-accept/false-reject penalties and anti-hacking handling.
+- **Board refresh**: 92 stale consensus votes + 56 claims triaged against sprint
+  status / landed tests / live code; stale residue archived reversibly. The
+  triage caught the BL-7 flagship as built-but-unwired before it could be
+  discarded.
+
 ## [3.6.6] - 2026-06-26
 
 Builds on 3.6.5: local-LLM ergonomics, ready-made agent teams, and a wave of

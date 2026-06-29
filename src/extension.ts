@@ -95,6 +95,7 @@ import {
   readRelayConfig, writeRelayConfig, endpointIsSecure, defaultRelayConfig,
 } from './cloud';
 import { createDefaultRunnerRegistry, BUILTIN_RUNNER_IDS, dispatchViaRegistry } from './runners';
+import { dispatchPreferredByReputation } from './runners/reputationPreference';
 import { recordDispatchCost, gatherFleetData } from './panel/fleetData';
 import {
   buildFleetDigest,
@@ -943,26 +944,39 @@ export function activate(context: vscode.ExtensionContext) {
         // via the existing dispatch path (the established way runners start work).
         spawnRunner: async (decision) => {
           const target = decision.target ?? '';
+          // BL-7: a hook with no explicit target (or 'auto'/'best') selects the best
+          // runner by REPUTATION instead of erroring — the production caller that
+          // finally makes getPreferred's §5.5 `reputation` criterion fire (the
+          // flagship reputation-aware assignment was built but called nowhere).
+          const wantsReputationPick = target === '' || target === 'auto' || target === 'best';
           const known = (BUILTIN_RUNNER_IDS as readonly string[]).includes(target);
-          if (!known) { throw new Error(`unknown runner "${target}"`); }
-          vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": spawning runner ${target}.`);
+          if (!wantsReputationPick && !known) { throw new Error(`unknown runner "${target}"`); }
+          vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": spawning runner ${wantsReputationPick ? '(reputation-preferred)' : target}.`);
           // Opt-in direct dispatch through the runner contract (§5.5 preference
           // order + Runner.dispatch). Off by default because it can launch a real
           // host process; the default path below wakes via the work queue. When
           // enabled, a completed dispatch auto-feeds the per-agent cost ledger.
           if (process.env.AUTOCLAW_RUNNER_DIRECT_DISPATCH === 'true') {
-            const outcome = await dispatchViaRegistry(createDefaultRunnerRegistry(), {
-              runnerId: target,
-              prompt: `[AutoClaw hook "${decision.rule.id}"] Resume assigned work (trigger: ${decision.rule.on}).`,
-              workingDir: hooksRoot,
-              trust: 'auto',
-              onResult: (runnerId, result) =>
-                recordDispatchCost(hooksRoot, runnerId, result, {
-                  sprint: Number(decision.event.payload.sprint ?? 1) || 1,
-                }),
-            });
-            if (outcome === null) { throw new Error(`runner "${target}" not detected or disabled`); }
-            if (!outcome.result.ok) { throw new Error(`runner ${target} dispatch failed (exit ${outcome.result.exitCode})`); }
+            const sprint = Number(decision.event.payload.sprint ?? 1) || 1;
+            const prompt = `[AutoClaw hook "${decision.rule.id}"] Resume assigned work (trigger: ${decision.rule.on}).`;
+            const registry = createDefaultRunnerRegistry();
+            // reputation-preferred selection (no explicit runnerId so the §5.5
+            // order decides) vs. a targeted wake of the named runner.
+            const outcome = wantsReputationPick
+              ? await dispatchPreferredByReputation(registry, {
+                  workspaceRoot: hooksRoot, prompt, workingDir: hooksRoot, trust: 'auto',
+                  onResult: (runnerId, result) => recordDispatchCost(hooksRoot, runnerId, result, { sprint }),
+                })
+              : await dispatchViaRegistry(registry, {
+                  runnerId: target, prompt, workingDir: hooksRoot, trust: 'auto',
+                  onResult: (runnerId, result) => recordDispatchCost(hooksRoot, runnerId, result, { sprint }),
+                });
+            if (outcome === null) {
+              throw new Error(wantsReputationPick
+                ? 'no runner selectable by reputation (none detected/enabled)'
+                : `runner "${target}" not detected or disabled`);
+            }
+            if (!outcome.result.ok) { throw new Error(`runner ${outcome.runnerId} dispatch failed (exit ${outcome.result.exitCode})`); }
             return;
           }
           const pkg = {

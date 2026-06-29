@@ -32,6 +32,9 @@ export interface WorkflowRunSummary {
   failureTypes: FailureType[];
   artifactCount: number;
   eventCount: number;
+  gateCount: number;
+  failedGateCount: number;
+  retryCount: number;
 }
 
 export function runDir(workspaceRoot: string, runId: string): string {
@@ -110,15 +113,31 @@ export function summarizeRunRecords(
   let costCents = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  let gateCount = 0;
+  let failedGateCount = 0;
+  let retryCount = 0;
 
   for (const event of events) {
     if (event.failureType) {
       failures.add(event.failureType);
     }
+    if (event.event === 'retrying') {
+      retryCount += 1;
+    }
+    retryCount += event.retryCount ?? 0;
     artifactCount += event.artifacts?.length ?? 0;
     costCents += event.tokens?.costCents ?? 0;
     inputTokens += event.tokens?.input ?? 0;
     outputTokens += event.tokens?.output ?? 0;
+    for (const gate of event.gateResults ?? []) {
+      gateCount += 1;
+      if (!gate.passed) {
+        failedGateCount += 1;
+        if (gate.failureType) {
+          failures.add(gate.failureType);
+        }
+      }
+    }
   }
 
   const startMs = startedAt ? new Date(startedAt).getTime() : NaN;
@@ -136,6 +155,9 @@ export function summarizeRunRecords(
     failureTypes: [...failures].sort(),
     artifactCount,
     eventCount: events.length,
+    gateCount,
+    failedGateCount,
+    retryCount,
   };
 }
 

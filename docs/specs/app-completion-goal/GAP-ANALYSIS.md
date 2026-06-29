@@ -48,7 +48,7 @@ build sprints (each backlog item → worktree → gated land).
 | Item | Status | Evidence |
 |---|---|---|
 | BL-0 Coordination Kernel | ✅ DONE | mergeGate.ts + worktree.ts + gitRunner.ts; 51 unit + 3 e2e; 3 verify rounds |
-| BL-7 Reputation-aware dispatch | ✅ DONE | src/runners/reputationPreference.ts; 5 tests; F-325. *Flagship multi-provider routing now LIVE* (was inert). Follow-up: adopt at an un-targeted dispatch call site. |
+| BL-7 Reputation-aware dispatch | 🟡 ENGINE DONE + LIVE on hook path (BL-7a); default-assignment reach OPEN (BL-7b) | src/runners/reputationPreference.ts + capabilityRouting.ts; F-325/F-329. **BL-7a (F-340, 2026-06-29):** `dispatchPreferredByReputation` now has its FIRST live production caller — the spawnRunner trigger hook selects the best runner by reputation when no explicit target is given (extension.ts, behind the direct-dispatch gate). The §5.5 reputation criterion finally fires. **BL-7b (open):** broad reach — wire reputation into the orchestrator's default `assignToVendor` selection (dispatchWork is queue-based and dispatches to a PRE-chosen vendor; the selection upstream is where reputation must apply). Behavior-changing → needs a scoped design pass. |
 | BL-6 cost ledger writer | ✅ DONE | LlmRegistry.chat() → CostLedger.append; 4 tests + 26 regression; F-326. Lights up budget/agentCost/fleetMetrics/ledgerBridge (were dormant for lack of data). |
 | BL-14 loop-service runners | ✅ DONE (Sonnet→Opus-reviewed) | createDefaultRunnerRegistry registers loop_services[]; 9 tests; F-327 |
 | BL-20 VoidSpec js-yaml parser | ✅ DONE (Sonnet→Opus-reviewed) | parseVoidSpecYaml on js-yaml; 14+26 tests; F-328 |
