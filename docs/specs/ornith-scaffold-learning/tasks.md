@@ -101,13 +101,17 @@ Verification:
 
 ### OSL-3.1 - Scaffold Selector
 
-Status: open
+Status: review
+
+Owner: codex
 
 Scope:
 
 - `src/workflows/scaffolds/select.ts`
 - `src/workflows/intentRouter.ts`
 - `src/test/workflow-scaffoldSelector.test.ts`
+- `src/workflows/scaffolds/index.ts`
+- `package.json`
 
 Acceptance:
 
@@ -116,6 +120,12 @@ Acceptance:
 - Passing low-cost scaffold outranks a costly failing one.
 - Local-only and air-gapped profiles never select cloud-only harnesses.
 - Selection reason is concise and ledger-safe.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/workflow-scaffoldSelector.test.js out/test/workflow-intentRouter.test.js out/test/workflow-scaffolds.test.js out/test/reviewfleet-router.test.js`
+- GitHub Actions CI run `28369948693` on `f6765cb`
 
 ### OSL-3.2 - Scaffold Mutations
 
