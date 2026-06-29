@@ -23,10 +23,24 @@ import type {
 } from './types';
 import { translateTrust } from './registry';
 
-const execFileAsync = promisify(execFile);
-
 /** Host executable name. Resolved from `$PATH`. */
 const CURSOR_BIN = 'cursor-agent';
+
+/**
+ * Injectable dependencies for {@link CursorRunner}.
+ *
+ * All fields are optional — omitting them (or constructing with no args) gives
+ * the real `child_process` functions and the default binary, so the singleton
+ * `cursorRunner` and the `RunnerRegistry` are completely unaffected.
+ */
+export interface CursorRunnerOptions {
+  /** Override the binary name/path. Defaults to {@link CURSOR_BIN}. */
+  bin?: string;
+  /** Override `execFile`. Defaults to the real `child_process.execFile`. */
+  execFileFn?: typeof execFile;
+  /** Override `spawn`. Defaults to the real `child_process.spawn`. */
+  spawnFn?: typeof spawn;
+}
 
 /** Max bytes of stdout retained on {@link DispatchResult.stdoutTail}. */
 const STDOUT_TAIL_BYTES = 4096;
@@ -89,16 +103,27 @@ export class CursorRunner implements Runner {
   /** Rolling error tally by class, surfaced via {@link health}. */
   private readonly errorTally = new Map<ErrorClass, number>();
 
+  private readonly bin: string;
+  private readonly execFileFn: typeof execFile;
+  private readonly spawnFn: typeof spawn;
+
+  constructor(opts: CursorRunnerOptions = {}) {
+    this.bin = opts.bin ?? CURSOR_BIN;
+    this.execFileFn = opts.execFileFn ?? execFile;
+    this.spawnFn = opts.spawnFn ?? spawn;
+  }
+
   /** @see Runner.detect — probes `cursor-agent --version` on `$PATH`. */
   async detect(): Promise<DetectionResult> {
+    const execFileAsync = promisify(this.execFileFn);
     try {
-      const { stdout } = await execFileAsync(CURSOR_BIN, ['--version'], {
+      const { stdout } = await execFileAsync(this.bin, ['--version'], {
         timeout: 10_000,
       });
       return {
         found: true,
         version: stdout.trim() || 'unknown',
-        path: CURSOR_BIN,
+        path: this.bin,
       };
     } catch (err: unknown) {
       const code = (err as { code?: string }).code;
@@ -234,7 +259,7 @@ export class CursorRunner implements Runner {
       let timedOut = false;
       let settled = false;
 
-      const child = spawn(CURSOR_BIN, args, {
+      const child = this.spawnFn(this.bin, args, {
         cwd: workingDir,
         env: { ...process.env, ...env },
       });

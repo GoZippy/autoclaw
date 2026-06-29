@@ -30,6 +30,8 @@
  */
 
 import * as assert from 'assert';
+import { EventEmitter } from 'events';
+import { promisify } from 'util';
 
 import {
   CodexRunner,
@@ -37,6 +39,7 @@ import {
   codexTrustFlags,
 } from '../runners/codex';
 import type { TrustPreset } from '../runners/types';
+import type { execFile as ExecFileType, spawn as SpawnType } from 'child_process';
 
 // ---------------------------------------------------------------------------
 // Suite 1: id + capabilities
@@ -228,5 +231,224 @@ suite('runner-codex: dispatch() arg construction via env-var seam', () => {
       assert.strictEqual(typeof result.finishedAt, 'string');
       assert.strictEqual(typeof result.durationMs, 'number');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for injectable-seam tests
+// ---------------------------------------------------------------------------
+
+function fakeChild(o: { stdout?: string; stderr?: string; exit?: number; error?: Error }): ReturnType<typeof SpawnType> {
+  const cp: any = new EventEmitter();
+  cp.stdout = new EventEmitter();
+  cp.stderr = new EventEmitter();
+  cp.kill = () => {};
+  setImmediate(() => {
+    if (o.error) {
+      cp.emit('error', o.error);
+      return;
+    }
+    if (o.stdout) {
+      cp.stdout.emit('data', Buffer.from(o.stdout));
+    }
+    if (o.stderr) {
+      cp.stderr.emit('data', Buffer.from(o.stderr));
+    }
+    cp.emit('close', o.exit ?? 0);
+  });
+  return cp as ReturnType<typeof SpawnType>;
+}
+
+function fakeExecFileOk(stdout: string): typeof ExecFileType {
+  const fn = (_bin: string, _args: string[], _opts: unknown, cb: Function): void => {
+    setImmediate(() => cb(null, stdout, ''));
+  };
+  (fn as any)[promisify.custom] = () => Promise.resolve({ stdout, stderr: '' });
+  return fn as unknown as typeof ExecFileType;
+}
+
+function fakeExecFileErr(err: Error): typeof ExecFileType {
+  const fn = (_bin: string, _args: string[], _opts: unknown, cb: Function): void => {
+    setImmediate(() => cb(err, '', ''));
+  };
+  (fn as any)[promisify.custom] = () => Promise.reject(Object.assign(err, { code: (err as any).code }));
+  return fn as unknown as typeof ExecFileType;
+}
+
+// ---------------------------------------------------------------------------
+// Suite 8: detect() with injected execFileFn (binary-present / binary-absent)
+// ---------------------------------------------------------------------------
+
+suite('runner-codex: detect() with injected execFileFn', () => {
+  let savedKey: string | undefined;
+
+  setup(() => {
+    savedKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-fake-key';
+  });
+
+  teardown(() => {
+    if (savedKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = savedKey;
+    }
+  });
+
+  test('binary-present + OPENAI_API_KEY set: detect() returns found:true with version', async () => {
+    // The first execFile call goes to `codex --version`; the second to `where/which`.
+    // Both use promisify.custom so that promisify(fn) returns { stdout, stderr }.
+    let callIndex = 0;
+    const responses = [
+      { stdout: 'codex 1.5.0\n', stderr: '' },
+      { stdout: '/usr/local/bin/codex\n', stderr: '' },
+    ];
+    const multiExec = (_bin: string, _args: string[], _opts: unknown, cb: Function): void => {
+      callIndex++;
+      const r = responses[Math.min(callIndex - 1, responses.length - 1)];
+      setImmediate(() => cb(null, r.stdout, r.stderr));
+    };
+    (multiExec as any)[promisify.custom] = () => {
+      const r = responses[Math.min(callIndex, responses.length - 1)];
+      callIndex++;
+      return Promise.resolve(r);
+    };
+
+    const runner = new CodexRunner({ bin: 'codex-fake', execFileFn: multiExec as unknown as typeof ExecFileType });
+    const result = await runner.detect();
+    assert.strictEqual(result.found, true);
+    if (result.found) {
+      assert.strictEqual(result.version, 'codex 1.5.0');
+      // path comes from the which probe
+      assert.ok(result.path.length > 0);
+    }
+  });
+
+  test('binary-absent (ENOENT): detect() returns found:false, reason:not_installed', async () => {
+    const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    const runner = new CodexRunner({
+      bin: 'codex-fake',
+      execFileFn: fakeExecFileErr(enoent),
+    });
+    await assert.doesNotReject(() => runner.detect());
+    const result = await runner.detect();
+    assert.strictEqual(result.found, false);
+    if (!result.found) {
+      assert.strictEqual(result.reason, 'not_installed');
+      assert.ok(result.hint.length > 0);
+    }
+  });
+
+  test('binary-present but OPENAI_API_KEY absent: detect() returns found:false, reason:no_auth', async () => {
+    delete process.env.OPENAI_API_KEY;
+    const runner = new CodexRunner({
+      bin: 'codex-fake',
+      execFileFn: fakeExecFileOk('codex 1.5.0\n'),
+    });
+    const result = await runner.detect();
+    assert.strictEqual(result.found, false);
+    if (!result.found) {
+      assert.strictEqual(result.reason, 'no_auth');
+    }
+  });
+
+  test('probe error (non-ENOENT): detect() returns found:false without throwing', async () => {
+    const runner = new CodexRunner({
+      bin: 'codex-fake',
+      execFileFn: fakeExecFileErr(new Error('EACCES')),
+    });
+    await assert.doesNotReject(() => runner.detect());
+    const result = await runner.detect();
+    assert.strictEqual(result.found, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 9: dispatch() with injected spawnFn
+// ---------------------------------------------------------------------------
+
+suite('runner-codex: dispatch() with injected spawnFn', () => {
+  function makeSpawnFn(
+    childOpts: Parameters<typeof fakeChild>[0],
+    capturedArgs: { bin?: string; args?: string[] } = {},
+  ): typeof SpawnType {
+    return ((bin: string, args: string[], _opts: unknown) => {
+      capturedArgs.bin = bin;
+      capturedArgs.args = args;
+      return fakeChild(childOpts);
+    }) as unknown as typeof SpawnType;
+  }
+
+  test('success: exit 0 → ok:true, exitCode:0, correct trust flags + prompt in args', async () => {
+    const captured: { bin?: string; args?: string[] } = {};
+    const runner = new CodexRunner({
+      bin: 'codex-fake',
+      execFileFn: fakeExecFileOk(''),
+      spawnFn: makeSpawnFn({ stdout: 'task complete', exit: 0 }, captured),
+    });
+    const result = await runner.dispatch({
+      prompt: 'run the tests',
+      trust: 'auto',
+      workingDir: '/workspace/proj',
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.exitCode, 0);
+    assert.strictEqual(captured.bin, 'codex-fake');
+    // Codex args: ['-q', '--approval-mode', 'auto-edit', prompt]
+    assert.ok(captured.args?.includes('-q'), '-q missing');
+    assert.ok(captured.args?.includes('--approval-mode'), '--approval-mode missing');
+    assert.ok(captured.args?.includes('auto-edit'), 'auto-edit missing for auto trust');
+    assert.strictEqual(captured.args?.[captured.args.length - 1], 'run the tests');
+  });
+
+  test('turbo trust includes --approval-mode full-auto', async () => {
+    const captured: { bin?: string; args?: string[] } = {};
+    const runner = new CodexRunner({
+      bin: 'codex-fake',
+      execFileFn: fakeExecFileOk(''),
+      spawnFn: makeSpawnFn({ exit: 0 }, captured),
+    });
+    await runner.dispatch({
+      prompt: 'deploy',
+      trust: 'turbo',
+      workingDir: '/tmp',
+    });
+    assert.ok(captured.args?.includes('full-auto'), 'full-auto missing for turbo trust');
+  });
+
+  test('non-zero exit → ok:false, exitCode propagated', async () => {
+    const runner = new CodexRunner({
+      bin: 'codex-fake',
+      execFileFn: fakeExecFileOk(''),
+      spawnFn: makeSpawnFn({ exit: 1, stderr: 'api key missing' }),
+    });
+    const result = await runner.dispatch({
+      prompt: 'p',
+      trust: 'off',
+      workingDir: '/tmp',
+    });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.exitCode, 1);
+    // stderr contains 'api key' → auth
+    assert.strictEqual(result.errorClass, 'auth');
+  });
+
+  test('spawn error → ok:false with internal errorClass, does not throw', async () => {
+    const runner = new CodexRunner({
+      bin: 'codex-fake',
+      execFileFn: fakeExecFileOk(''),
+      spawnFn: makeSpawnFn({ error: new Error('ENOENT') }),
+    });
+    await assert.doesNotReject(() =>
+      runner.dispatch({ prompt: 'p', trust: 'off', workingDir: '/tmp' }),
+    );
+    const result = await runner.dispatch({ prompt: 'p', trust: 'off', workingDir: '/tmp' });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorClass, 'internal');
+  });
+
+  test('no-arg constructor default path is unchanged', () => {
+    const runner = new CodexRunner();
+    assert.strictEqual(runner.id, 'codex');
   });
 });

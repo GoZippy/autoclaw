@@ -18,6 +18,7 @@
 
 import { spawn, execFile } from 'child_process';
 import * as crypto from 'crypto';
+import { promisify } from 'util';
 import type {
   Capabilities,
   DetectionResult,
@@ -68,6 +69,23 @@ const CODEX_BIN = process.env.AUTOCLAW_CODEX_BIN ?? 'codex';
 /** Keep the last ~4 KB of stdout, per RFC §2 `stdoutTail`. */
 const STDOUT_TAIL_BYTES = 4096;
 
+/**
+ * Injectable dependencies for {@link CodexRunner}.
+ *
+ * All fields are optional — omitting them (or constructing with no args) gives
+ * the real `child_process` functions and the module-level `CODEX_BIN` value
+ * (which already honors `AUTOCLAW_CODEX_BIN`), so the singleton `codexRunner`
+ * and the `RunnerRegistry` are completely unaffected.
+ */
+export interface CodexRunnerOptions {
+  /** Override the binary name/path. Defaults to {@link CODEX_BIN}. */
+  bin?: string;
+  /** Override `execFile`. Defaults to the real `child_process.execFile`. */
+  execFileFn?: typeof execFile;
+  /** Override `spawn`. Defaults to the real `child_process.spawn`. */
+  spawnFn?: typeof spawn;
+}
+
 /** Map a Codex subprocess exit code to a normalized {@link ErrorClass}. */
 function codexExitToErrorClass(exitCode: number, stderr: string): ErrorClass {
   const lc = stderr.toLowerCase();
@@ -82,33 +100,6 @@ function codexExitToErrorClass(exitCode: number, stderr: string): ErrorClass {
     return 'timeout';
   }
   return 'internal';
-}
-
-/** Run `codex --version`; resolves null if the binary is absent. */
-function probeCodexVersion(): Promise<{ version: string } | null> {
-  return new Promise((resolve) => {
-    execFile(CODEX_BIN, ['--version'], { timeout: 10_000 }, (err, stdout) => {
-      if (err) {
-        resolve(null);
-        return;
-      }
-      resolve({ version: stdout.trim() || 'unknown' });
-    });
-  });
-}
-
-/** Resolve the absolute path of the codex executable, best-effort. */
-function probeCodexPath(): Promise<string> {
-  return new Promise((resolve) => {
-    const which = process.platform === 'win32' ? 'where' : 'which';
-    execFile(which, [CODEX_BIN], { timeout: 10_000 }, (err, stdout) => {
-      if (err) {
-        resolve(CODEX_BIN);
-        return;
-      }
-      resolve(stdout.split(/\r?\n/)[0].trim() || CODEX_BIN);
-    });
-  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -138,16 +129,43 @@ export class CodexRunner implements Runner {
   private readonly recentErrors = new Map<ErrorClass, number>();
   private lastDispatchAt: string | undefined;
 
+  private readonly bin: string;
+  private readonly execFileFn: typeof execFile;
+  private readonly spawnFn: typeof spawn;
+
+  constructor(opts: CodexRunnerOptions = {}) {
+    this.bin = opts.bin ?? CODEX_BIN;
+    this.execFileFn = opts.execFileFn ?? execFile;
+    this.spawnFn = opts.spawnFn ?? spawn;
+  }
+
+  /** Run `<bin> --version`; resolves null if the binary is absent. */
+  private probeVersion(): Promise<{ version: string } | null> {
+    const execFileAsync = promisify(this.execFileFn);
+    return execFileAsync(this.bin, ['--version'], { timeout: 10_000 })
+      .then(({ stdout }) => ({ version: stdout.trim() || 'unknown' }))
+      .catch(() => null);
+  }
+
+  /** Resolve the absolute path of the codex executable, best-effort. */
+  private probeCodexPath(): Promise<string> {
+    const execFileAsync = promisify(this.execFileFn);
+    const which = process.platform === 'win32' ? 'where' : 'which';
+    return execFileAsync(which, [this.bin], { timeout: 10_000 })
+      .then(({ stdout }) => stdout.split(/\r?\n/)[0].trim() || this.bin)
+      .catch(() => this.bin);
+  }
+
   /**
    * Probe whether Codex is installed and authenticated on this machine.
    */
   async detect(): Promise<DetectionResult> {
-    const probe = await probeCodexVersion();
+    const probe = await this.probeVersion();
     if (probe === null) {
       return {
         found: false,
         reason: 'not_installed',
-        hint: `Codex CLI not found. Install it (e.g. \`npm i -g @openai/codex\`) and ensure \`${CODEX_BIN}\` is on PATH.`,
+        hint: `Codex CLI not found. Install it (e.g. \`npm i -g @openai/codex\`) and ensure \`${this.bin}\` is on PATH.`,
       };
     }
     if (!process.env.OPENAI_API_KEY) {
@@ -157,7 +175,7 @@ export class CodexRunner implements Runner {
         hint: 'OPENAI_API_KEY is not set. Export it before starting the fleet.',
       };
     }
-    const path = await probeCodexPath();
+    const path = await this.probeCodexPath();
     return { found: true, version: probe.version, path };
   }
 
@@ -175,7 +193,7 @@ export class CodexRunner implements Runner {
     const args = ['-q', ...codexTrustFlags(opts.trust), opts.prompt];
 
     return await new Promise<DispatchResult>((resolve) => {
-      const child = spawn(CODEX_BIN, args, {
+      const child = this.spawnFn(this.bin, args, {
         cwd: opts.workingDir,
         env: { ...process.env, ...(opts.env ?? {}) },
       });
@@ -282,7 +300,7 @@ export class CodexRunner implements Runner {
 
   /** Report runner health (auth, version, recent errors). */
   async health(): Promise<HealthReport> {
-    const probe = await probeCodexVersion();
+    const probe = await this.probeVersion();
     const authPresent = Boolean(process.env.OPENAI_API_KEY);
     const recentErrors = [...this.recentErrors.entries()].map(([cls, count]) => ({
       class: cls,

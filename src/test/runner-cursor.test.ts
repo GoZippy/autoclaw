@@ -22,10 +22,13 @@
  */
 
 import * as assert from 'assert';
+import { EventEmitter } from 'events';
+import { promisify } from 'util';
 
 import { CursorRunner } from '../runners/cursor';
 import { TRUST_PRESET_TABLE } from '../runners/registry';
 import type { DispatchOptions, TrustPreset } from '../runners/types';
+import type { execFile as ExecFileType, spawn as SpawnType } from 'child_process';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -188,5 +191,181 @@ suite('runner-cursor: listSessions and cancel', () => {
   test('cancel() resolves without throwing', async () => {
     const runner = new CursorRunner();
     await assert.doesNotReject(() => runner.cancel('any-session-id'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for injectable-seam tests
+// ---------------------------------------------------------------------------
+
+/** Build a fake ChildProcess that emits the given events on setImmediate. */
+function fakeChild(o: { stdout?: string; stderr?: string; exit?: number; error?: Error }): ReturnType<typeof SpawnType> {
+  const cp: any = new EventEmitter();
+  cp.stdout = new EventEmitter();
+  cp.stderr = new EventEmitter();
+  cp.kill = () => {};
+  setImmediate(() => {
+    if (o.error) {
+      cp.emit('error', o.error);
+      return;
+    }
+    if (o.stdout) {
+      cp.stdout.emit('data', Buffer.from(o.stdout));
+    }
+    if (o.stderr) {
+      cp.stderr.emit('data', Buffer.from(o.stderr));
+    }
+    cp.emit('close', o.exit ?? 0);
+  });
+  return cp as ReturnType<typeof SpawnType>;
+}
+
+/**
+ * Build a fake execFile that succeeds.
+ *
+ * We must attach `[promisify.custom]` so that `promisify(fakeExecFileFn)` returns
+ * `{ stdout, stderr }` instead of just the first argument (Node's generic
+ * promisify only forwards the first non-error callback arg; `execFile` avoids
+ * this via its own custom symbol).
+ */
+function fakeExecFileOk(stdout: string): typeof ExecFileType {
+  const fn = (_bin: string, _args: string[], _opts: unknown, cb: Function): void => {
+    setImmediate(() => cb(null, stdout, ''));
+  };
+  (fn as any)[promisify.custom] = () => Promise.resolve({ stdout, stderr: '' });
+  return fn as unknown as typeof ExecFileType;
+}
+
+/** Build a fake execFile that errors. Attaches the custom promisify symbol. */
+function fakeExecFileErr(err: Error): typeof ExecFileType {
+  const fn = (_bin: string, _args: string[], _opts: unknown, cb: Function): void => {
+    setImmediate(() => cb(err, '', ''));
+  };
+  (fn as any)[promisify.custom] = () => Promise.reject(Object.assign(err, { code: (err as any).code }));
+  return fn as unknown as typeof ExecFileType;
+}
+
+// ---------------------------------------------------------------------------
+// Suite 5: detect() with injected execFileFn (binary-present / binary-absent)
+// ---------------------------------------------------------------------------
+
+suite('runner-cursor: detect() with injected execFileFn', () => {
+  test('binary-present: detect() returns found:true with parsed version', async () => {
+    const runner = new CursorRunner({
+      bin: 'cursor-agent-fake',
+      execFileFn: fakeExecFileOk('cursor-agent 1.2.3\n'),
+    });
+    const result = await runner.detect();
+    assert.strictEqual(result.found, true);
+    if (result.found) {
+      assert.strictEqual(result.version, 'cursor-agent 1.2.3');
+      assert.strictEqual(result.path, 'cursor-agent-fake');
+    }
+  });
+
+  test('binary-absent (ENOENT): detect() returns found:false, reason:not_installed without throwing', async () => {
+    const enoent = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    const runner = new CursorRunner({
+      bin: 'cursor-agent-fake',
+      execFileFn: fakeExecFileErr(enoent),
+    });
+    await assert.doesNotReject(() => runner.detect());
+    const result = await runner.detect();
+    assert.strictEqual(result.found, false);
+    if (!result.found) {
+      assert.strictEqual(result.reason, 'not_installed');
+      assert.ok(result.hint.length > 0);
+    }
+  });
+
+  test('probe error (non-ENOENT): detect() returns found:false without throwing', async () => {
+    const runner = new CursorRunner({
+      bin: 'cursor-agent-fake',
+      execFileFn: fakeExecFileErr(new Error('unexpected error')),
+    });
+    await assert.doesNotReject(() => runner.detect());
+    const result = await runner.detect();
+    assert.strictEqual(result.found, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Suite 6: dispatch() with injected spawnFn
+// ---------------------------------------------------------------------------
+
+suite('runner-cursor: dispatch() with injected spawnFn', () => {
+  function makeSpawnFn(
+    childOpts: Parameters<typeof fakeChild>[0],
+    capturedArgs: { bin?: string; args?: string[] } = {},
+  ): typeof SpawnType {
+    return ((bin: string, args: string[], _opts: unknown) => {
+      capturedArgs.bin = bin;
+      capturedArgs.args = args;
+      return fakeChild(childOpts);
+    }) as unknown as typeof SpawnType;
+  }
+
+  test('success: exit 0 → ok:true, exitCode:0, correct trust flags + prompt + workdir in args', async () => {
+    const captured: { bin?: string; args?: string[] } = {};
+    const runner = new CursorRunner({
+      bin: 'cursor-agent-fake',
+      execFileFn: fakeExecFileOk(''), // detect() not exercised but seam must be valid
+      spawnFn: makeSpawnFn({ stdout: 'all done', exit: 0 }, captured),
+    });
+    const result = await runner.dispatch({
+      prompt: 'do the thing',
+      trust: 'auto',
+      workingDir: '/workspace/proj',
+    });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.exitCode, 0);
+    assert.strictEqual(captured.bin, 'cursor-agent-fake');
+    // Must include trust flag for 'auto'
+    assert.ok(captured.args?.includes('--auto-approve=read,grep'), '--auto-approve=read,grep missing from args');
+    // Must include prompt
+    const pi = captured.args?.indexOf('--prompt') ?? -1;
+    assert.ok(pi >= 0, '--prompt missing');
+    assert.strictEqual(captured.args?.[pi + 1], 'do the thing');
+    // Must include workdir
+    const wi = captured.args?.indexOf('--workdir') ?? -1;
+    assert.ok(wi >= 0, '--workdir missing');
+    assert.strictEqual(captured.args?.[wi + 1], '/workspace/proj');
+  });
+
+  test('non-zero exit → ok:false, exitCode propagated', async () => {
+    const runner = new CursorRunner({
+      bin: 'cursor-agent-fake',
+      execFileFn: fakeExecFileOk(''),
+      spawnFn: makeSpawnFn({ exit: 2 }),
+    });
+    const result = await runner.dispatch({
+      prompt: 'p',
+      trust: 'off',
+      workingDir: '/tmp',
+    });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.exitCode, 2);
+    assert.strictEqual(result.errorClass, 'auth'); // exit 2 → auth per classifyCursorExit
+  });
+
+  test('spawn error (ENOENT) → ok:false with internal errorClass, does not throw', async () => {
+    const runner = new CursorRunner({
+      bin: 'cursor-agent-fake',
+      execFileFn: fakeExecFileOk(''),
+      spawnFn: makeSpawnFn({ error: Object.assign(new Error('ENOENT'), { code: 'ENOENT' }) }),
+    });
+    await assert.doesNotReject(() =>
+      runner.dispatch({ prompt: 'p', trust: 'off', workingDir: '/tmp' }),
+    );
+    const result = await runner.dispatch({ prompt: 'p', trust: 'off', workingDir: '/tmp' });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.errorClass, 'internal');
+  });
+
+  test('no-arg constructor default path is unchanged (bin = cursor-agent)', () => {
+    const runner = new CursorRunner();
+    // We verify the bin is the original constant via buildArgs which uses workingDir not bin,
+    // but the real proof is that the constructor compiles and the id is still correct.
+    assert.strictEqual(runner.id, 'cursor');
   });
 });

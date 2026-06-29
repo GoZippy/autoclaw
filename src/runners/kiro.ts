@@ -28,10 +28,24 @@ import type {
 } from './types';
 import { translateTrust } from './registry';
 
-const execFileAsync = promisify(execFile);
-
 /** Host executable name. Resolved from `$PATH`. */
 const KIRO_BIN = 'kiro-cli';
+
+/**
+ * Injectable dependencies for {@link KiroRunner}.
+ *
+ * All fields are optional — omitting them (or constructing with no args) gives
+ * the real `child_process` functions and the default binary, so the singleton
+ * `kiroRunner` and the `RunnerRegistry` are completely unaffected.
+ */
+export interface KiroRunnerOptions {
+  /** Override the binary name/path. Defaults to {@link KIRO_BIN}. */
+  bin?: string;
+  /** Override `execFile`. Defaults to the real `child_process.execFile`. */
+  execFileFn?: typeof execFile;
+  /** Override `spawn`. Defaults to the real `child_process.spawn`. */
+  spawnFn?: typeof spawn;
+}
 
 /** Env var the Kiro CLI requires for authentication. */
 const KIRO_API_KEY_ENV = 'KIRO_API_KEY';
@@ -99,11 +113,22 @@ export class KiroRunner implements Runner {
   /** Rolling error tally by class, surfaced via {@link health}. */
   private readonly errorTally = new Map<ErrorClass, number>();
 
+  private readonly bin: string;
+  private readonly execFileFn: typeof execFile;
+  private readonly spawnFn: typeof spawn;
+
+  constructor(opts: KiroRunnerOptions = {}) {
+    this.bin = opts.bin ?? KIRO_BIN;
+    this.execFileFn = opts.execFileFn ?? execFile;
+    this.spawnFn = opts.spawnFn ?? spawn;
+  }
+
   /** @see Runner.detect — probes `kiro-cli --version` and `$KIRO_API_KEY`. */
   async detect(): Promise<DetectionResult> {
+    const execFileAsync = promisify(this.execFileFn);
     let version: string;
     try {
-      const { stdout } = await execFileAsync(KIRO_BIN, ['--version'], { timeout: 10_000 });
+      const { stdout } = await execFileAsync(this.bin, ['--version'], { timeout: 10_000 });
       version = stdout.trim() || 'unknown';
     } catch (err: unknown) {
       const code = (err as { code?: string }).code;
@@ -127,7 +152,7 @@ export class KiroRunner implements Runner {
         hint: `${KIRO_API_KEY_ENV} is not set. Provide a workspace-scoped Kiro API key.`,
       };
     }
-    return { found: true, version, path: KIRO_BIN };
+    return { found: true, version, path: this.bin };
   }
 
   /**
@@ -193,8 +218,9 @@ export class KiroRunner implements Runner {
    * best-effort: each non-empty line is treated as a session id.
    */
   async listSessions(): Promise<SessionSummary[]> {
+    const execFileAsync = promisify(this.execFileFn);
     try {
-      const { stdout } = await execFileAsync(KIRO_BIN, ['chat', '--list-sessions'], {
+      const { stdout } = await execFileAsync(this.bin, ['chat', '--list-sessions'], {
         timeout: 15_000,
         env: { ...process.env },
       });
@@ -245,8 +271,9 @@ export class KiroRunner implements Runner {
    * treat cancel uniformly across runners.
    */
   async cancel(sessionId: string): Promise<void> {
+    const execFileAsync = promisify(this.execFileFn);
     try {
-      await execFileAsync(KIRO_BIN, ['chat', '--delete-session', sessionId], {
+      await execFileAsync(this.bin, ['chat', '--delete-session', sessionId], {
         timeout: 15_000,
         env: { ...process.env },
       });
@@ -280,7 +307,7 @@ export class KiroRunner implements Runner {
       let timedOut = false;
       let settled = false;
 
-      const child = spawn(KIRO_BIN, args, {
+      const child = this.spawnFn(this.bin, args, {
         cwd: workingDir,
         env: { ...process.env, ...env },
       });
