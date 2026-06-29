@@ -4,7 +4,7 @@ title: ZMLR HTTP MCP route — close the gap so AutoClaw and other clients can c
 status: draft
 owner: architect
 created: 2026-05-23
-updated: 2026-05-23
+updated: 2026-06-29
 supersedes: []
 superseded_by: null
 references:
@@ -16,8 +16,8 @@ acceptance:
     when: "a client POSTs JSON `{ tool: 'list_models', input: { filter: { local_only: true } } }` to http://localhost:20128/mcp"
     then: "the response is 200 with `{ success: true, count: <n>, models: [...] }` matching what the in-process zmlr-server.js handler returns"
   - given: "the route is live"
-    when: "a client POSTs `{ tool: 'recommend_model', input: { intent: 'code', constraints: { prefer_free: true } } }`"
-    then: "the response is the handler's `{ success: true, ...recommendations }` object including `fallbackChain` and `recommendations[]`"
+    when: "a client POSTs `{ tool: 'recommend_model', input: { intent: 'code', constraints: { prefer_free: true, failure_type: 'acceptance_failure', prompt_harness_id: 'qwen-xml-tools' } } }`"
+    then: "the response is the handler's `{ success: true, ...recommendations }` object including `fallbackChain` and `recommendations[]`, optionally with `harnessId`"
   - given: "the route is live"
     when: "AutoClaw's `autoclaw llm install --zippymesh` runs and detects the route"
     then: "the workspace MCP config gains an entry `{ name: 'zmlr', url: 'http://localhost:20128/mcp' }` and re-running is a no-op"
@@ -129,6 +129,53 @@ same PR.
 streaming. For now it returns a single JSON object with `nextSteps[]`
 the caller iterates over. Streaming is deferred per the non-goals.
 
+### Scaffold-aware recommendation extension
+
+`recommend_model` accepts the original routing constraints and a narrow
+scaffold-learning extension. The route layer still forwards `input` to
+the handler unchanged; these fields define what AutoClaw's caller sends
+and what newer ZMLR handlers may consume:
+
+```json
+{
+  "tool": "recommend_model",
+  "input": {
+    "intent": "code",
+    "constraints": {
+      "prefer_local": true,
+      "failure_type": "acceptance_failure",
+      "prompt_harness_id": "qwen-xml-tools",
+      "required_harnesses": ["qwen-xml-tools"],
+      "allowed_harnesses": ["qwen-xml-tools", "openai-tools"],
+      "scaffold_score_hints": [
+        {
+          "scaffold_id": "scaffold-qwen-review",
+          "prompt_harness_id": "qwen-xml-tools",
+          "reward": 0.84,
+          "pass_rate": 0.9,
+          "recent_failure_type": "tool_error",
+          "sample_count": 7
+        }
+      ]
+    }
+  }
+}
+```
+
+Responses remain backward compatible. Legacy handlers can return a plain
+`recommendation` string or `recommendations: string[]`. Newer handlers may
+return `harnessId` or `harness_id` beside the selected model:
+
+```json
+{
+  "success": true,
+  "recommendations": [
+    { "model": "ollama/qwen3:14b", "harnessId": "qwen-xml-tools" }
+  ],
+  "fallbackChain": ["ollama/qwen3:7b"]
+}
+```
+
 ## Acceptance criteria
 
 See frontmatter. Concrete test fixtures:
@@ -140,8 +187,8 @@ curl http://localhost:20128/mcp -H 'content-type: application/json' \
 # → { "success": true, "count": <n>, "models": [...] }
 
 curl http://localhost:20128/mcp \
-  -d '{"tool":"recommend_model","input":{"intent":"code","constraints":{"prefer_free":true}}}'
-# → { "success": true, "recommendations": [...], "fallbackChain": [...] }
+  -d '{"tool":"recommend_model","input":{"intent":"code","constraints":{"prefer_free":true,"failure_type":"acceptance_failure","prompt_harness_id":"qwen-xml-tools"}}}'
+# → { "success": true, "recommendations": [...], "fallbackChain": [...], ...optional harnessId fields }
 
 curl http://localhost:20128/mcp
 # → { "success": true, "server": "zmlr-mcp", "version": "1", "tools": [...] }

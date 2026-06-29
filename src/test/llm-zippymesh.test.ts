@@ -170,7 +170,23 @@ suite('ZippyMeshProvider — recommendModel (S2 HTTP)', () => {
       capture,
     );
     const p = new ZippyMeshProvider({ fetchImpl });
-    const rec = await p.recommendModel('code', { preferLocal: true, maxLatencyMs: 2000 });
+    const rec = await p.recommendModel('code', {
+      preferLocal: true,
+      maxLatencyMs: 2000,
+      failureType: 'acceptance_failure',
+      promptHarnessId: 'qwen-xml-tools',
+      requiredHarnesses: ['qwen-xml-tools'],
+      scaffoldScoreHints: [
+        {
+          scaffoldId: 'scaffold-qwen-review',
+          promptHarnessId: 'qwen-xml-tools',
+          reward: 0.84,
+          passRate: 0.9,
+          recentFailureType: 'tool_error',
+          sampleCount: 7,
+        },
+      ],
+    });
     assert.ok(rec, 'recommendation should not be null');
     assert.strictEqual(rec!.model, 'openai/gpt-4o');
     assert.deepStrictEqual(rec!.fallbackChain, ['ollama/llama3.1:70b', 'ollama/llama3.1:8b']);
@@ -185,6 +201,37 @@ suite('ZippyMeshProvider — recommendModel (S2 HTTP)', () => {
     const constraints = input.constraints as Record<string, unknown>;
     assert.strictEqual(constraints.prefer_local, true);
     assert.strictEqual(constraints.max_latency_ms, 2000);
+    assert.strictEqual(constraints.failure_type, 'acceptance_failure');
+    assert.strictEqual(constraints.prompt_harness_id, 'qwen-xml-tools');
+    assert.deepStrictEqual(constraints.required_harnesses, ['qwen-xml-tools']);
+    const hints = constraints.scaffold_score_hints as Array<Record<string, unknown>>;
+    assert.strictEqual(hints[0].scaffold_id, 'scaffold-qwen-review');
+    assert.strictEqual(hints[0].prompt_harness_id, 'qwen-xml-tools');
+    assert.strictEqual(hints[0].reward, 0.84);
+    assert.strictEqual(hints[0].pass_rate, 0.9);
+    assert.strictEqual(hints[0].recent_failure_type, 'tool_error');
+    assert.strictEqual(hints[0].sample_count, 7);
+  });
+
+  test('parses harnessId from recommendation objects', async () => {
+    const fetchImpl = makeFetch(
+      {
+        status: 200,
+        body: {
+          success: true,
+          recommendations: [
+            { model: 'ollama/qwen3:14b', harnessId: 'qwen-xml-tools' },
+          ],
+          fallbackChain: ['ollama/qwen3:7b'],
+        },
+      },
+      [],
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('review');
+    assert.ok(rec);
+    assert.strictEqual(rec!.model, 'ollama/qwen3:14b');
+    assert.strictEqual(rec!.harnessId, 'qwen-xml-tools');
   });
 
   test('legacy shape — single `recommendation` field (older ZMLR)', async () => {
@@ -203,6 +250,26 @@ suite('ZippyMeshProvider — recommendModel (S2 HTTP)', () => {
     const rec = await p.recommendModel('chat');
     assert.ok(rec);
     assert.strictEqual(rec!.model, 'ollama/llama3.1:8b');
+    assert.strictEqual(rec!.harnessId, undefined);
+  });
+
+  test('legacy object shape can carry snake_case harness_id', async () => {
+    const fetchImpl = makeFetch(
+      {
+        status: 200,
+        body: {
+          success: true,
+          recommendation: { id: 'lmstudio/qwen2.5-coder', harness_id: 'openai-tools' },
+          fallbackChain: [],
+        },
+      },
+      [],
+    );
+    const p = new ZippyMeshProvider({ fetchImpl });
+    const rec = await p.recommendModel('code');
+    assert.ok(rec);
+    assert.strictEqual(rec!.model, 'lmstudio/qwen2.5-coder');
+    assert.strictEqual(rec!.harnessId, 'openai-tools');
   });
 
   test('404 — older ZMLR without the /mcp route → null (no throw)', async () => {

@@ -27,7 +27,7 @@ import type {
   ProviderId,
 } from './types';
 import { parseProviderRef } from './types';
-import { ZippyMeshProvider } from './zippymesh';
+import { ZippyMeshProvider, type RecommendModelConstraints } from './zippymesh';
 import { OllamaProvider } from './ollama';
 import { LmStudioProvider } from './lmstudio';
 import { Oracle } from './oracle';
@@ -48,6 +48,8 @@ export interface GetPreferredOptions {
   hints?: ChatHints;
   /** When caller knows the task class, the oracle uses it for scoring. */
   task?: OracleTask;
+  /** Extra ZMLR recommendation constraints, including scaffold/harness hints. */
+  zmlrConstraints?: RecommendModelConstraints;
 }
 
 export interface PreferredPick {
@@ -57,6 +59,8 @@ export interface PreferredPick {
   failsafe: boolean;
   /** Which algorithm branch produced this pick. */
   via: 'explicit' | 'zmlr-recommend' | 'oracle';
+  /** Optional prompt harness ZMLR recommended alongside the model. */
+  harnessId?: string;
 }
 
 export class LlmRegistry {
@@ -153,7 +157,8 @@ export class LlmRegistry {
         // the stopgap signal to fall through to the oracle.
         const intent = opts.hints?.intent ?? 'chat';
         const rec = await zmlr.recommendModel(intent, {
-          preferLocal: opts.hints?.requireLocality === 'local',
+          ...opts.zmlrConstraints,
+          preferLocal: opts.zmlrConstraints?.preferLocal ?? opts.hints?.requireLocality === 'local',
         });
         if (rec) {
           // Only honor the recommendation if we don't have a fresh
@@ -164,6 +169,7 @@ export class LlmRegistry {
               model: rec.model,
               failsafe: false,
               via: 'zmlr-recommend',
+              ...(rec.harnessId ? { harnessId: rec.harnessId } : {}),
             };
           }
         }

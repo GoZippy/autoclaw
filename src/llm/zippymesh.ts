@@ -41,6 +41,20 @@ export interface RecommendModelConstraints {
   minContextWindow?: number;
   preferFree?: boolean;
   preferLocal?: boolean;
+  failureType?: string;
+  promptHarnessId?: string;
+  requiredHarnesses?: string[];
+  allowedHarnesses?: string[];
+  scaffoldScoreHints?: RecommendModelScaffoldScoreHint[];
+}
+
+export interface RecommendModelScaffoldScoreHint {
+  scaffoldId?: string;
+  promptHarnessId?: string;
+  reward?: number;
+  passRate?: number;
+  recentFailureType?: string;
+  sampleCount?: number;
 }
 
 export interface RecommendModelResult {
@@ -48,6 +62,8 @@ export interface RecommendModelResult {
   model: string;
   /** Ordered fallback chain ZMLR would try if this model fails. */
   fallbackChain: string[];
+  /** Optional prompt harness ZMLR wants AutoClaw to use with this model. */
+  harnessId?: string;
 }
 
 export class ZippyMeshProvider extends OpenAiCompatibleProvider {
@@ -152,33 +168,53 @@ export class ZippyMeshProvider extends OpenAiCompatibleProvider {
 interface RecommendModelHandlerResponse {
   success: boolean;
   /** Newer ZMLR — array of objects with model details. */
-  recommendations?: Array<{ model?: string; id?: string } | string>;
+  recommendations?: Array<RecommendModelHandlerRecommendation | string>;
   /** Ordered fallback chain ZMLR would try if the first recommendation fails. */
   fallbackChain?: string[];
   /** Older variant some ZMLR builds emit. */
-  recommendation?: string | { model?: string; id?: string };
+  recommendation?: string | RecommendModelHandlerRecommendation;
+  /** Some handlers put the selected harness on the top-level object. */
+  harnessId?: string;
+  harness_id?: string;
   /** Set when `success: false`. */
   error?: string;
+}
+
+interface RecommendModelHandlerRecommendation {
+  model?: string;
+  id?: string;
+  harnessId?: string;
+  harness_id?: string;
 }
 
 function parseHandlerResponse(json: RecommendModelHandlerResponse): RecommendModelResult | null {
   const fallbackChain = Array.isArray(json.fallbackChain) ? json.fallbackChain : [];
   // Prefer the recommendations array (newer ZMLR), fall back to recommendation
   // (older variant), fall back to fallbackChain[0] if neither was provided.
-  const top = pickTopRecommendation(json) ?? fallbackChain[0];
-  if (!top) return null;
-  return { model: top, fallbackChain };
+  const top = pickTopRecommendation(json);
+  const model = top?.model ?? fallbackChain[0];
+  if (!model) return null;
+  const harnessId = top?.harnessId ?? json.harnessId ?? json.harness_id;
+  return { model, fallbackChain, ...(harnessId ? { harnessId } : {}) };
 }
 
-function pickTopRecommendation(json: RecommendModelHandlerResponse): string | undefined {
+function pickTopRecommendation(json: RecommendModelHandlerResponse): { model?: string; harnessId?: string } | undefined {
   if (Array.isArray(json.recommendations) && json.recommendations.length > 0) {
     const first = json.recommendations[0];
-    if (typeof first === 'string') return first;
-    if (first && typeof first === 'object') return first.model ?? first.id;
+    if (typeof first === 'string') return { model: first };
+    if (first && typeof first === 'object') {
+      return {
+        model: first.model ?? first.id,
+        harnessId: first.harnessId ?? first.harness_id,
+      };
+    }
   }
-  if (typeof json.recommendation === 'string') return json.recommendation;
+  if (typeof json.recommendation === 'string') return { model: json.recommendation };
   if (json.recommendation && typeof json.recommendation === 'object') {
-    return json.recommendation.model ?? json.recommendation.id;
+    return {
+      model: json.recommendation.model ?? json.recommendation.id,
+      harnessId: json.recommendation.harnessId ?? json.recommendation.harness_id,
+    };
   }
   return undefined;
 }
@@ -196,7 +232,27 @@ function mapConstraintsToHandlerShape(
   if (typeof c.minContextWindow === 'number') out.min_context_window = c.minContextWindow;
   if (typeof c.preferFree === 'boolean') out.prefer_free = c.preferFree;
   if (typeof c.preferLocal === 'boolean') out.prefer_local = c.preferLocal;
+  if (typeof c.failureType === 'string' && c.failureType) out.failure_type = c.failureType;
+  if (typeof c.promptHarnessId === 'string' && c.promptHarnessId) out.prompt_harness_id = c.promptHarnessId;
+  if (hasValues(c.requiredHarnesses)) out.required_harnesses = c.requiredHarnesses;
+  if (hasValues(c.allowedHarnesses)) out.allowed_harnesses = c.allowedHarnesses;
+  if (hasValues(c.scaffoldScoreHints)) {
+    out.scaffold_score_hints = c.scaffoldScoreHints.map((hint) => {
+      const mapped: Record<string, unknown> = {};
+      if (hint.scaffoldId) mapped.scaffold_id = hint.scaffoldId;
+      if (hint.promptHarnessId) mapped.prompt_harness_id = hint.promptHarnessId;
+      if (typeof hint.reward === 'number') mapped.reward = hint.reward;
+      if (typeof hint.passRate === 'number') mapped.pass_rate = hint.passRate;
+      if (hint.recentFailureType) mapped.recent_failure_type = hint.recentFailureType;
+      if (typeof hint.sampleCount === 'number') mapped.sample_count = hint.sampleCount;
+      return mapped;
+    });
+  }
   return out;
+}
+
+function hasValues<T>(items: T[] | undefined): items is T[] {
+  return Array.isArray(items) && items.length > 0;
 }
 
 /**

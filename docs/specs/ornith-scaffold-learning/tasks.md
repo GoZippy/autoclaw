@@ -257,14 +257,18 @@ Verification:
 
 ### OSL-6.2 - ZMLR Scaffold-Aware Recommendation
 
-Status: open
+Status: complete
+
+Owner: Codex
 
 Scope:
 
 - `src/llm/zippymesh.ts`
+- `src/llm/registry.ts`
 - `src/workflows/intentRouter.ts`
 - `docs/specs/llm-provider-s2-zmlr-mcp-route/spec.md`
 - `src/test/llm-zippymesh.test.ts`
+- `src/test/llm-registry.test.ts`
 - `src/test/workflow-intentRouter.test.ts`
 
 Acceptance:
@@ -274,3 +278,21 @@ Acceptance:
 - Responses can identify a `harnessId` alongside the model.
 - Older ZMLR responses still parse and fall back cleanly.
 - Intent router reasons mention scaffold/harness only when present.
+
+Implementation:
+
+- `ZippyMeshProvider.recommendModel()` now maps failure type, prompt harness,
+  allowed/required harnesses, and scaffold score hints into ZMLR's snake_case
+  MCP handler shape.
+- `recommend_model` responses may carry `harnessId`/`harness_id` in newer
+  recommendation objects while legacy string/object responses continue to
+  parse.
+- `LlmRegistry.getPreferred()` forwards optional `zmlrConstraints` and exposes
+  the returned `harnessId` on ZMLR picks.
+- `routeWorkflowIntent()` records `recommendedHarnessId` and appends
+  `harness=<id>` to the reason only when ZMLR supplied a harness.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/llm-zippymesh.test.js out/test/llm-registry.test.js out/test/workflow-intentRouter.test.js`

@@ -115,6 +115,24 @@ suite('workflow intent router', () => {
     assert.strictEqual(decision.reason, 'ZippyMesh picked LAN 70B for code.');
   });
 
+  test('mentions recommended harness only when ZippyMesh provides one', () => {
+    const decision = routeWorkflowIntent({
+      intent: 'code',
+      profile: 'balanced',
+      candidates,
+      recommendModel: () => ({
+        providerId: 'lan-studio',
+        model: 'qwen-lan-70b',
+        harnessId: 'qwen-xml-tools',
+        reason: 'ZippyMesh picked LAN 70B for code.',
+      }),
+    });
+
+    assert.strictEqual(decision.usedRecommendation, true);
+    assert.strictEqual(decision.recommendedHarnessId, 'qwen-xml-tools');
+    assert.strictEqual(decision.reason, 'ZippyMesh picked LAN 70B for code.; harness=qwen-xml-tools');
+  });
+
   test('reports no eligible model when all candidates violate hard policy', () => {
     const decision = routeWorkflowIntent({
       intent: 'long-context',
