@@ -1000,11 +1000,20 @@ export function activate(context: vscode.ExtensionContext) {
           const known = (BUILTIN_RUNNER_IDS as readonly string[]).includes(target);
           if (!wantsReputationPick && !known) { throw new Error(`unknown runner "${target}"`); }
           vscode.window.showInformationMessage(`AutoClaw hook "${decision.rule.id}": spawning runner ${wantsReputationPick ? '(reputation-preferred)' : target}.`);
-          // Opt-in direct dispatch through the runner contract (§5.5 preference
-          // order + Runner.dispatch). Off by default because it can launch a real
-          // host process; the default path below wakes via the work queue. When
-          // enabled, a completed dispatch auto-feeds the per-agent cost ledger.
-          if (process.env.AUTOCLAW_RUNNER_DIRECT_DISPATCH === 'true') {
+          // Reputation-aware direct dispatch through the runner contract (§5.5
+          // preference order + Runner.dispatch). Off by default because it can
+          // launch a real host process; the default path below wakes via the work
+          // queue. Reachable two ways (BL-19): the legacy AUTOCLAW_RUNNER_DIRECT_DISPATCH
+          // env var OR the documented `autoclaw.runners.reputationAwareDispatch`
+          // setting — so reputation routing is a user-toggleable capability, not an
+          // undocumented flag. When on, a no/auto/best target selects the best runner
+          // by reputation (BL-7b); a completed dispatch auto-feeds the cost ledger.
+          const reputationAwareDispatch =
+            process.env.AUTOCLAW_RUNNER_DIRECT_DISPATCH === 'true' ||
+            vscode.workspace
+              .getConfiguration('autoclaw.runners')
+              .get<boolean>('reputationAwareDispatch', false);
+          if (reputationAwareDispatch) {
             const sprint = Number(decision.event.payload.sprint ?? 1) || 1;
             const prompt = `[AutoClaw hook "${decision.rule.id}"] Resume assigned work (trigger: ${decision.rule.on}).`;
             const registry = createDefaultRunnerRegistry();

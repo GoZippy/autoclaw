@@ -742,6 +742,11 @@
         "title": "Orchestration & AutoBuild",
         "order": 4,
         "properties": {
+          "autoclaw.runners.reputationAwareDispatch": {
+            "type": "boolean",
+            "default": false,
+            "markdownDescription": "Route trigger-hook runner dispatch through the **reputation-aware** registry path (BL-7b/BL-19): a no/auto/best target selects the best runner by reputation. Off by default; replaces the undocumented `AUTOCLAW_RUNNER_DIRECT_DISPATCH` env var with a real setting. Can launch a host process when a hook fires."
+          },
           "autoclaw.autobuild.enabled": {
             "type": "boolean",
             "default": true,
