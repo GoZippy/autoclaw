@@ -520,10 +520,11 @@ suite('MCP — write-tool gate (BP3)', () => {
       assert.ok(names.includes('note.add'));
       assert.ok(names.includes('claim.task'));
       assert.ok(names.includes('llm.chat'), 'PA-5 llm.chat exposed');
+      assert.ok(names.includes('invite.consume'), 'join invite consumption exposed');
       assert.ok(names.includes('presence.beacon'), 'FF-1 presence.beacon exposed');
       assert.ok(names.includes('kg.record'), 'KGC-4 kg.record exposed');
-      // 6 original write tools + presence.beacon (FF-1) + 3 PA-5 llm.* tools + 2 KGC-4 kg.* write tools.
-      assert.strictEqual(tools.length, READ_ONLY_TOOLS.length + 12);
+      // 6 original write tools + invite.consume/presence.beacon + 3 PA-5 llm.* tools + 2 KGC-4 kg.* write tools.
+      assert.strictEqual(tools.length, READ_ONLY_TOOLS.length + 13);
     } finally {
       rmrf(root);
     }

@@ -63,7 +63,10 @@ export interface JoinTargetConvention {
  */
 export const JOIN_TARGETS: Record<string, JoinTargetConvention> = {
   // --- Federation peers (no in-extension skill adapter) -------------------
-  codex:            { agentId: 'codex',          label: 'Codex (desktop chat)',            lane: 'mcp',   fallbackLane: 'fs' },
+  codex:            { agentId: 'codex',          label: 'Codex (MCP-capable chat / CLI)',  lane: 'mcp',   fallbackLane: 'fs' },
+  'codex-ide':      { agentId: 'codex',          label: 'Codex in IDE chat (file lane)',   lane: 'fs',    fallbackLane: 'mcp' },
+  'codex-cli':      { agentId: 'codex-cli',      label: 'Codex CLI / spawned worker',      lane: 'fs',    fallbackLane: 'mcp' },
+  'generic-mcp':    { agentId: 'external-mcp',   label: 'Generic MCP-capable agent',       lane: 'mcp',   fallbackLane: 'fs' },
   'claude-desktop': { agentId: 'claude-desktop', label: 'Claude Desktop / cowork',         lane: 'mcp' },
   openclaw:         { agentId: 'openclaw',       label: 'OpenClaw (file / REST)',          lane: 'fs',    fallbackLane: 'http' },
   hermes:           { agentId: 'hermes',         label: 'Hermes (REST runner)',            lane: 'http',  fallbackLane: 'fs' },
@@ -133,6 +136,7 @@ function laneLabel(lane: JoinLane): string {
 }
 
 const PROTOCOL_DOC = 'docs/AGENT_SESSION_PROTOCOL.md';
+const LOCAL_PROTOCOL_DOC = '.autoclaw/orchestrator/AGENT_SESSION_PROTOCOL.md';
 const WORKER_TEMPLATE = 'skills/orchestrate/templates/starter/worker.md';
 
 /**
@@ -149,10 +153,13 @@ function loopBody(agentId: string): string {
     `  For each message: act on it, atomic-move it to processed/, record it in state.json's`,
     `  message_ledger. Never re-process anything already in processed/. Answer anything with`,
     `  requires_response before claiming new work.`,
-    `- CLAIM: read .autoclaw/orchestrator/needs.json and sprints/plan-summary.yaml; offer the`,
-    `  role the project needs (capability_offer), then claim ONE unclaimed, in-scope,`,
+    `- CLAIM: read .autoclaw/orchestrator/needs.json if present; otherwise read`,
+    `  .autoclaw/orchestrator/board.json plus .autoclaw/orchestrator/sprints/plan-summary.yaml`,
+    `  when present. Offer the role the project needs (capability_offer), then claim ONE unclaimed, in-scope,`,
     `  dependency-satisfied task via a create-exclusive write to comms/claims/<task-id>.json`,
     `  (fail if it exists -- the filesystem is the mutex). Confirm the claim's session_id is yours.`,
+    `  If no task is addressed to you or in scope, stay registered, heartbeat, and watch; do not take`,
+    `  vendor-specific task prompts meant for another agent.`,
     `- WORK: only inside your claimed scope, on the assignment branch. Do not edit a file outside scope;`,
     `  send a question message to the scope owner and wait instead.`,
     `- REPORT: broadcast task_complete to inboxes/shared/, send review_request to peers, vote on`,
@@ -176,6 +183,25 @@ function effectiveAgentType(input: RenderJoinPromptInput): string | undefined {
   if (explicit) { return explicit; }
   const role = input.role?.trim();
   return role ? deriveAgentType(role) : undefined;
+}
+
+function roleGuidance(role: string | undefined, agentType: string | undefined): string | undefined {
+  if (agentType === 'auditor') {
+    return 'Role guidance: prefer review_request, consensus, test, and audit work; do not claim implementation tasks unless explicitly assigned.';
+  }
+  if (agentType === 'supervisor' || role === 'orchestrator') {
+    return 'Role guidance: coordinate, assign, unblock, and review; do not take implementation work unless the project explicitly asks you to.';
+  }
+  if (agentType === 'assistant' || agentType === 'governance') {
+    return 'Role guidance: operate human-in-the-loop by default; draft, analyze, or approve, but do not mutate code or claim build tasks without explicit scope.';
+  }
+  if (role === 'tester') {
+    return 'Role guidance: prefer verification, failing-test reproduction, acceptance checks, and review support before claiming implementation tasks.';
+  }
+  if (role === 'docs' || role === 'researcher' || role === 'product') {
+    return 'Role guidance: prefer documentation, research, requirements, and handoff artifacts; only edit code when a task explicitly includes that scope.';
+  }
+  return undefined;
 }
 
 /** A compact beacon JSON shape (fs/http lanes) the agent writes to check in. */
@@ -215,11 +241,12 @@ function mcpSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): str
     `1. Mount AutoClaw's MCP server (\`autoclaw-mcp\`) scoped to this workspace, with writes enabled`,
     `   (.autoclaw/mcp/config.json -> { "allowWrites": true }, or AUTOCLAW_MCP_ALLOW_WRITES=true).`,
     `2. Generate one session UUID and reuse it all session. Stamp it on every call.`,
-    `3. Consume your single-use invite token "${inviteToken}" (it is scoped + TTL'd).`,
-    `4. Check in: call \`presence.beacon\` with { agent_id: "${conv.agentId}"${ident},`,
+    `3. Check in and consume the invite in one call: call \`presence.beacon\` with`,
+    `   { agent_id: "${conv.agentId}"${ident}, invite_token: "${inviteToken}",`,
     `   workspace: "${workspacePath}", transports: ["mcp"] }. The host stamps host + session_id; you`,
     `   become a visible fleet row. (presence.beacon is the tool that makes an MCP agent VISIBLE.)`,
-    `5. See peers with \`presence.fleet\`. Coordinate with \`inbox.send\` / \`inbox.read\`,`,
+    `   If you need a two-step handshake, call \`invite.consume\` first, then \`presence.beacon\`.`,
+    `4. See peers with \`presence.fleet\`. Coordinate with \`inbox.send\` / \`inbox.read\`,`,
     `   take work with \`claim.task\`, and vote with \`consensus.vote\`. No file paths, no HTTP.`,
     ``,
     loopBody(conv.agentId),
@@ -236,10 +263,12 @@ function httpSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): st
   return [
     `REGISTER (HTTP bridge lane):`,
     `1. Generate one session UUID and reuse it all session; send it on every request.`,
-    `2. Consume your single-use invite token "${inviteToken}".`,
+    `2. Consume your single-use invite token "${inviteToken}": POST ${base}/api/v1/invites/consume`,
+    `   with { token: "${inviteToken}", agent_id: "${conv.agentId}", session_id }. Save the returned`,
+    `   bearer_token and use it as Authorization: Bearer <token> for all later calls.`,
     `3. Check in each cycle: POST ${base}/api/v1/heartbeat with`,
     `   { agent_id: "${conv.agentId}"${ident}, session_id, workspace: "${workspacePath}",`,
-    `   transports: ["http"] } (Bearer the invite/issued token). A machine beacon is an accepted twin.`,
+    `   transports: ["http"] }. A machine beacon is an accepted twin.`,
     `4. Serve your Agent Card at <your-endpoint>/.well-known/agent.json so the router can score you.`,
     `5. Receive messages: subscribe to the SSE stream ${base}/api/v1/messages/stream (or poll`,
     `   ${base}/api/v1/messages).`,
@@ -261,8 +290,9 @@ function fsSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): stri
   return [
     `REGISTER (filesystem lane):`,
     `1. Generate one session UUID and reuse it all session. Stamp it on every file you write.`,
-    `2. Consume your single-use invite token "${inviteToken}" (read the invite file under`,
-    `   ~/.autoclaw/invites/ or the workspace comms/invites/; mark it consumed -- single-use).`,
+    `2. Consume your single-use invite token "${inviteToken}" (prefer the workspace copy at`,
+    `   .autoclaw/orchestrator/comms/invites/; fall back to ~/.autoclaw/invites/. Mark every copy you can`,
+    `   see as consumed by your agent_id + session_id -- single-use).`,
     `3. Ensure the comms tree exists -- create these if missing (all INSIDE the workspace, so no`,
     `   access outside it is needed): .autoclaw/orchestrator/comms/heartbeats/,`,
     `   .autoclaw/orchestrator/comms/beacons/, .autoclaw/orchestrator/comms/claims/,`,
@@ -297,7 +327,8 @@ function slashSteps(conv: JoinTargetConvention, input: RenderJoinPromptInput): s
   return [
     `REGISTER (Claude Code, native /loop lane):`,
     `1. Generate one session UUID and reuse it all session; stamp it on every message + heartbeat.`,
-    `2. Consume your single-use invite token "${inviteToken}".`,
+    `2. Consume your single-use invite token "${inviteToken}" from .autoclaw/orchestrator/comms/invites/`,
+    `   if present, else ~/.autoclaw/invites/. Mark every visible copy consumed by your agent_id + session_id.`,
     `3. Write .autoclaw/orchestrator/comms/heartbeats/${conv.agentId}.json with`,
     `   { agent_id: "${conv.agentId}"${ident}, session_id, status:"active", cycle:0 } and ensure a`,
     `   row in comms/registry.json. Workspace: "${workspacePath}".`,
@@ -341,14 +372,19 @@ export function renderJoinPrompt(input: RenderJoinPromptInput): string {
 
   const header = [
     `You are joining an AutoClaw-orchestrated project as agent \`${conv.agentId}\`.`,
-    `Read ${PROTOCOL_DOC} for the full contract (it is authoritative); the loop body below`,
-    `is the same one in ${WORKER_TEMPLATE}.`,
+    `Start in the workspace below. First read ${PROTOCOL_DOC} if it exists; otherwise read`,
+    `${LOCAL_PROTOCOL_DOC} and .autoclaw/orchestrator/comms/agents/${conv.agentId}/rules.md if present, then any host rules file`,
+    `that exists (.claude/rules/cross-agent-protocol.md, .clinerules/cross-agent.md, or AGENTS.md).`,
+    `If those files are missing, this pasted prompt is the fallback contract; report the missing file`,
+    `and continue with REGISTER + SYNC instead of searching outside the workspace. The loop body below`,
+    `is the same one in ${WORKER_TEMPLATE} when that template is available.`,
     ``,
     `Workspace: ${input.workspacePath}`,
     `Your agent_id: ${conv.agentId}`,
     `Invite token (single-use, scoped, TTL'd): ${input.inviteToken}`,
     role ? `Suggested role: ${role} (the project's fleet.json is authoritative; this is a hint).` : undefined,
     agentType ? `Behavioral type: ${agentType} (drives how your work is trusted + reviewed; announce this exact value).` : undefined,
+    roleGuidance(role, agentType),
     scope.length ? `Scope you may touch (seeds a scope-lease): ${scope.join(', ')}.` : `Scope: whole repo unless the orchestrator narrows it.`,
     `Join lane: ${laneLabel(conv.lane)}.`,
     conv.fallbackLane

@@ -63,6 +63,7 @@ export type WriteToolName =
   | 'claim.task'
   | 'dream.run'
   | 'consensus.vote'
+  | 'invite.consume'
   | 'presence.beacon'
   | 'llm.chat'
   | 'llm.models'
@@ -78,6 +79,7 @@ export const WRITE_TOOL_NAMES: readonly WriteToolName[] = [
   'claim.task',
   'dream.run',
   'consensus.vote',
+  'invite.consume',
   'presence.beacon',
   'llm.chat',
   'llm.models',

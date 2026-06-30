@@ -46,11 +46,37 @@ suite('joinPrompt — renderJoinPrompt lane coverage', () => {
     const p = renderJoinPrompt(BASE);
     assertUniversal(p, BASE, 'codex');
     assert.ok(p.includes('presence.beacon'), 'codex MCP prompt must call presence.beacon');
+    assert.ok(p.includes('invite_token'), 'codex MCP prompt must consume invite_token through presence.beacon');
+    assert.ok(p.includes('invite.consume'), 'codex MCP prompt must mention the explicit two-step consume fallback');
     assert.ok(p.includes('claim.task'), 'codex MCP prompt must mention claim.task');
     assert.ok(/MCP lane/.test(p), 'codex must declare the MCP lane');
     assert.ok(/filesystem lane/.test(p), 'codex must note the fs fallback lane');
     // MCP lane should NOT instruct HTTP routes.
     assert.ok(!p.includes('/api/v1/heartbeat'), 'MCP lane must not tell the agent to POST heartbeat');
+  });
+
+  test('codex prompt includes missing-doc and board fallback instructions', () => {
+    const p = renderJoinPrompt(BASE);
+    assert.ok(
+      p.includes('.autoclaw/orchestrator/comms/agents/codex/rules.md'),
+      'prompt must point at the scaffolded per-agent rules fallback',
+    );
+    assert.ok(
+      p.includes('.autoclaw/orchestrator/AGENT_SESSION_PROTOCOL.md'),
+      'prompt must point at the durable local protocol fallback',
+    );
+    assert.ok(
+      p.includes('this pasted prompt is the fallback contract'),
+      'prompt must tell the agent what to do if protocol docs are absent',
+    );
+    assert.ok(
+      p.includes('.autoclaw/orchestrator/board.json'),
+      'prompt must use board.json as a fallback when needs.json is absent',
+    );
+    assert.ok(
+      p.includes('vendor-specific task prompts meant for another agent'),
+      'prompt must avoid taking work addressed to another agent',
+    );
   });
 
   test('claude-desktop → MCP lane, no fs fallback', () => {
@@ -81,6 +107,8 @@ suite('joinPrompt — renderJoinPrompt lane coverage', () => {
     const input = { ...BASE, host: 'hermes', bridgeUrl: 'http://127.0.0.1:7878' };
     const p = renderJoinPrompt(input);
     assertUniversal(p, input, 'hermes');
+    assert.ok(p.includes('/api/v1/invites/consume'), 'http lane must consume invite before bearer-auth calls');
+    assert.ok(p.includes('bearer_token'), 'http lane must tell the agent to save the issued bearer token');
     assert.ok(p.includes('/api/v1/heartbeat'), 'http lane must POST heartbeat');
     assert.ok(p.includes('/api/v1/claims/'), 'http lane must claim over HTTP');
     assert.ok(p.includes('/api/v1/messages'), 'http lane must report via messages route');
@@ -118,6 +146,15 @@ suite('joinPrompt — existing IDE hosts still work', () => {
     const input = { ...BASE, host: 'antigravity' };
     const p = renderJoinPrompt(input);
     assert.ok(p.includes('gemini-cli'), 'antigravity announces as gemini-cli per the protocol matrix');
+  });
+
+  test('codex-ide starts on the filesystem lane while codex-cli has a distinct id', () => {
+    const ide = renderJoinPrompt({ ...BASE, host: 'codex-ide' });
+    assertUniversal(ide, { ...BASE, host: 'codex-ide' }, 'codex');
+    assert.ok(/filesystem lane/.test(ide), 'Codex IDE chat should start on the file lane');
+
+    const cli = renderJoinPrompt({ ...BASE, host: 'codex-cli' });
+    assertUniversal(cli, { ...BASE, host: 'codex-cli' }, 'codex-cli');
   });
 });
 
@@ -217,6 +254,12 @@ suite('joinPrompt — role != agent_type is announced distinctly (regression)', 
   test('the header surfaces the behavioral type line', () => {
     const p = renderJoinPrompt({ ...REVIEWER, host: 'codex' });
     assert.ok(/Behavioral type:\s*auditor/.test(p), 'header must state the derived behavioral type');
+  });
+
+  test('auditor prompts steer reviewers away from implementation claims', () => {
+    const p = renderJoinPrompt({ ...REVIEWER, host: 'codex' });
+    assert.ok(p.includes('prefer review_request, consensus, test, and audit work'));
+    assert.ok(p.includes('do not claim implementation tasks unless explicitly assigned'));
   });
 
   test('renderJoinPromptForInvite threads suggested_agent_type distinctly', () => {

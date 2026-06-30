@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  createInvite, readInvite, listInvites, consumeInvite, revokeInvite,
+  createInvite, readInvite, listInvites, consumeInvite, consumeInviteEverywhere, revokeInvite, writeInvite,
   admitDecision, isExpired, isValidInvite, machineInviteDir,
   INVITE_TTL_MS, Invite,
 } from '../fleet/invites';
@@ -122,5 +122,28 @@ suite('Invite tokens (FF-2)', () => {
     assert.ok(fs.existsSync(path.join(commsDir, 'invites', 'join-fixed-1.json')));
     const back = await readInvite('join-fixed-1', { scope: 'workspace', commsDir });
     assert.ok(back && back.token === 'join-fixed-1');
+  });
+
+  test('consumeInviteEverywhere consumes mirrored machine + workspace copies as one token', async () => {
+    const home = makeTmpHome();
+    const commsDir = path.join(home, 'ws', '.autoclaw', 'orchestrator', 'comms');
+    const inv = await createInvite(baseInput(), { homeDir: home, now: T0 });
+    await writeInvite(inv, { scope: 'workspace', commsDir, homeDir: home });
+
+    const res = await consumeInviteEverywhere(
+      'join-fixed-1',
+      { agent_id: 'codex', session_id: 's1' },
+      { homeDir: home, commsDir, now: T0 + 1000 },
+    );
+    assert.strictEqual(res.ok, true);
+
+    const machine = await readInvite('join-fixed-1', { homeDir: home });
+    const workspace = await readInvite('join-fixed-1', { scope: 'workspace', commsDir });
+    assert.strictEqual(machine?.consumed_by?.agent_id, 'codex');
+    assert.strictEqual(workspace?.consumed_by?.agent_id, 'codex');
+
+    const second = await consumeInviteEverywhere('join-fixed-1', { agent_id: 'kilocode' }, { homeDir: home, commsDir, now: T0 + 2000 });
+    assert.strictEqual(second.ok, false);
+    assert.ok(!second.ok && second.reason === 'already_consumed');
   });
 });

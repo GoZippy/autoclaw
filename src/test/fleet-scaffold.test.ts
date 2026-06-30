@@ -59,7 +59,7 @@ suite('fleet/scaffold — keepalive profile mapping', () => {
 });
 
 suite('fleet/scaffold — scaffoldAgent', () => {
-  test('creates the inbox tree (_state + processed) and bootstrap file', async () => {
+  test('creates the coordination tree, inbox tree (_state + processed), and bootstrap file', async () => {
     const base = makeTmpDir();
     const commsRoot = commsRootIn(base);
     const res = await scaffoldAgent(commsRoot, { agentId: 'codex' });
@@ -69,10 +69,32 @@ suite('fleet/scaffold — scaffoldAgent', () => {
     assert.ok(fs.existsSync(path.join(commsRoot, 'inboxes', 'codex', 'processed')));
     assert.ok(fs.existsSync(path.join(commsRoot, 'inboxes', 'shared')));
     assert.ok(fs.existsSync(path.join(commsRoot, 'heartbeats')));
+    assert.ok(fs.existsSync(path.join(commsRoot, 'beacons')));
+    assert.ok(fs.existsSync(path.join(commsRoot, 'claims')));
+    assert.ok(fs.existsSync(path.join(commsRoot, 'consensus', 'active')));
+    assert.ok(fs.existsSync(path.join(commsRoot, 'consensus', 'closed')));
+    assert.ok(fs.existsSync(path.join(commsRoot, 'invites')));
     assert.ok(fs.existsSync(res.rulesPath));
+    assert.ok(fs.existsSync(res.localProtocolPath));
     assert.strictEqual(res.registryRowAdded, true);
     assert.strictEqual(res.registryCreated, true);
     assert.strictEqual(res.keepalive.loop_mechanism, 'cli-headless');
+  });
+
+  test('bootstrap file gives a fallback contract when docs are absent', async () => {
+    const base = makeTmpDir();
+    const commsRoot = commsRootIn(base);
+    const res = await scaffoldAgent(commsRoot, { agentId: 'codex' });
+    const body = fs.readFileSync(res.rulesPath, 'utf8');
+
+    assert.ok(body.includes('docs/AGENT_SESSION_PROTOCOL.md when present'));
+    assert.ok(body.includes('pasted join'));
+    assert.ok(/Do not search outside the\s+workspace/.test(body));
+
+    const protocol = fs.readFileSync(res.localProtocolPath, 'utf8');
+    assert.ok(protocol.includes('AutoClaw Agent Session Protocol'));
+    assert.ok(protocol.includes('REGISTER'));
+    assert.ok(protocol.includes('board.json'));
   });
 
   test('creates a registry row carrying loop_mechanism + keepalive_template', async () => {

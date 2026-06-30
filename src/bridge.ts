@@ -25,6 +25,7 @@ import { verifyBiscuitToken } from './biscuit';
 import { verifySvid } from './svid';
 import { getKnowledgeGraph } from './intelligence/kg/service';
 import { buildContextPack } from './intelligence';
+import { consumeInviteEverywhere } from './fleet/invites';
 
 const fsPromises = fs.promises;
 
@@ -374,6 +375,45 @@ export function createBridgeServer(
     }
 
     if (p.startsWith('/api/')) {
+      if (p === '/api/v1/invites/consume' && method === 'POST') {
+        const raw = await readBody(req);
+        let body: Record<string, unknown>;
+        try { body = JSON.parse(raw); } catch { return err(res, 400, 'Invalid JSON'); }
+        const inviteToken = typeof body.token === 'string' ? body.token.trim() : '';
+        const agentId = typeof body.agent_id === 'string' ? body.agent_id.trim() : '';
+        const sessionId = typeof body.session_id === 'string' ? body.session_id.trim() : '';
+        if (!inviteToken) { return err(res, 400, 'Missing token'); }
+        if (!agentId) { return err(res, 400, 'Missing agent_id'); }
+
+        const consumed = await consumeInviteEverywhere(
+          inviteToken,
+          { agent_id: agentId, ...(sessionId ? { session_id: sessionId } : {}) },
+          { commsDir: config.commsDir },
+        );
+        if (!consumed.ok) {
+          const code = consumed.reason === 'not_found' ? 404 : consumed.reason === 'already_consumed' ? 409 : 410;
+          return json(res, code, { ok: false, reason: consumed.reason });
+        }
+        const bridgeToken = await createRemoteAgentToken(config.tokensPath, agentId);
+        await appendCommsLog(config.commsDir, {
+          timestamp: new Date().toISOString(),
+          type: 'invite_consume',
+          from: agentId,
+          message: `${agentId} consumed invite via bridge`,
+        });
+        return json(res, 201, {
+          ok: true,
+          agent_id: agentId,
+          bearer_token: bridgeToken.token,
+          expires_at: bridgeToken.expires_at,
+          suggested_role: consumed.invite.suggested_role,
+          suggested_agent_type: consumed.invite.suggested_agent_type,
+          scope: consumed.invite.scope ?? [],
+          trust: consumed.invite.trust,
+          admit_policy: consumed.invite.admit_policy,
+        });
+      }
+
       // SSE stream: handled separately because handshake needs different headers
       // and a long-lived response. Token comes from Authorization header OR a
       // ?token= query param so plain `EventSource` can authenticate.

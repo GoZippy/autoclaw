@@ -133,7 +133,7 @@ import {
   LanDiscovery, shouldStartLanDiscovery, parseSeeds, LAN_DEFAULT_PORT, type LanMode,
 } from './fleet/lanDiscovery';
 import { LanGossipRelay, LAN_GOSSIP_DEFAULT_PORT } from './fleet/lanGossipRelay';
-import { createInvite, listInvites, revokeInvite, type AdmitPolicy } from './fleet/invites';
+import { createInvite, listInvites, revokeInvite, writeInvite, type AdmitPolicy, type Invite } from './fleet/invites';
 import { computePendingAgents, admitAgent } from './fleet/pending';
 import { renderJoinPromptForInvite, JOIN_TARGETS } from './fleet/joinPrompt';
 import { agentTypeForRole } from './fleet/roleType';
@@ -5069,7 +5069,7 @@ function laneConsequence(conv: { lane: string; fallbackLane?: string }): string 
  * IDE hosts, each row surfacing its join lane (description) + consequence (detail).
  */
 function buildTargetItems(): FleetPickItem[] {
-  const federation = ['codex', 'claude-desktop', 'openclaw', 'hermes'];
+  const federation = ['codex', 'codex-ide', 'codex-cli', 'generic-mcp', 'claude-desktop', 'openclaw', 'hermes'];
   const toItem = (key: string): FleetPickItem => {
     const c = JOIN_TARGETS[key];
     return { label: c.label, description: LANE_SHORT[c.lane] ?? c.lane, detail: laneConsequence(c), value: key };
@@ -5139,6 +5139,51 @@ function buildAdmitItems(): FleetPickItem[] {
   ];
 }
 
+async function mirrorInviteToWorkspace(workspaceRoot: string, invite: Invite): Promise<void> {
+  const commsDir = path.join(workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+  await writeInvite(invite, { scope: 'workspace', commsDir });
+}
+
+async function sendJoinWelcomeMessage(params: {
+  workspaceRoot: string;
+  to: string;
+  targetTool: string;
+  invite: Invite;
+  role: string;
+  agentType: string;
+  scope: string[];
+  bridgeUrl?: string;
+}): Promise<void> {
+  const commsDir = path.join(params.workspaceRoot, '.autoclaw', 'orchestrator', 'comms');
+  await sendMessage(commsDir, {
+    id: '',
+    from: activeHostAgentId() ?? 'autoclaw',
+    to: params.to,
+    type: 'system',
+    timestamp: '',
+    payload: {
+      kind: 'join_welcome',
+      target_tool: params.targetTool,
+      invite_token: params.invite.token,
+      suggested_role: params.role,
+      suggested_agent_type: params.agentType,
+      scope: params.scope,
+      workspace: params.workspaceRoot,
+      protocol_candidates: [
+        'docs/AGENT_SESSION_PROTOCOL.md',
+        '.autoclaw/orchestrator/AGENT_SESSION_PROTOCOL.md',
+        `.autoclaw/orchestrator/comms/agents/${params.to}/rules.md`,
+        '.claude/rules/cross-agent-protocol.md',
+        '.clinerules/cross-agent.md',
+        'AGENTS.md',
+      ],
+      ...(params.bridgeUrl ? { bridge_url: params.bridgeUrl } : {}),
+      next_action: 'Begin with REGISTER + SYNC, consume the invite, write a heartbeat/beacon, then report current inbox/board state before claiming work.',
+    },
+    requires_response: true,
+  });
+}
+
 /** Issue a scoped, single-use invite token an outside agent can use to join. */
 async function fleetInviteCommand(): Promise<void> {
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -5192,6 +5237,7 @@ async function fleetInviteCommand(): Promise<void> {
       ...(scope.length ? { scope } : {}),
       transports: ['fs', 'mcp', 'http'],
     });
+    try { await mirrorInviteToWorkspace(wr, invite); } catch { /* machine invite remains usable */ }
     await vscode.env.clipboard.writeText(invite.token);
     const pick = await vscode.window.showInformationMessage(
       `AutoClaw: invite created for a ${role} (${agentType}) on "${project}". Token copied to clipboard — hand it to the agent.\n\n${invite.token}`,
@@ -5309,6 +5355,7 @@ async function fleetJoinPromptCommand(): Promise<void> {
       ...(scope.length ? { scope } : {}),
       transports: ['fs', 'mcp', 'http'],
     });
+    try { await mirrorInviteToWorkspace(wr, invite); } catch { /* machine invite remains usable */ }
     // Pre-create the comms tree + a registry row so the joining agent arrives to a
     // writable inbox even in a project that has never run orchestrate (fixes the
     // "comms/claims does not exist" case). Idempotent + best-effort: a failure must
@@ -5316,7 +5363,21 @@ async function fleetJoinPromptCommand(): Promise<void> {
     // to create the tree itself.
     try {
       const commsRoot = path.join(wr, '.autoclaw', 'orchestrator', 'comms');
-      await scaffoldAgent(commsRoot, { agentId: target.agentId });
+      await scaffoldAgent(commsRoot, {
+        agentId: target.agentId,
+        role,
+        agentType: agentType as AgentType,
+      });
+      await sendJoinWelcomeMessage({
+        workspaceRoot: wr,
+        to: target.agentId,
+        targetTool: targetKey,
+        invite,
+        role,
+        agentType,
+        scope,
+        bridgeUrl,
+      });
     } catch { /* non-fatal — the prompt's own ensure-tree step covers it */ }
     const prompt = renderJoinPromptForInvite(targetKey, invite, bridgeUrl ? { bridgeUrl } : {});
     await vscode.env.clipboard.writeText(prompt);
@@ -5412,9 +5473,21 @@ async function fleetAddTeamCommand(): Promise<void> {
         preapproved_types: seat.admit === 'auto-preapproved' ? [seat.agentType] : undefined,
         transports: ['fs', 'mcp', 'http'],
       });
+      try { await mirrorInviteToWorkspace(wr, invite); } catch { /* machine invite remains usable */ }
       // Pre-create the comms tree + a roster row per seat so each teammate arrives
       // to a writable inbox even in a never-orchestrated project. Idempotent + best-effort.
-      try { await scaffoldAgent(commsRoot, { agentId: seatAgentId }); } catch { /* non-fatal */ }
+      try {
+        await scaffoldAgent(commsRoot, { agentId: seatAgentId, role: seat.role, agentType: seat.agentType });
+        await sendJoinWelcomeMessage({
+          workspaceRoot: wr,
+          to: seatAgentId,
+          targetTool: seat.tool,
+          invite,
+          role: seat.role,
+          agentType: seat.agentType,
+          scope: seat.scope ? [seat.scope] : [],
+        });
+      } catch { /* non-fatal */ }
       const prompt = renderJoinPromptForInvite(seat.tool, invite);
       const toolLabel = JOIN_TARGETS[seat.tool]?.label ?? seat.tool;
       sections.push(

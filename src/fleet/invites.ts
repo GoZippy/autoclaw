@@ -106,6 +106,12 @@ export interface InviteOpts {
   now?: number;
 }
 
+export interface InviteEverywhereOpts {
+  commsDir?: string;
+  homeDir?: string;
+  now?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Validate / normalize
 // ---------------------------------------------------------------------------
@@ -175,14 +181,17 @@ export async function createInvite(input: CreateInviteInput, opts: InviteOpts = 
     consumed_by: null,
   };
 
+  await writeInvite(invite, opts);
+  return invite;
+}
+
+/** Persist an invite to the resolved invite home. Useful for mirroring one token. */
+export async function writeInvite(invite: Invite, opts: InviteOpts = {}): Promise<string> {
   const dir = resolveDir(opts);
   await fsp.mkdir(dir, { recursive: true });
-  await fsp.writeFile(
-    path.join(dir, `${safeToken(token)}.json`),
-    JSON.stringify(invite, null, 2) + '\n',
-    'utf8',
-  );
-  return invite;
+  const file = path.join(dir, `${safeToken(invite.token)}.json`);
+  await fsp.writeFile(file, JSON.stringify(invite, null, 2) + '\n', 'utf8');
+  return file;
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +269,60 @@ export async function consumeInvite(
     'utf8',
   );
   return { ok: true, invite: inv };
+}
+
+/** Read invite copies from both workspace and machine homes. */
+async function readInviteCopies(
+  token: string,
+  opts: InviteEverywhereOpts = {},
+): Promise<Array<{ invite: Invite; opts: InviteOpts }>> {
+  const homes: InviteOpts[] = [];
+  if (opts.commsDir) { homes.push({ scope: 'workspace', commsDir: opts.commsDir, homeDir: opts.homeDir }); }
+  homes.push({ scope: 'machine', homeDir: opts.homeDir });
+
+  const copies: Array<{ invite: Invite; opts: InviteOpts }> = [];
+  const seen = new Set<string>();
+  for (const home of homes) {
+    const dir = resolveDir(home);
+    const key = path.join(dir, `${safeToken(token)}.json`);
+    if (seen.has(key)) { continue; }
+    seen.add(key);
+    const inv = await readInvite(token, home);
+    if (inv) { copies.push({ invite: inv, opts: home }); }
+  }
+  return copies;
+}
+
+/**
+ * Consume an invite across the workspace and machine homes as one logical token.
+ * If the same token was mirrored into both places, every unconsumed copy is
+ * stamped in the same call so a later consumer cannot reuse the other copy.
+ */
+export async function consumeInviteEverywhere(
+  token: string,
+  consumer: { agent_id: string; session_id?: string },
+  opts: InviteEverywhereOpts = {},
+): Promise<ConsumeResult> {
+  const now = opts.now ?? Date.now();
+  const copies = await readInviteCopies(token, opts);
+  if (copies.length === 0) { return { ok: false, reason: 'not_found' }; }
+  if (copies.some(c => c.invite.consumed_by)) { return { ok: false, reason: 'already_consumed' }; }
+  if (copies.every(c => isExpired(c.invite, now))) { return { ok: false, reason: 'expired' }; }
+
+  const selected = copies.find(c => !isExpired(c.invite, now))!.invite;
+  const consumed: Invite = {
+    ...selected,
+    consumed_by: {
+      agent_id: consumer.agent_id,
+      ...(consumer.session_id ? { session_id: consumer.session_id } : {}),
+      at: new Date(now).toISOString(),
+    },
+  };
+
+  for (const copy of copies) {
+    await writeInvite({ ...copy.invite, consumed_by: consumed.consumed_by }, copy.opts);
+  }
+  return { ok: true, invite: consumed };
 }
 
 /** Revoke (delete) an invite. Returns true if a file was removed. */
