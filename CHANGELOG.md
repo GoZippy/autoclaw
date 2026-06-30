@@ -4,15 +4,17 @@
 
 ## [3.6.15] - 2026-06-30
 
-Repair release candidate for the sidebar activation and release gate.
+Repair release for the sidebar activation and packaged runtime.
 
 - **Sidebar activation hardening**: AutoClaw now activates directly when either
   contributed sidebar view is opened, instead of relying only on the delayed
   startup activation event. This prevents a blank AutoClaw activity panel when
   the view is opened immediately after install or reload.
-- **Packaged runtime dependency fix**: the public VSIX now vendors the YAML
-  parser required by VoidSpec and reconciliation readers, fixing activation
-  failures caused by a missing `js-yaml` module.
+- **3.6.13/3.6.14 activation repair**: after update, those builds could fail to
+  fully load the sidebar because the public VSIX omitted the `js-yaml` runtime
+  dependency required by VoidSpec and reconciliation readers. The 3.6.15 package
+  now vendors the YAML parser and its transitive runtime dependency so extension
+  activation completes cleanly.
 - **Release validation coverage**: the activation smoke test now verifies that
   both sidebar webview providers are registered, and package metadata tests
   verify the view activation events. The VSIX guard also verifies that declared
