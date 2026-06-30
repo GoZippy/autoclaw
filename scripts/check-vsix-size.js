@@ -53,6 +53,7 @@ function resolveVsix() {
 
 const vsixPath = resolveVsix();
 const sizeBytes = fs.statSync(vsixPath).size;
+const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
 
 // Cheap contamination scan: ZIP local file headers store entry names verbatim,
 // so a packaged scratch file leaves its path as a plain substring in the buffer.
@@ -93,13 +94,23 @@ const result = guard.evaluateVsix({
   contentFindings,
 });
 
+const requiredRuntimeDeps = Object.keys(pkg.dependencies || {});
+const missingRuntimeDeps = requiredRuntimeDeps.filter(dep => {
+  const entry = `extension/out/node_modules/${dep}/package.json`;
+  return !buf.includes(entry);
+});
+
 const sizeStr = guard.formatBytes(sizeBytes);
 const capStr = guard.formatBytes(maxBytes);
 console.log(`vsix guard: ${path.basename(vsixPath)} — ${sizeStr} (cap ${capStr})`);
 
-if (!result.ok) {
+if (!result.ok || missingRuntimeDeps.length > 0) {
   for (const r of result.reasons) { console.error(`  ✖ ${r}`); }
+  for (const dep of missingRuntimeDeps) {
+    console.error(`  ✖ missing runtime dependency in VSIX: ${dep}`);
+  }
   process.exit(1);
 }
 
 console.log('  ✓ within size cap, no scratch/private/never-ship paths or sensitive markers detected');
+console.log(`  ✓ runtime dependencies vendored: ${requiredRuntimeDeps.sort().join(', ') || '(none)'}`);

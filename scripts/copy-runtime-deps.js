@@ -14,6 +14,8 @@
  *                  throwing "Cannot find module 'ws'" when the bridge started.
  *   - `chokidar` — the daemon/voidspec file watchers (lazy require) → was falling
  *                  back to slow 30s polling instead of sub-second reactivity.
+ *   - `js-yaml`  — VoidSpec + reconciliation YAML readers (eager require) → was
+ *                  throwing "Cannot find module 'js-yaml'" on activation.
  *
  * This copies each root + its transitive `dependencies` FLAT into
  * `out/node_modules/<name>` (Node resolves them by walking up from out/*.js).
@@ -28,7 +30,7 @@ const NM = path.join(repo, 'node_modules');
 const OUT_NM = path.join(repo, 'out', 'node_modules');
 
 /** Pure-JS production deps the shipped out/ requires at runtime. */
-const ROOTS = ['ws', 'chokidar'];
+const ROOTS = ['ws', 'chokidar', 'js-yaml'];
 
 /** Never vendor these — native builds / heavy optional peers stay user-installed. */
 const SKIP = new Set([

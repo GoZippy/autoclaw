@@ -2,6 +2,64 @@
 
 ## [Unreleased]
 
+## [3.6.15] - 2026-06-30
+
+Repair release candidate for the sidebar activation and release gate.
+
+- **Sidebar activation hardening**: AutoClaw now activates directly when either
+  contributed sidebar view is opened, instead of relying only on the delayed
+  startup activation event. This prevents a blank AutoClaw activity panel when
+  the view is opened immediately after install or reload.
+- **Packaged runtime dependency fix**: the public VSIX now vendors the YAML
+  parser required by VoidSpec and reconciliation readers, fixing activation
+  failures caused by a missing `js-yaml` module.
+- **Release validation coverage**: the activation smoke test now verifies that
+  both sidebar webview providers are registered, and package metadata tests
+  verify the view activation events. The VSIX guard also verifies that declared
+  production dependencies are actually present in the packaged runtime.
+- **Hosted premium refactor plan**: saved the public/private boundary plan for
+  the future hosted licensing, trial, Model Oracle, workflow-pack, and team
+  relay work. The planning document is excluded from the shipped VSIX.
+
+## [3.6.14] - 2026-06-30
+
+Public packaging hardening for the marketplace build.
+
+- **Public VSIX boundary**: package guards now fail if private premium package
+  paths, local developer paths, private-key markers, or common secret markers
+  appear in the public extension artifact.
+- **Secret and path scrub**: removed local developer paths from tracked code,
+  tests, and release support scripts so the public repo and packaged extension
+  do not leak workstation-specific details.
+- **Public build discipline**: internal build notes, private planning docs,
+  package guard internals, and scratch/research folders are excluded from the
+  shipped extension package.
+- **Runtime dependency guard**: packaging confirms the optional premium runtime
+  package is not vendored into the public VSIX.
+
+## [3.6.13] - 2026-06-30
+
+Reputation-aware dispatch, runner reliability, and review context hardening.
+
+- **Reputation-aware default assignment**: unassigned orchestration work can now
+  route to the highest-reputation capable registered runner, while explicit
+  targets are never overridden.
+- **Capability-aware dispatch fallback**: default assignment filters candidates
+  through the dispatch gate and safely falls back to the prior broadcast behavior
+  if the registry, candidates, or reputation ledger are unavailable.
+- **Configurable runner routing**: added
+  `autoclaw.runners.reputationAwareDispatch` so trigger-hook dispatch can opt
+  into the reputation-aware registry path without relying on an undocumented
+  environment variable.
+- **Runner process reliability**: synchronous spawn and exec-file launch
+  failures, including Windows permission errors, now resolve into structured
+  runner failures instead of rejecting and destabilizing the loop.
+- **Review Fleet context safety**: review context assembly gained stricter
+  content-safety coverage and adapter tests so sensitive prompt payloads stay
+  out of reviewer context.
+- **Runner adapter coverage**: added coverage for additional runner launch
+  surfaces and dispatch registry behavior.
+
 ## [3.6.12] - 2026-06-29
 
 Review Fleet go-live activation (RF-4d) — the fleet can now be turned on from a

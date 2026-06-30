@@ -20,6 +20,7 @@ import * as os from 'os';
 import Module = require('module');
 
 const registeredCommands: string[] = [];
+const registeredWebviewProviders: string[] = [];
 const dispose = () => ({ dispose() {} });
 const event = () => (_listener: unknown) => dispose();
 const uri = (p: string) => ({ fsPath: p, path: p, scheme: 'file', toString: () => p, with() { return this; } });
@@ -41,7 +42,10 @@ const vscodeStub: Record<string, unknown> = {
     showSaveDialog: async () => undefined,
     createOutputChannel: () => ({ appendLine() {}, append() {}, show() {}, hide() {}, clear() {}, replace() {}, dispose() {}, name: '' }),
     createStatusBarItem: () => ({ show() {}, hide() {}, dispose() {}, text: '', tooltip: '', command: '' }),
-    registerWebviewViewProvider: () => dispose(),
+    registerWebviewViewProvider: (viewType: string) => {
+      registeredWebviewProviders.push(viewType);
+      return dispose();
+    },
     createTreeView: () => ({ dispose() {} }),
     withProgress: async (_o: unknown, task: (p: unknown, t: unknown) => unknown) =>
       task({ report() {} }, { isCancellationRequested: false, onCancellationRequested: event() }),
@@ -117,8 +121,22 @@ suite('extension activate() — node smoke (stubbed vscode)', () => {
     assert.strictEqual(typeof ext.deactivate, 'function');
   });
 
+  test('package.json activates when contributed sidebar views are opened', () => {
+    const pkg = require(path.resolve(__dirname, '..', '..', 'package.json'));
+    assert.ok(pkg.activationEvents.includes('onStartupFinished'), 'startup activation retained');
+    assert.ok(pkg.activationEvents.includes('onView:kdreamDashboard'), 'main dashboard view activation declared');
+    assert.ok(pkg.activationEvents.includes('onView:autoclawIntelligenceDashboard'), 'intelligence view activation declared');
+  });
+
+  test('changelog contains the current package version', () => {
+    const pkg = require(path.resolve(__dirname, '..', '..', 'package.json'));
+    const changelog = require('fs').readFileSync(path.resolve(__dirname, '..', '..', 'changelog.md'), 'utf8');
+    assert.ok(changelog.includes(`## [${pkg.version}]`), `missing changelog section for ${pkg.version}`);
+  });
+
   test('activate() registers all commands without throwing', () => {
     registeredCommands.length = 0;
+    registeredWebviewProviders.length = 0;
     const ctx = fakeContext();
 
     // Neutralize the interval loops activate() starts so none leak.
@@ -139,6 +157,8 @@ suite('extension activate() — node smoke (stubbed vscode)', () => {
 
     assert.ok(registeredCommands.length >= 30, `expected >=30 commands, got ${registeredCommands.length}`);
     assert.ok(registeredCommands.includes('autoclaw.voidspec.sync'), 'voidspec.sync registered');
+    assert.ok(registeredWebviewProviders.includes('kdreamDashboard'), 'main dashboard provider registered');
+    assert.ok(registeredWebviewProviders.includes('autoclawIntelligenceDashboard'), 'intelligence dashboard provider registered');
     assert.ok((ctx.subscriptions as unknown[]).length > 0, 'disposables pushed to subscriptions');
   });
 
