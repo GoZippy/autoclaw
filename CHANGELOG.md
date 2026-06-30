@@ -2,6 +2,56 @@
 
 ## [Unreleased]
 
+Agent join / invite hardening — external agents now get a real, lane-specific
+handshake instead of a prompt that assumes the right docs, tools, and comms tree
+already exist.
+
+- **Join prompts are resilient to partial project setup.** Generated prompts now
+  tell agents to read `docs/AGENT_SESSION_PROTOCOL.md` when present, fall back to
+  `.autoclaw/orchestrator/AGENT_SESSION_PROTOCOL.md` and per-agent rules when it
+  is not, then continue with `REGISTER + SYNC` instead of searching outside the
+  workspace. Claim discovery now falls back from `needs.json` to `board.json` +
+  `sprints/plan-summary.yaml`, and prompts explicitly avoid claiming
+  vendor-specific work addressed to another agent.
+- **Durable local protocol fallback.** `scaffoldAgent()` now writes
+  `.autoclaw/orchestrator/AGENT_SESSION_PROTOCOL.md` as a compact local contract
+  for projects that do not carry the full docs package, plus a per-agent
+  `comms/agents/<agent>/rules.md` file.
+- **Newcomer comms tree is complete.** Agent scaffolding now creates the dirs the
+  prompts name up front: `heartbeats/`, `beacons/`, `claims/`,
+  `consensus/active/`, `consensus/closed/`, `invites/`, `inboxes/shared/`, and
+  the target agent's inbox/state/processed tree.
+- **Invite tokens can actually be consumed by MCP agents.** Added gated MCP
+  write tool `invite.consume`, and `presence.beacon` now accepts `invite_token`
+  so an MCP-capable agent can consume its single-use invite and check in with one
+  call. `invite.consume` participates in the same per-tool write policy and audit
+  surface as the other MCP write tools.
+- **Invite tokens can actually be consumed by HTTP agents.** Added
+  `POST /api/v1/invites/consume`, which consumes a join token before normal
+  bearer auth exists, issues a bridge bearer token, and returns the invite's
+  role/type/scope/trust/admit metadata.
+- **Invites are workspace-visible.** Join prompt and team-template flows now
+  mirror generated invites into `.autoclaw/orchestrator/comms/invites/` as well
+  as the machine invite store. `consumeInviteEverywhere()` stamps mirrored
+  machine/workspace copies consumed together so a token cannot be reused through
+  the other home.
+- **Join targets distinguish real integration modes.** The picker now separates
+  `Codex (MCP-capable chat / CLI)`, `Codex in IDE chat (file lane)`,
+  `Codex CLI / spawned worker`, and `Generic MCP-capable agent`, while preserving
+  existing Claude Desktop, OpenClaw, Hermes, Cursor, Kiro, Cline, Kilo, Continue,
+  Windsurf, and Antigravity/Gemini paths.
+- **Role/type behavior is clearer.** Generated prompts now include guidance for
+  auditors/reviewers/security, supervisors/orchestrators, testers,
+  docs/research/product, and human-in-loop assistant/governance roles so every
+  invited tool is not blindly steered toward implementation claims.
+- **Backend expects the joining agent.** Join prompt and team-template flows now
+  best-effort write a direct `system` welcome message into the invited agent's
+  inbox with the target tool, invite token, role/type/scope, protocol candidates,
+  bridge URL when relevant, and the first required action.
+- **Verification.** Covered by targeted unit suites for invites, MCP presence,
+  bridge invite consumption, MCP tool gating/scoping, join prompt rendering, and
+  scaffolding (`155 passing` in the focused run), plus `npm run compile`.
+
 ## [3.6.12] - 2026-06-29
 
 Review Fleet go-live activation (RF-4d) — the fleet can now be turned on from a

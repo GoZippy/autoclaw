@@ -10,9 +10,11 @@
  *
  * This module is the floor-fix: it idempotently scaffolds the minimum a single
  * arbitrary agent needs to participate —
- *   1. its inbox tree (`inboxes/<agentId>/{_state,processed}/`),
+ *   1. its inbox tree (`inboxes/<agentId>/{_state,processed}/`) plus the
+ *      shared coordination dirs a newcomer may need immediately (`claims/`,
+ *      `beacons/`, `consensus/active/`, `invites/`),
  *   2. a `RegisteredAgent` row in `registry.json` (creating the file + the
- *      `shared` inbox + `heartbeats/` dir on first run), carrying the
+ *      shared inbox + liveness dirs on first run), carrying the
  *      `loop_mechanism` + `keepalive_template` the revive flow needs,
  *   3. a bootstrap/rules file the agent reads on its first cycle.
  *
@@ -146,6 +148,8 @@ export interface ScaffoldAgentResult {
   inboxDir: string;
   /** Absolute path of the bootstrap/rules file. */
   rulesPath: string;
+  /** Absolute path of the local fallback protocol file. */
+  localProtocolPath: string;
   /** True when a new registry row was added; false when one already existed. */
   registryRowAdded: boolean;
   /** True when the registry file itself was created by this call. */
@@ -167,8 +171,9 @@ function defaultName(agentId: string): string {
 
 /**
  * Render the bootstrap/rules file a newcomer agent reads on its first cycle.
- * Deliberately terse: it points the agent at the canonical protocol doc and
- * its own mailbox paths rather than duplicating the contract.
+ * Deliberately terse: it points the agent at the canonical protocol doc when
+ * present, but also gives enough local fallback instruction for repos that were
+ * scaffolded by AutoClaw without copying the full docs package.
  */
 function renderBootstrap(agentId: string, name: string, role: string, kp: KeepaliveProfile): string {
   return `# Cross-Agent Coordination — ${name} (\`${agentId}\`)
@@ -176,8 +181,12 @@ function renderBootstrap(agentId: string, name: string, role: string, kp: Keepal
 You (\`agent_id = ${agentId}\`) have been added to this project's AutoClaw
 fleet. Your coordination role: **${role}**.
 
-**Authoritative contract:** docs/AGENT_SESSION_PROTOCOL.md (the canonical
-six-phase agent session protocol). Read it before acting.
+**Authoritative contract:** docs/AGENT_SESSION_PROTOCOL.md when present.
+If that file is absent in this checkout, treat this file plus the pasted join
+prompt as the fallback contract for REGISTER -> SYNC -> CLAIM -> WORK -> REPORT
+-> LOOP. The same fallback is also stored at
+.autoclaw/orchestrator/AGENT_SESSION_PROTOCOL.md. Do not search outside the
+workspace for AutoClaw docs.
 
 ## Your mailbox
 - Inbox:   .autoclaw/orchestrator/comms/inboxes/${agentId}/
@@ -222,6 +231,41 @@ MCP tool). Before re-deriving something, recall what the team already knows:
 `;
 }
 
+function renderLocalProtocol(): string {
+  return `# AutoClaw Agent Session Protocol — Local Fallback
+
+This checkout does not need the full AutoClaw docs package for agents to join.
+If docs/AGENT_SESSION_PROTOCOL.md exists, it is authoritative. Otherwise this
+file is the local contract for invited agents.
+
+## Required Loop
+
+Run this cycle until a halt condition applies:
+
+1. REGISTER: choose one session_id and reuse it for every heartbeat, beacon,
+   claim, and message. Write a heartbeat/beacon for your agent_id.
+2. SYNC: read your direct inbox and inboxes/shared/. Process each message once,
+   record it in _state/ or state.json, then move it to processed/.
+3. CLAIM: read needs.json if present; otherwise read board.json and
+   sprints/plan-summary.yaml when present. Claim exactly one unclaimed,
+   dependency-ready, in-scope task by create-exclusive write to
+   comms/claims/<task-id>.json. If no task is addressed to you or in scope,
+   stay registered and watch; do not take another agent's assignment.
+4. WORK: edit only inside the claimed scope. For cross-scope changes, send a
+   question message and wait.
+5. REPORT: send task_complete plus evidence, request review where needed, and
+   vote on consensus items you are eligible to review.
+6. LOOP: refresh heartbeat/beacon, then repeat.
+
+## Halt Conditions
+
+Halt and report if the user stops you, the prompt changes, cycle >= 25, a
+scope_violation is addressed to you, the comms tree is broken, an unresolved
+merge conflict blocks your scope, or all sprints are merged with an empty
+backlog.
+`;
+}
+
 /**
  * Idempotently scaffold the minimum a single arbitrary agent needs to join the
  * fleet: its inbox tree, a registry row (carrying loop_mechanism +
@@ -251,11 +295,20 @@ export async function scaffoldAgent(
   const role = opts.role?.trim() || 'worker';
   const kp = keepaliveProfileFor(agentId);
 
-  // 1. Ensure the comms skeleton + this agent's inbox tree.
+  // 1. Ensure the comms skeleton + this agent's inbox tree. These are the dirs
+  // the generated join prompts name, so a newcomer should not have to discover
+  // and repair them before it can check in or use the filesystem fallback.
   const inboxDir = path.join(commsRoot, 'inboxes', agentId);
   const dirsEnsured = [
     path.join(commsRoot, 'inboxes', 'shared'),
     path.join(commsRoot, 'heartbeats'),
+    path.join(commsRoot, 'beacons'),
+    path.join(commsRoot, 'claims'),
+    path.join(commsRoot, 'consensus'),
+    path.join(commsRoot, 'consensus', 'active'),
+    path.join(commsRoot, 'consensus', 'closed'),
+    path.join(commsRoot, 'invites'),
+    path.join(commsRoot, 'agents'),
     inboxDir,
     path.join(inboxDir, '_state'),
     path.join(inboxDir, 'processed'),
@@ -316,10 +369,16 @@ export async function scaffoldAgent(
     await fsp.writeFile(rulesPath, renderBootstrap(agentId, name, role, kp), 'utf8');
   }
 
+  const localProtocolPath = path.join(path.dirname(commsRoot), 'AGENT_SESSION_PROTOCOL.md');
+  if (!fs.existsSync(localProtocolPath)) {
+    await fsp.writeFile(localProtocolPath, renderLocalProtocol(), 'utf8');
+  }
+
   return {
     agentId,
     inboxDir,
     rulesPath,
+    localProtocolPath,
     registryRowAdded,
     registryCreated,
     keepalive: kp,

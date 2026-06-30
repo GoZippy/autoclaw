@@ -54,6 +54,7 @@ import {
 import { LlmRegistry } from '../llm';
 import { getKnowledgeGraph } from '../intelligence/kg/service';
 import { writeBeacon, type Beacon } from '../fleet/beacons';
+import { consumeInviteEverywhere } from '../fleet/invites';
 
 const fsPromises = fs.promises;
 
@@ -1186,6 +1187,7 @@ const presenceBeaconTool: ToolHandler = {
         agent_type: { type: 'string', description: 'Behavioral type hint (coder/runner/auditor/…).' },
         workspace: { type: 'string', description: 'Absolute workspace path. Defaults to the server root.' },
         transports: { type: 'array', items: { type: 'string' }, description: "Lanes this peer speaks: fs|mcp|http|relay." },
+        invite_token: { type: 'string', description: 'Optional single-use AutoClaw join token to consume atomically with check-in.' },
         card_url: { type: 'string', description: 'Optional A2A capability card URL.' },
         endpoint: { type: 'string', description: 'Optional HTTP endpoint for runner-style peers.' },
         scope: { type: 'string', enum: ['workspace', 'machine'], description: "Where to write (default workspace)." },
@@ -1196,10 +1198,27 @@ const presenceBeaconTool: ToolHandler = {
     const scope = args.scope === 'machine' ? 'machine' : 'workspace';
     const str = (v: unknown): string | undefined =>
       typeof v === 'string' && v.trim() ? v.trim() : undefined;
+    const agentId = str(args.agent_id) ?? ctx.host;
+    const inviteToken = str(args.invite_token);
+
+    if (inviteToken) {
+      const consumed = await consumeInviteEverywhere(
+        inviteToken,
+        { agent_id: agentId, ...(ctx.sessionId ? { session_id: ctx.sessionId } : {}) },
+        { commsDir: commsDir(ctx) },
+      );
+      if (!consumed.ok) {
+        return {
+          ok: false,
+          reason: consumed.reason === 'not_found' ? 'not_found' : consumed.reason === 'already_consumed' ? 'conflict' : 'invalid_params',
+          detail: `invite ${consumed.reason}`,
+        };
+      }
+    }
 
     const beacon: Beacon = {
       // Host stamps identity it owns — callers cannot spoof host/session.
-      agent_id: str(args.agent_id) ?? ctx.host,
+      agent_id: agentId,
       ...(ctx.sessionId ? { session_id: ctx.sessionId } : {}),
       timestamp: new Date().toISOString(),
       status: args.status === 'idle' ? 'idle' : 'active',
@@ -1226,6 +1245,7 @@ const presenceBeaconTool: ToolHandler = {
       const ledger = await appendLedgerEntry(ctx, msgId, {
         type: 'presence_beacon',
         agent_id: beacon.agent_id,
+        ...(inviteToken ? { invite_consumed: true } : {}),
         scope,
         ...callerOf(ctx),
       });
@@ -1247,6 +1267,69 @@ const presenceBeaconTool: ToolHandler = {
         detail: err instanceof Error ? err.message : String(err),
       };
     }
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Tool: invite.consume — explicit join-token consumption
+// ---------------------------------------------------------------------------
+
+const inviteConsumeTool: ToolHandler = {
+  definition: {
+    name: 'invite.consume',
+    description:
+      'Consume a single-use AutoClaw join token across workspace and machine invite stores. ' +
+      'Most agents should call presence.beacon with invite_token for a one-step join.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        token: { type: 'string', description: 'The join-* invite token.' },
+        agent_id: { type: 'string', description: 'Stable joining agent id. Defaults to the caller host.' },
+      },
+      required: ['token'],
+    },
+  },
+  async run(ctx, args): Promise<ToolResult> {
+    const token = typeof args.token === 'string' ? args.token.trim() : '';
+    if (!token) { return { ok: false, reason: 'invalid_params', detail: 'token is required' }; }
+    const agentId = typeof args.agent_id === 'string' && args.agent_id.trim()
+      ? args.agent_id.trim()
+      : ctx.host;
+
+    const res = await consumeInviteEverywhere(
+      token,
+      { agent_id: agentId, ...(ctx.sessionId ? { session_id: ctx.sessionId } : {}) },
+      { commsDir: commsDir(ctx) },
+    );
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: res.reason === 'not_found' ? 'not_found' : res.reason === 'already_consumed' ? 'conflict' : 'invalid_params',
+        detail: `invite ${res.reason}`,
+      };
+    }
+
+    const ledger = await appendLedgerEntry(ctx, newMsgId(), {
+      type: 'invite_consume',
+      agent_id: agentId,
+      invite_token: token,
+      ...callerOf(ctx),
+    });
+
+    return {
+      ok: true,
+      data: {
+        ok: true,
+        token,
+        agent_id: agentId,
+        suggested_role: res.invite.suggested_role,
+        suggested_agent_type: res.invite.suggested_agent_type,
+        scope: res.invite.scope ?? [],
+        trust: res.invite.trust,
+        admit_policy: res.invite.admit_policy,
+        ledger_ok: ledger.ok,
+      },
+    };
   },
 };
 
@@ -1280,6 +1363,7 @@ export const WRITE_TOOLS: ToolHandler[] = [
   claimTaskTool,
   dreamRunTool,
   consensusVoteTool,
+  inviteConsumeTool,
   presenceBeaconTool,
   llmChatTool,
   llmModelsTool,
@@ -1296,6 +1380,7 @@ export const RAW_WRITE_TOOLS: ToolHandler[] = [
   claimTaskTool,
   dreamRunTool,
   consensusVoteTool,
+  inviteConsumeTool,
   presenceBeaconTool,
   llmChatTool,
   llmModelsTool,

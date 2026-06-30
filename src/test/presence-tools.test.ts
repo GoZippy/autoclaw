@@ -5,6 +5,7 @@ import * as path from 'path';
 import type { ToolContext } from '../mcp/types';
 import { RAW_WRITE_TOOLS } from '../mcp/writeTools';
 import { READ_ONLY_TOOLS } from '../mcp/tools';
+import { createInvite, readInvite, writeInvite } from '../fleet/invites';
 
 function makeWorkspace(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'presence-test-'));
@@ -62,6 +63,38 @@ suite('presence.beacon + presence.fleet (FF-1)', () => {
       assert.strictEqual(mine!.session_id, 'sess-x');
       assert.deepStrictEqual(mine!.transports, ['mcp', 'fs']);
       assert.strictEqual(mine!.origin, 'beacon');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('presence.beacon can consume an invite token while checking in', async () => {
+    const root = makeWorkspace();
+    try {
+      const ctx = ctxFor(root);
+      const commsDir = path.join(root, '.autoclaw', 'orchestrator', 'comms');
+      const inv = await createInvite({
+        issued_by: 'host',
+        project: 'demo',
+        workspace: root,
+        suggested_role: 'coder',
+        suggested_agent_type: 'coder',
+        token: 'join-presence-1',
+      }, { homeDir: root });
+      await writeInvite(inv, { scope: 'workspace', commsDir, homeDir: root });
+
+      const write = await beaconTool.run(ctx, {
+        agent_id: 'codex',
+        role: 'coder',
+        agent_type: 'coder',
+        invite_token: 'join-presence-1',
+        scope: 'workspace',
+      });
+      assert.strictEqual(write.ok, true);
+
+      const workspace = await readInvite('join-presence-1', { scope: 'workspace', commsDir });
+      assert.strictEqual(workspace?.consumed_by?.agent_id, 'codex');
+      assert.strictEqual(workspace?.consumed_by?.session_id, 'sess-x');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

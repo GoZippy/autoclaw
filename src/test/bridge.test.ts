@@ -9,6 +9,7 @@ import {
   type BridgeConfig, type BridgeState, type RemoteAgentToken,
 } from '../bridge';
 import type { Message, Heartbeat } from '../comms';
+import { createInvite, readInvite } from '../fleet/invites';
 
 function tmpDir(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-bridge-'));
@@ -199,6 +200,55 @@ suite('Bridge — revocation end-to-end via HTTP', () => {
       { 'Content-Type': 'application/json', Authorization: `Bearer ${t.token}` },
       JSON.stringify({ ...msg, id: 'm-rev-2' }));
     assert.strictEqual(post2.status, 401, 'post-revocation request must be unauthorized');
+  });
+});
+
+suite('Bridge — invite consumption via HTTP', () => {
+  let state: BridgeState | null = null;
+
+  teardown(async () => {
+    if (state) { await stopBridge(state); state = null; }
+  });
+
+  test('POST /api/v1/invites/consume consumes a workspace invite and returns a bearer token', async () => {
+    state = await bring();
+    await createInvite({
+      issued_by: 'host',
+      project: 'demo',
+      workspace: state.config.commsDir,
+      suggested_role: 'coder',
+      suggested_agent_type: 'coder',
+      token: 'join-http-1',
+    }, { scope: 'workspace', commsDir: state.config.commsDir });
+
+    const first = await request(
+      state,
+      'POST',
+      '/api/v1/invites/consume',
+      { 'Content-Type': 'application/json' },
+      JSON.stringify({ token: 'join-http-1', agent_id: 'hermes', session_id: 's-http' }),
+    );
+    assert.strictEqual(first.status, 201);
+    const body = JSON.parse(first.body) as { bearer_token?: string; suggested_role?: string };
+    assert.ok(body.bearer_token?.startsWith('acl_'));
+    assert.strictEqual(body.suggested_role, 'coder');
+
+    const inv = await readInvite('join-http-1', { scope: 'workspace', commsDir: state.config.commsDir });
+    assert.strictEqual(inv?.consumed_by?.agent_id, 'hermes');
+    assert.strictEqual(inv?.consumed_by?.session_id, 's-http');
+
+    const token = await validateToken(state.config.tokensPath, `Bearer ${body.bearer_token}`);
+    assert.ok(token);
+    assert.strictEqual(token!.agent_id, 'hermes');
+
+    const second = await request(
+      state,
+      'POST',
+      '/api/v1/invites/consume',
+      { 'Content-Type': 'application/json' },
+      JSON.stringify({ token: 'join-http-1', agent_id: 'other' }),
+    );
+    assert.strictEqual(second.status, 409);
   });
 });
 
