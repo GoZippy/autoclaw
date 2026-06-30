@@ -21,6 +21,7 @@ suite('vsixGuard — evaluateVsix', () => {
     assert.strictEqual(r.ok, true);
     assert.strictEqual(r.reasons.length, 0);
     assert.strictEqual(r.offenders.length, 0);
+    assert.strictEqual(r.contentFindings.length, 0);
   });
 
   test('a legitimate CI-sized artifact (~4.5 MB) is under the default cap', () => {
@@ -42,7 +43,7 @@ suite('vsixGuard — evaluateVsix', () => {
     });
     assert.strictEqual(r.ok, false);
     assert.deepStrictEqual(r.offenders, ['extension/research/']);
-    assert.match(r.reasons[0], /scratch\/never-ship paths/);
+    assert.match(r.reasons[0], /scratch\/private\/never-ship paths/);
   });
 
   test('size and contamination both reported (one reason each)', () => {
@@ -61,6 +62,27 @@ suite('vsixGuard — evaluateVsix', () => {
       assert.strictEqual(r.ok, false, `expected ${p} to be flagged`);
       assert.ok(r.offenders.includes(p));
     }
+  });
+
+  test('private premium implementation paths are forbidden in the public VSIX', () => {
+    const r = evaluateVsix({
+      sizeBytes: 1 * MB,
+      entryNames: ['extension/out/node_modules/@autoclaw/premium/index.js'],
+    });
+    assert.strictEqual(r.ok, false);
+    assert.ok(r.offenders.includes('extension/out/node_modules/@autoclaw/premium/'));
+    assert.match(r.reasons[0], /private/);
+  });
+
+  test('sensitive content findings fail the artifact', () => {
+    const r = evaluateVsix({
+      sizeBytes: 1 * MB,
+      entryNames: ['extension/out/extension.js'],
+      contentFindings: ['-----BEGIN RSA PRIVATE KEY-----'],
+    });
+    assert.strictEqual(r.ok, false);
+    assert.deepStrictEqual(r.contentFindings, ['-----BEGIN RSA PRIVATE KEY-----']);
+    assert.match(r.reasons[0], /sensitive content markers/);
   });
 
   test('a path that merely contains a forbidden word but is not under it passes', () => {

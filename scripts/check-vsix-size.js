@@ -3,8 +3,9 @@
  * check-vsix-size.js — packaging guard CLI.
  *
  * Fails (exit 1) when the built `.vsix` is over the size cap or contains known
- * scratch/never-ship paths, so a bloat regression (the 680 MB `research/` scare)
- * can never ship silently. Pure decision logic lives in
+ * scratch/private/never-ship paths or sensitive content markers, so a bloat
+ * regression (the 680 MB `research/` scare) or private-code leak can never ship
+ * silently. Pure decision logic lives in
  * `src/packaging/vsixGuard.ts` (compiled to `out/packaging/vsixGuard.js`); this
  * wrapper supplies the real size and a cheap contamination scan.
  *
@@ -59,6 +60,14 @@ const sizeBytes = fs.statSync(vsixPath).size;
 const buf = fs.readFileSync(vsixPath);
 const forbidden = guard.DEFAULT_FORBIDDEN_PREFIXES;
 const detected = forbidden.filter(p => buf.includes(p));
+const privateKeyMarker = kind => `-----BEGIN ${kind}PRIVATE KEY-----`;
+const contentFindings = [
+  privateKeyMarker(''),
+  privateKeyMarker('RSA '),
+  privateKeyMarker('EC '),
+  privateKeyMarker('DSA '),
+  privateKeyMarker('OPENSSH '),
+].filter(marker => buf.includes(marker));
 
 const maxBytes = process.env.VSIX_MAX_MB
   ? Math.round(parseFloat(process.env.VSIX_MAX_MB) * 1024 * 1024)
@@ -68,6 +77,7 @@ const result = guard.evaluateVsix({
   sizeBytes,
   entryNames: detected, // each detected prefix matches itself via startsWith
   maxBytes,
+  contentFindings,
 });
 
 const sizeStr = guard.formatBytes(sizeBytes);
@@ -79,4 +89,4 @@ if (!result.ok) {
   process.exit(1);
 }
 
-console.log('  ✓ within size cap, no scratch/never-ship paths detected');
+console.log('  ✓ within size cap, no scratch/private/never-ship paths or sensitive markers detected');

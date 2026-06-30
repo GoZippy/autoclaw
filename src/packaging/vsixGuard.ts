@@ -27,6 +27,8 @@ export interface VsixCheckInput {
   maxBytes?: number;
   /** Path prefixes that must never appear; defaults to {@link DEFAULT_FORBIDDEN_PREFIXES}. */
   forbiddenPrefixes?: string[];
+  /** Sensitive content markers detected inside the archive payload. */
+  contentFindings?: string[];
 }
 
 /** Verdict from {@link evaluateVsix}. */
@@ -38,6 +40,8 @@ export interface VsixCheckResult {
   reasons: string[];
   /** Forbidden prefixes that matched at least one entry. */
   offenders: string[];
+  /** Sensitive content findings supplied by the CLI wrapper. */
+  contentFindings: string[];
 }
 
 /**
@@ -58,6 +62,12 @@ export const DEFAULT_FORBIDDEN_PREFIXES = [
   'extension/docs/research/',
   'extension/.git/',
   'extension/node_modules/.cache/',
+  'extension/premium-impl/',
+  'extension/src/premium-private/',
+  'extension/packages/premium/',
+  'extension/packages/autoclaw-premium/',
+  'extension/node_modules/@autoclaw/premium/',
+  'extension/out/node_modules/@autoclaw/premium/',
 ];
 
 /** Format a byte count as a short human string (e.g. `4.5 MB`). */
@@ -91,7 +101,14 @@ export function evaluateVsix(input: VsixCheckInput): VsixCheckResult {
   const offenders = forbidden.filter(p => input.entryNames.some(n => n.startsWith(p)));
   if (offenders.length > 0) {
     reasons.push(
-      `.vsix contains scratch/never-ship paths: ${offenders.join(', ')} — add them to .vscodeignore`
+      `.vsix contains scratch/private/never-ship paths: ${offenders.join(', ')} — add them to .vscodeignore or move them to the private build`
+    );
+  }
+
+  const contentFindings = input.contentFindings ?? [];
+  if (contentFindings.length > 0) {
+    reasons.push(
+      `.vsix contains sensitive content markers: ${contentFindings.join(', ')} — remove secrets/private material before publishing`
     );
   }
 
@@ -101,5 +118,6 @@ export function evaluateVsix(input: VsixCheckInput): VsixCheckResult {
     maxBytes,
     reasons,
     offenders,
+    contentFindings,
   };
 }
