@@ -33,9 +33,9 @@ suite('intelligence-namespaces', function () {
     });
 
     test('is insensitive to slash direction and trailing slashes', function () {
-      const a = projectNamespace('C:\\Projects\\autoclaw');
-      const b = projectNamespace('C:/Projects/autoclaw');
-      const c = projectNamespace('C:/Projects/autoclaw/');
+      const a = projectNamespace('\\workspace\\autoclaw');
+      const b = projectNamespace('/workspace/autoclaw');
+      const c = projectNamespace('/workspace/autoclaw/');
       assert.strictEqual(a, b, 'backslash and forward-slash keys must match');
       assert.strictEqual(b, c, 'a trailing slash must not change the namespace');
     });

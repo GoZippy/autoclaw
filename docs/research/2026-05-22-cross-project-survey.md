@@ -9,7 +9,7 @@ Surveyed:
 
 * GitHub repos under `GoZippy/*` (~95 repos returned) and orgs `ZippyNetworks`,
   `Zippy-s-Public-Stuff`, `ZippyCoin-org`, `ZippyMesh`. Top-level metadata only.
-* Local trees under `K:\Projects\` and `S:\Projects\Tomorrow Inc\`. Only the
+* Local trees under `<local-projects>\` and `<local-projects>\Tomorrow Inc\`. Only the
   top-level `README.md`, `CLAUDE.md`, `AGENTS.md`, and `docs/` indices were
   read — never full source.
 * `GoZippy/VoidSpec` sibling repo (deep-read; root files + `docs/` list +
@@ -31,22 +31,22 @@ forks that aren't agent/orchestration-relevant.
 | `GoZippy/oh-my-codex` (fork) | Codex augmentations | Adds hooks/agent teams/HUDs to OpenAI Codex | Hook & team patterns transferable to claude-code adapter |
 | `GoZippy/career-ops` (fork) | Claude Code skill bundle | 14 skill modes, Go dashboard, batch processing | Reference for skill packaging discipline |
 | `GoZippy/Enterprise-Crew-skills` (fork) | Skill bundles | Collection of agent skills/scripts | Skill-format reference |
-| `GoZippy/ralph-orchestrator` (fork) at `K:\Projects\ralph-orchestrator` | Rust monorepo | "Improved Ralph Wiggum" autonomous loop — `ralph-core`, `ralph-adapters`, `ralph-cli`, `ralph-tui`, `ralph-telegram`, `ralph-web` | Mature event-loop + adapter design + spec discipline ("specs are contracts") |
+| `GoZippy/ralph-orchestrator` (fork) at `<local-projects>\ralph-orchestrator` | Rust monorepo | "Improved Ralph Wiggum" autonomous loop — `ralph-core`, `ralph-adapters`, `ralph-cli`, `ralph-tui`, `ralph-telegram`, `ralph-web` | Mature event-loop + adapter design + spec discipline ("specs are contracts") |
 | `GoZippy/spec-kit` (fork) | Spec-driven dev toolkit | Generic SDD template | Naming convention reference |
 | `GoZippy/STFU.md` (fork) | Prompt | "Cut agent yap by ~80%" | One-liner prompt overlay worth borrowing |
 | `GoZippy/CLAUDE-CODE-SYSTEM-PROMPT` (fork) | Doc | Living doc of CC system prompt | Empty in practice — skipped |
 | `GoZippy/9router` / `lm-proxy` / `RouteLLM` / `open-llm-router` / `zippymesh-llm-router` | LLM gateways | Multi-provider routing layer | Provider-routing primitives for AutoClaw cloud relay |
-| `K:\Projects\ZippyPanel` | Go + Next.js | Self-hostable hosting control plane (AGPLv3). Ships `.autoclaw/orchestrator/`, `.autoclaw/kdream/`, `.kiro/specs/`, `.kiro/steering/`, parallel-agent steering, sprint reviewer agent | The richest *consumer* of AutoClaw conventions — its `.autoclaw/orchestrator/` structure (templates, agents, lib, hooks) is the canonical example to lift |
-| `K:\Projects\ZippyVoice` | Polyglot (TS control plane + Python media) | Multi-tenant voice automation: control / conversation / media / integration planes | Plane-separation pattern transferable to AutoClaw's runner/orchestrator split |
-| `K:\Projects\zippyswap` | Next.js + Solidity-ish | HTLC atomic-swap DEX | Not orchestration-relevant — skipped |
-| `K:\Projects\Yufok1\Convergence_Engine` | Massive doc-heavy Python project | "Convergence engine" — agency/causation/butterfly subsystems | Anti-pattern source: doc-archive sprawl |
-| `K:\Projects\KiroAutomation` | VS Code extension + executor | Autonomous task execution from `.kiro/specs/*/tasks.md`, multi-workspace, plugin system, session persistence | **High signal.** Directly comparable to AutoClaw orchestrator. Plugin architecture worth copying. |
-| `K:\Projects\AgentEnsemble-v1` | Python | Agent ensemble experiments | Light — skipped after FEATURES.md |
-| `K:\Projects\AgentWise_Zippy\AgentWise\agentwise` | Claude Code multi-agent system | Specialized sub-agents (backend, frontend, db, devops, design, research, testing, review, deploy) defined as `.claude/agents/*.md` with `tools:` frontmatter; `.claude/commands/*.md` for slash commands | **High signal.** Pattern for AutoClaw's mateam-spawned subagents. |
-| `K:\Projects\ClawCracker` | TS/pnpm | Sibling-named — minimal content; skipped |
-| `K:\Projects\zippy-mcp` | TS | MCP-kit experiments | MCP integration reference |
-| `S:\Projects\Tomorrow Inc\Webster\webster-v1.0.0` | Chrome extension | AI sidebar for HubSpot/Marketo/Salesforce/Segment. Has `.autoclaw/kdream/` already wired. | Consumer of AutoClaw memory pattern |
-| `S:\Projects\Tomorrow Inc\Factory-Registry-v1` | AWS CDK + Kiro specs | Agent Factory + private MCP registry on AWS; ships `.autoclaw/mateam/scratch/<date>-<lane>/{plan,context,output}.md` from a real mateam run | Real-world mateam artifact layout — adopt as canonical mateam template |
+| `<local-projects>\ZippyPanel` | Go + Next.js | Self-hostable hosting control plane (AGPLv3). Ships `.autoclaw/orchestrator/`, `.autoclaw/kdream/`, `.kiro/specs/`, `.kiro/steering/`, parallel-agent steering, sprint reviewer agent | The richest *consumer* of AutoClaw conventions — its `.autoclaw/orchestrator/` structure (templates, agents, lib, hooks) is the canonical example to lift |
+| `<local-projects>\ZippyVoice` | Polyglot (TS control plane + Python media) | Multi-tenant voice automation: control / conversation / media / integration planes | Plane-separation pattern transferable to AutoClaw's runner/orchestrator split |
+| `<local-projects>\zippyswap` | Next.js + Solidity-ish | HTLC atomic-swap DEX | Not orchestration-relevant — skipped |
+| `<local-projects>\Yufok1\Convergence_Engine` | Massive doc-heavy Python project | "Convergence engine" — agency/causation/butterfly subsystems | Anti-pattern source: doc-archive sprawl |
+| `<local-projects>\KiroAutomation` | VS Code extension + executor | Autonomous task execution from `.kiro/specs/*/tasks.md`, multi-workspace, plugin system, session persistence | **High signal.** Directly comparable to AutoClaw orchestrator. Plugin architecture worth copying. |
+| `<local-projects>\AgentEnsemble-v1` | Python | Agent ensemble experiments | Light — skipped after FEATURES.md |
+| `<local-projects>\AgentWise_Zippy\AgentWise\agentwise` | Claude Code multi-agent system | Specialized sub-agents (backend, frontend, db, devops, design, research, testing, review, deploy) defined as `.claude/agents/*.md` with `tools:` frontmatter; `.claude/commands/*.md` for slash commands | **High signal.** Pattern for AutoClaw's mateam-spawned subagents. |
+| `<local-projects>\ClawCracker` | TS/pnpm | Sibling-named — minimal content; skipped |
+| `<local-projects>\zippy-mcp` | TS | MCP-kit experiments | MCP integration reference |
+| `<local-projects>\Tomorrow Inc\Webster\webster-v1.0.0` | Chrome extension | AI sidebar for HubSpot/Marketo/Salesforce/Segment. Has `.autoclaw/kdream/` already wired. | Consumer of AutoClaw memory pattern |
+| `<local-projects>\Tomorrow Inc\Factory-Registry-v1` | AWS CDK + Kiro specs | Agent Factory + private MCP registry on AWS; ships `.autoclaw/mateam/scratch/<date>-<lane>/{plan,context,output}.md` from a real mateam run | Real-world mateam artifact layout — adopt as canonical mateam template |
 | `GoZippy/CLAUDE-CODE-SYSTEM-PROMPT` | Doc | One line of content — skipped |
 | `GoZippy/conducty`, `GoZippy/portless`, `GoZippy/openaide`, `GoZippy/hindsight`, `GoZippy/mempalace` | Forks | Adjacent: batch-planning, port aliasing, worktree-based agent workspaces, agent memory benchmarks | Reference-only; ideas folded into §2 |
 
@@ -88,7 +88,7 @@ Each item: **(a)** where it comes from · **(b)** why it helps AutoClaw · **(c)
 
 ### 2.3  Sub-agent role file format
 
-* **From** `K:\Projects\AgentWise_Zippy\AgentWise\agentwise\.claude\agents\*.md`
+* **From** `<local-projects>\AgentWise_Zippy\AgentWise\agentwise\.claude\agents\*.md`
   — every agent is `---\nname:\ndescription:\ntools: Read,Edit,...\n---` then a
   short role brief. Same pattern in `ZippyPanel/.kiro/agents/sprint-reviewer.md`.
 * **Why** AutoClaw's `mateam` skill spawns sub-agents but their role
@@ -100,7 +100,7 @@ Each item: **(a)** where it comes from · **(b)** why it helps AutoClaw · **(c)
 
 ### 2.4  Mateam scratch-dir layout (already proven in the wild)
 
-* **From** `S:\Projects\Tomorrow Inc\Factory-Registry-v1\.autoclaw\mateam\scratch\<date>-<lane>\{plan,context,output}.md`.
+* **From** `<local-projects>\Tomorrow Inc\Factory-Registry-v1\.autoclaw\mateam\scratch\<date>-<lane>\{plan,context,output}.md`.
 * **Why** A real production mateam run already chose this layout. AutoClaw's
   `skills/mateam/` currently doesn't enforce a layout, so consumers are
   forking conventions.
@@ -123,7 +123,7 @@ Each item: **(a)** where it comes from · **(b)** why it helps AutoClaw · **(c)
 
 ### 2.6  Plane separation (`control / conversation / media / integration`)
 
-* **From** `K:\Projects\ZippyVoice\Docs\design-document.md §1`.
+* **From** `<local-projects>\ZippyVoice\Docs\design-document.md §1`.
 * **Why** AutoClaw is starting to grow a "cloud relay" (commit `9ae660c`)
   and a perpetual loop (`1653976`) in the same package. ZippyVoice's plane
   model is the right mental separation for `daemon/` (control),
@@ -316,7 +316,7 @@ Each item: **(a)** where it comes from · **(b)** why it helps AutoClaw · **(c)
    with a real YAML parser (already a transitive dep via `yaml` package).
 
 10. **Mixing memory storage roots.** `Webster/.autoclaw/kdream/memory/MEMORY.md`
-    uses a different layout than `K:\Projects\autoclaw\.autoclaw\` (kdream
+    uses a different layout than `<local-projects>\autoclaw\.autoclaw\` (kdream
     has `journals/`, `lineage/`, `nursery/`, `audit/`). Document the
     canonical layout in `docs/specs/kdream-memory-layout.md`; don't let
     each consumer invent its own.

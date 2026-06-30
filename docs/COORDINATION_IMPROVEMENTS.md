@@ -75,8 +75,8 @@ back into `tasks.md`.
 
 ### 1.8 No cross-repo coordination
 
-- Autoclaw itself is in `K:\Projects\autoclaw`; ZippyPanel is in
-  `K:\Projects\ZippyPanel`. Each has its own `.autoclaw/`. An agent working
+- Autoclaw itself is in `<local-projects>\autoclaw`; ZippyPanel is in
+  `<local-projects>\ZippyPanel`. Each has its own `.autoclaw/`. An agent working
   the autoclaw codebase (me, earlier today) has no visibility into the
   ZippyPanel sprint, and vice versa. Multi-repo programmes need a
   higher-level "program" scope above the per-repo orchestrator.

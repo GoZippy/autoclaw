@@ -16,6 +16,7 @@ tsconfig.tsbuildinfo
 # Compiled test and script artifacts
 out/test/**
 out/scripts/**
+out/packaging/**
 
 # Source maps and TS artifacts in out/
 out/**/*.map
@@ -120,6 +121,10 @@ docs/V3_PLAN.md
 docs/V3_1_ROADMAP.md
 docs/AGENT_DAEMON_CRITIQUE.md
 docs/rfc/llm-provider-abstraction.md
+docs/build-editions.md
+docs/RELEASE-*.md
+docs/PICKUP-*.md
+docs/autoclaw_licensing_trial_feature_gate_refactor.md
 
 # Relay server (AF-10) — a separate self-hostable deployable, not extension code
 out/relay-server/**

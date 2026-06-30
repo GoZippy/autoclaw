@@ -40,6 +40,8 @@ const FORBIDDEN_PATH = [
 // 3. Private-key content markers (any filename).
 const CONTENT_MARKERS = [
   /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----/,
+  /C:\\Users\\gotad/i,
+  /[A-Z]:[\\/](?:Projects|tmp)[\\/]/i,
 ];
 
 // Files allowed to legitimately contain key-looking content: redaction test

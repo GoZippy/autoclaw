@@ -81,7 +81,7 @@ A file `~/.autoclaw/invites/<token>.json` (or workspace-local
   "token": "join-7f3c…",            // single-use, random
   "issued_by": "claude-code",        // who invited
   "project": "autoclaw",             // workspace_id the agent may join
-  "workspace": "k:/Projects/autoclaw",
+  "workspace": "<local-projects>/autoclaw",
   "suggested_role": "tester",        // a hint; the user's fleet.json still wins
   "suggested_agent_type": "coder",
   "scope": ["src/test/**", "docs/**"], // path scope the agent is allowed (lease seed)

@@ -18,7 +18,7 @@ import type { Invite } from '../fleet/invites';
 
 const BASE: RenderJoinPromptInput = {
   host: 'codex',
-  workspacePath: 'K:/Projects/demo',
+  workspacePath: '/workspace/demo',
   role: 'coder',
   scope: ['src/test/**', 'docs/**'],
   inviteToken: 'join-abc123def456',
@@ -150,7 +150,7 @@ suite('joinPrompt — edges + invite convenience', () => {
       token: 'join-from-invite-001',
       issued_by: 'claude-code',
       project: 'demo',
-      workspace: 'K:/Projects/demo',
+      workspace: '/workspace/demo',
       suggested_role: 'auditor',
       scope: ['src/security/**'],
       trust: 'off',
@@ -161,7 +161,7 @@ suite('joinPrompt — edges + invite convenience', () => {
     };
     const p = renderJoinPromptForInvite('hermes', invite, { bridgeUrl: 'http://h:9' });
     assert.ok(p.includes('join-from-invite-001'), 'token comes from the invite');
-    assert.ok(p.includes('K:/Projects/demo'), 'workspace comes from the invite');
+    assert.ok(p.includes('/workspace/demo'), 'workspace comes from the invite');
     assert.ok(p.includes('auditor'), 'role comes from the invite');
     assert.ok(p.includes('src/security/**'), 'scope comes from the invite');
     assert.ok(p.includes('http://h:9'), 'bridgeUrl is threaded through');
@@ -224,7 +224,7 @@ suite('joinPrompt — role != agent_type is announced distinctly (regression)', 
       token: 'join-rt-001',
       issued_by: 'claude-code',
       project: 'demo',
-      workspace: 'K:/Projects/demo',
+      workspace: '/workspace/demo',
       suggested_role: 'reviewer',
       suggested_agent_type: 'auditor',
       scope: ['src/**'],

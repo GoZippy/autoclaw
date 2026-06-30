@@ -3,7 +3,7 @@
  *
  * Appends one row per `chat()` call to
  * `.autoclaw/llm/cost-ledger.jsonl`. Schema matches ZICO's
- * [BudgetTracker](k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts)
+ * ZICO's BudgetTracker schema
  * (`provider`, `model`, `operation`, `tokens`, `costCents`, `runId`)
  * so a future merge into a shared `@gozippy/billing` package is cheap.
  *

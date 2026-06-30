@@ -183,7 +183,7 @@ Promote each flat `<div class="session-row">` (`webview-render.ts:259`) to a `ro
 
 ```
 ● 7dfb9ec…  opus-4.8  feat/multi-project-orch…  2m ago  [Open chat ↗] [Lineage ▸]  (you)
-  └ claude-code · k:/Projects/autoclaw · 142 msgs · /learn ✓ indexed     ▸ drill-in
+  └ claude-code · <local-projects>/autoclaw · 142 msgs · /learn ✓ indexed     ▸ drill-in
 ```
 
 - **status dot** (`s.status`, stale after 10 min — unchanged).
@@ -204,7 +204,7 @@ Add a `uiState.sessions` map keyed by `session_id` (parallel to `uiState.threads
 Expanding **Lineage ▸** reveals, inside the row, a compact reverse-chronological view built from `UnifiedSession.messages`, rendered for **attribution/debugging** not reading:
 
 ```
-Lineage — claude-code:7dfb9ecd · 142 msgs · k:/Projects/autoclaw     [Open transcript ↗]
+Lineage — claude-code:7dfb9ecd · 142 msgs · <local-projects>/autoclaw     [Open transcript ↗]
 ▾ 2m  assistant opus-4.8  "scope the panel UX to session rows…"
     ├ feeds → [Edit webview-render.ts] [applied ✓]   ← kept signal: applied_edit
     └ chain-of-thought ▸ (3 prior turns)

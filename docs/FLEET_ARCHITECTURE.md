@@ -124,7 +124,7 @@ homes:
   "agent_type": "coder",
   "host": "kiro",                       // IDE / runner name
   "machine_id": "win-gotad-01",
-  "workspace": "k:/Projects/autoclaw-intel",
+  "workspace": "<local-projects>/autoclaw-intel",
   "workspace_id": "autoclaw-intel",
   "origin": "beacon",                   // local | relay | beacon
   "endpoint": "http://localhost:42777"  // optional, for HTTP runners

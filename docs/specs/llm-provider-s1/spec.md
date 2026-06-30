@@ -88,7 +88,7 @@ cost-ledger join and extracts the shared package.
 - [src/runners/types.ts](../../../src/runners/types.ts) — match the existing TS contract style (`detect`, `health`, `ErrorClass`, `Capabilities`)
 - [src/runners/hermes.ts](../../../src/runners/hermes.ts) — sibling REST-adapter pattern (HTTP client, error class mapping)
 - [src/runners/registry.ts](../../../src/runners/registry.ts) — the `RunnerRegistry` pattern this LLM registry mirrors
-- [k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts](k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts) — the cost-ledger schema we adopt (`provider`, `model`, `operation`, `tokens`, `costCents`, `runId`)
+- [<local-projects>\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts](<local-projects>\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts) — the cost-ledger schema we adopt (`provider`, `model`, `operation`, `tokens`, `costCents`, `runId`)
 - [docs/specs/persona-loader/spec.md](../persona-loader/spec.md) — your first consumer; its `provider-stub.ts` swaps to the real `LlmProvider`
 
 ## Design

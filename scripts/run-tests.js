@@ -13,9 +13,10 @@
 'use strict';
 
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
 
-const WORKSPACE = 'k:\\tmp\\autoclaw-test';
+const WORKSPACE = path.join(os.tmpdir(), 'autoclaw-test');
 const ORC_DIR   = path.join(WORKSPACE, '.autoclaw', 'orchestrator');
 const SPRINTS   = path.join(ORC_DIR, 'sprints');
 const COMMS     = path.join(ORC_DIR, 'comms');

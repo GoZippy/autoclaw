@@ -31,8 +31,8 @@ suite('worktree — naming', () => {
   });
 
   test('worktreePath lives outside the repo checkout', () => {
-    const p = worktreePath('K:/Projects/autoclaw', 'wt/claude-code-bl-7-a1b2');
-    assert.ok(!p.replace(/\\/g, '/').startsWith('K:/Projects/autoclaw/'), 'worktree must not be inside the repo');
+    const p = worktreePath('/workspace/autoclaw', 'wt/claude-code-bl-7-a1b2');
+    assert.ok(!p.replace(/\\/g, '/').startsWith('/workspace/autoclaw/'), 'worktree must not be inside the repo');
     assert.ok(p.includes('autoclaw__wt__claude-code-bl-7-a1b2'));
   });
 });
@@ -82,7 +82,7 @@ function fakeGit(map: Record<string, GitResult>): { git: GitRunner; calls: strin
 suite('worktree — createWorktree', () => {
   test('creates a fresh branch worktree', async () => {
     const { git, calls } = fakeGit({ 'worktree add': { exitCode: 0, stdout: '', stderr: '' } });
-    const r = await createWorktree(git, { repoRoot: 'K:/Projects/autoclaw', agentId: 'claude-code', taskId: 'BL-7', sessionFrag: 'a1b2c3d4' });
+    const r = await createWorktree(git, { repoRoot: '/workspace/autoclaw', agentId: 'claude-code', taskId: 'BL-7', sessionFrag: 'a1b2c3d4' });
     assert.strictEqual(r.created, true);
     assert.strictEqual(r.branch, 'wt/claude-code-bl-7-a1b2c3d4');
     assert.ok(calls[0].includes('-b'), 'first attempt creates a new branch with -b');
@@ -102,7 +102,7 @@ suite('worktree — createWorktree', () => {
       }
       return { exitCode: 0, stdout: '', stderr: '' };
     };
-    const r = await createWorktree(git, { repoRoot: 'K:/Projects/autoclaw', agentId: 'claude-code', taskId: 'BL-7', sessionFrag: 'a1b2c3d4' });
+    const r = await createWorktree(git, { repoRoot: '/workspace/autoclaw', agentId: 'claude-code', taskId: 'BL-7', sessionFrag: 'a1b2c3d4' });
     assert.strictEqual(r.created, true);
     assert.strictEqual(n, 2, 'should retry attaching to the existing branch');
   });

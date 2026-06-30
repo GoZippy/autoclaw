@@ -1147,7 +1147,7 @@ Tags retroactively created on 2026-05-09: `v2.0.3`, `v2.1.0`, `v2.1.2`, `v2.1.3`
 - AutoBuild scheduler now actually executes cron-scheduled workflows from the extension host. A 30-second tick (configurable via `autoclaw.autobuild.tickIntervalSeconds`, off when `autoclaw.autobuild.enabled` is false) reads `.autoclaw/autobuild/workflows/*.yaml`, fires due workflows, streams stdout/stderr to `.autoclaw/autobuild/runs/<name>-<ISO>.log` (truncated at 1 MB), honours per-step `timeout`, and updates `registry.json`. New commands `AutoClaw: AutoBuild — Run Workflow Now` and `AutoClaw: AutoBuild — Tail Most Recent Run Log`; doctor gained an `## AutoBuild` section listing scheduled workflows and last-run status.
 
 ### Fixed
-- Removed `K:/Projects/zippymesh-router` and `S:/Projects/zippymesh-router` developer drive paths from the ZippyMesh MCP setup wizard. Candidate search is now workspace-relative first, then `~/zippymesh-router`, then user-supplied paths from the new `autoclaw.kdream.zippymeshSearchPaths` setting.
+- Removed `<local-projects>/zippymesh-router` and `<local-projects>/zippymesh-router` developer drive paths from the ZippyMesh MCP setup wizard. Candidate search is now workspace-relative first, then `~/zippymesh-router`, then user-supplied paths from the new `autoclaw.kdream.zippymeshSearchPaths` setting.
 - `getCodeChurnMetrics` aggregates lines added/deleted across the last 30 days of commits instead of just the most recent diff (`HEAD~1..HEAD`).
 - `churnRate` (lines per day) and `avgCommitSize` (lines per commit) now use distinct formulas instead of returning the same value.
 - `adapterCoverage` no longer divides by zero when the adapter health array is empty.

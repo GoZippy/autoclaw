@@ -208,7 +208,7 @@ The coordination premise has shifted: **git + GitHub PRs + CI is the durable cod
   "current_task": "PR #12 review", "current_llm": "claude-opus-4-8",
   "role": "ops", "agent_type": "assistant",
   "host": "hermes", "machine_id": "win-gotad-01",
-  "workspace": "k:/Projects/autoclaw", "workspace_id": "autoclaw",
+  "workspace": "<local-projects>/autoclaw", "workspace_id": "autoclaw",
   "origin": "beacon", "endpoint": "http://localhost:42777",
   "transports": ["fs", "mcp", "http"],                          // NEW: which lanes I speak
   "card_url": "http://localhost:42777/.well-known/agent.json"   // NEW: capability pointer

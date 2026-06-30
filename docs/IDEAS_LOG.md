@@ -279,7 +279,7 @@ Both paths ran in parallel.
 
 ### Path A — Phase 0 executed in worktree
 
-- **Worktree:** `k:/Projects/autoclaw/.claude/worktrees/agent-ac6b45f2597da4b6f`
+- **Worktree:** `<local-projects>/autoclaw/.claude/worktrees/agent-ac6b45f2597da4b6f`
 - **Branch:** `worktree-agent-ac6b45f2597da4b6f` — branched from `8a44446`
   (one commit behind master's `a8ac62c`; needs rebase before merge).
 - **Diff:** +878 / -11 across 9 files (4 new, 5 modified).

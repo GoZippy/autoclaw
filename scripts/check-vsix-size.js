@@ -61,12 +61,25 @@ const buf = fs.readFileSync(vsixPath);
 const forbidden = guard.DEFAULT_FORBIDDEN_PREFIXES;
 const detected = forbidden.filter(p => buf.includes(p));
 const privateKeyMarker = kind => `-----BEGIN ${kind}PRIVATE KEY-----`;
+const userPathMarker = parts => parts.join('\\');
+const drivePathMarker = (drive, dir, sep) => `${drive}:${sep}${dir}${sep}`;
 const contentFindings = [
   privateKeyMarker(''),
   privateKeyMarker('RSA '),
   privateKeyMarker('EC '),
   privateKeyMarker('DSA '),
   privateKeyMarker('OPENSSH '),
+  userPathMarker(['C:', 'Users', 'gotad']),
+  drivePathMarker('K', 'Projects', '\\'),
+  drivePathMarker('K', 'Projects', '/'),
+  drivePathMarker('k', 'Projects', '\\'),
+  drivePathMarker('k', 'Projects', '/'),
+  drivePathMarker('S', 'Projects', '\\'),
+  drivePathMarker('S', 'Projects', '/'),
+  drivePathMarker('K', 'tmp', '\\'),
+  drivePathMarker('K', 'tmp', '/'),
+  drivePathMarker('k', 'tmp', '\\'),
+  drivePathMarker('k', 'tmp', '/'),
 ].filter(marker => buf.includes(marker));
 
 const maxBytes = process.env.VSIX_MAX_MB

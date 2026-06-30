@@ -397,7 +397,7 @@ Both tiers implement this. It's deliberately small; agents don't see
 the backend.
 
 ```ts
-// k:/Projects/autoclaw/src/kg/KnowledgeGraph.ts (sketch — not yet implemented)
+// <local-projects>/autoclaw/src/kg/KnowledgeGraph.ts (sketch — not yet implemented)
 
 export type AgentId   = string;   // "claude-code" | "kilocode" | ...
 export type ProjectId = string;   // repo slug

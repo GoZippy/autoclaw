@@ -102,7 +102,7 @@ and there are no secrets in the artifact (`.vscodeignore` excludes `.env`/`src/*
 - Stand up the private `@autoclaw/premium` repo (§3).
 
 **Housekeeping (confirm before doing — destructive):**
-- Worktree cleanup: stale `k:\tmp\autoclaw-{devbeta,rel,kofi,test}` (one has an
+- Worktree cleanup: stale `<scratch>\autoclaw-{devbeta,rel,kofi,test}` (one has an
   uncommitted `package-lock` diff → clean-check before `git worktree remove`).
 
 **Closed-by-analysis (no action):**

@@ -12,7 +12,7 @@ I have enough to report. Final synthesis:
 
 3. **Stash / reflog / index modalities not reported by the sweep.** Checked: `git stash list` is empty; no unreachable substantive commits beyond the 18 already dispositioned. Confirms "no committed work at risk."
 
-(b) SINGLE MOST IMPORTANT NEXT ACTION — unchanged and confirmed: **Merge PR #12 (`feat/vector-backend-abi` → `dev-beta`).** Verified live: state OPEN, `mergeable: MERGEABLE`, base `dev-beta`. It is the only content delta restoring RAG retrieval and the sole thing blocking v3.5.0. After merge, delete local `feat/wave-b`, `feat/vector-backend-abi`, `feat/multi-project-orchestration` and prune the `K:/tmp/autoclaw-wave-b` and `K:/tmp/ac-vec-wt` worktrees (both already pushed/integrated). Note: `K:/tmp/ac-vec-wt` (the vector-backend-abi worktree, c205a37 = the PR head) is the one live worktree to keep until PR #12 merges — the sweep listed `autoclaw-wave-b` but not this one.
+(b) SINGLE MOST IMPORTANT NEXT ACTION — unchanged and confirmed: **Merge PR #12 (`feat/vector-backend-abi` → `dev-beta`).** Verified live: state OPEN, `mergeable: MERGEABLE`, base `dev-beta`. It is the only content delta restoring RAG retrieval and the sole thing blocking v3.5.0. After merge, delete local `feat/wave-b`, `feat/vector-backend-abi`, `feat/multi-project-orchestration` and prune the `<scratch>/autoclaw-wave-b` and `<scratch>/ac-vec-wt` worktrees (both already pushed/integrated). Note: `<scratch>/ac-vec-wt` (the vector-backend-abi worktree, c205a37 = the PR head) is the one live worktree to keep until PR #12 merges — the sweep listed `autoclaw-wave-b` but not this one.
 
 (c) GAPS IN THE TWO DESIGNS:
 

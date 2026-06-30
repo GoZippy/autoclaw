@@ -845,7 +845,7 @@ Resolved ones folded into the design above. Still open:
    `OllamaProvider.models()`, cache the capability, surface 400 as
    `errorClass: 'internal'`. Confirm in S1.
 2. **Cost ledger format alignment with ZICO.**
-   [ZICO's `BudgetTracker`](k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts)
+   [ZICO's `BudgetTracker`](<local-projects>\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts)
    has a clean schema (`{ provider, model, operation, tokens, costCents,
    runId }`) with a per-provider `ProviderPricing` table. Should
    AutoClaw's `llm/cost-ledger.jsonl` adopt that schema verbatim so a
@@ -882,16 +882,16 @@ Resolved ones folded into the design above. Still open:
 This RFC was revised after a survey of related GoZippy repos. Findings
 not absorbed inline:
 
-- **ZICO ([`k:\Projects\ZippyAI_IDE_Tools`](k:\Projects\ZippyAI_IDE_Tools))**
+- **ZICO ([`<local-projects>\ZippyAI_IDE_Tools`](<local-projects>\ZippyAI_IDE_Tools))**
   has no `LlmProvider` abstraction to reuse; its `AgentAdapter` is at
   the agent-orchestration layer (Cursor/Copilot/local-LLM) and its
   `LocalLLMAdapter` hardcodes Ollama/LM Studio. ZICO's
   `BudgetTracker` + `ProviderPricing` is worth adopting for cost
   ledger (open question 2).
-- **ZippyMeshEcosystem ([`k:\Projects\ZippyMeshEcosystem`](k:\Projects\ZippyMeshEcosystem))**
+- **ZippyMeshEcosystem ([`<local-projects>\ZippyMeshEcosystem`](<local-projects>\ZippyMeshEcosystem))**
   is stale Rust quantum-crypto work (last activity Oct 2025); ignore
   for LLM routing.
-- **zippycoin-apps ([`s:\Projects\zippycoin-apps`](s:\Projects\zippycoin-apps))**
+- **zippycoin-apps ([`<local-projects>\zippycoin-apps`](<local-projects>\zippycoin-apps))**
   is active blockchain (wallet/governance/DeFi); no LLM code. Future
   consumer of `@gozippy/llm-router-client` (below) at most.
 - **Future extract: `@gozippy/llm-router-client`** — once
@@ -919,7 +919,7 @@ Smaller scope, ZMLR-first, oracle-fallback:
 | **S1** | `src/llm/zippymesh.ts` (primary) + `src/llm/ollama.ts` (fallback) | Two adapters cover the entire local matrix via ZMLR's server-side routing; one direct local provider for when ZMLR is down. |
 | **S1** | `src/llm/oracle.ts` (TS port of the upstream model-oracle host `model-oracle.mjs`) — includes ZMLR as a ladder rung (not just a routing decider) and persists rate-limit map to `.autoclaw/llm/oracle-state.json` | Client-side fallback ladder + persistent rate-limit map + `qwen3:0.6b@:11435` failsafe. The headline new capability. |
 | **S1** | `src/llm/failsafe-install.ts` — first-run `ollama pull qwen3:0.6b` + `:11435` instance start | Bottom rung exists from day one; non-blocking on failure. Moved up from S2 (resolved open question 6). |
-| **S1** | `src/llm/costLedger.ts` adopting ZICO's `{ provider, model, operation, tokens, costCents, runId }` schema | Aligns with [k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts](k:\Projects\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts) so future merge is cheap. |
+| **S1** | `src/llm/costLedger.ts` adopting ZICO's `{ provider, model, operation, tokens, costCents, runId }` schema | Aligns with [<local-projects>\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts](<local-projects>\ZippyAI_IDE_Tools\packages\core\src\orchestration\budget-tracker.ts) so future merge is cheap. |
 | **S1** | Persona loader's `provider-stub.ts` swapped for the real registry | First consumer; the persona loader's Phase B integration test is the exit gate. |
 | **S2** | **PR to ZMLR**: `src/app/api/mcp/route.js` exposes the existing `src/mcp/zmlr-server.js` handlers at `:20128/mcp` (§7) | Closes the documented-but-unwired gap. Small. Benefits Cursor/Continue too. |
 | **S2** | `.autoclaw/llm/config.yaml` parser + `autoclaw llm install` (slim — providers only, no preference engine) | Idempotent install; imports the two shipped playbooks into ZMLR; registers ZMLR's MCP in workspace config. |

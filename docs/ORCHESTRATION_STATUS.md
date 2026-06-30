@@ -39,7 +39,7 @@ Last updated: 2026-06-15 by claude-code (VS Code session) — **consolidation pa
 
 1. **Publish v3.5.0** when ready: promote `dev-beta`→`master`, tag `v3.5.0`, build a CLEAN vsix from a worktree (`git worktree add ... <committed-HEAD>` → `npm ci` → verify `tar -tf <vsix>` is sane), then `NODE_OPTIONS=--use-system-ca npm run publish:all`. **Irreversible — explicit go required.**
 2. **Dogfood the intelligence layer** first — this session saw `vector backend unavailable → no-RAG mode`; confirm that's the intended graceful fallback before publishing it as a headline feature.
-3. **Prune** stale branches (user deferred deletion) and close/archive merged chat sessions (wave-a, intelligence-core-loop, and the Kiro wave-b session in worktree `K:/tmp/autoclaw-wave-b`).
+3. **Prune** stale branches (user deferred deletion) and close/archive merged chat sessions (wave-a, intelligence-core-loop, and the Kiro wave-b session in worktree `<scratch>/autoclaw-wave-b`).
 
 ## Stray working-tree artifacts (this window, untracked — safe to ignore/gitignore)
 

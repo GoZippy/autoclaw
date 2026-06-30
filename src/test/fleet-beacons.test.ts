@@ -17,8 +17,8 @@ function mkBeacon(over: Partial<Beacon> = {}): Beacon {
 
 suite('fleet/beacons — helpers', () => {
   test('workspaceSlug slugs an absolute path to its basename', () => {
-    assert.strictEqual(workspaceSlug('k:/Projects/autoclaw-intel'), 'autoclaw-intel');
-    assert.strictEqual(workspaceSlug('K:\\Projects\\Webster\\'), 'webster');
+    assert.strictEqual(workspaceSlug('/workspace/autoclaw-intel'), 'autoclaw-intel');
+    assert.strictEqual(workspaceSlug('C:\\work\\Webster\\'), 'webster');
     assert.strictEqual(workspaceSlug(undefined), '');
   });
 
@@ -30,7 +30,7 @@ suite('fleet/beacons — helpers', () => {
   });
 
   test('normalizeBeacon defaults origin, derives workspace_id, flags staleness', () => {
-    const row = normalizeBeacon(mkBeacon({ workspace: 'k:/Projects/autoclaw-intel' }), NOW);
+    const row = normalizeBeacon(mkBeacon({ workspace: '/workspace/autoclaw-intel' }), NOW);
     assert.strictEqual(row.origin, 'beacon');
     assert.strictEqual(row.workspace_id, 'autoclaw-intel');
     assert.strictEqual(row.stale, false);

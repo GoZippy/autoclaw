@@ -5,7 +5,7 @@ _Author: Claude Code (Opus 4.7), session 2026-05-19. Status: notes / proposal._
 Complements [COORDINATION_IMPROVEMENTS.md](COORDINATION_IMPROVEMENTS.md) (Kiro, 2026-05-08).
 That doc enumerates pain points observed running AutoClaw v2.1 on ZippyPanel.
 This doc critiques a specific artifact — `agent-daemon.py` that Kiro produced in
-the GovCon project at `S:/Projects/GovCon/zippy-govcon-os-spec/.autoclaw/orchestrator/agent-daemon.py`
+the GovCon project at `<local-projects>/GovCon/zippy-govcon-os-spec/.autoclaw/orchestrator/agent-daemon.py`
 — and proposes what the equivalent component should look like inside AutoClaw
 itself, most likely in `adapters/claude-code/`.
 
@@ -85,7 +85,7 @@ disagreeing views. Pick one source — see §3.
 
 ### 2.5 Hardcoded path
 
-`BASE_DIR = Path("s:/Projects/GovCon/zippy-govcon-os-spec")`. Non-portable.
+`BASE_DIR = Path("<local-projects>/GovCon/zippy-govcon-os-spec")`. Non-portable.
 Read from `Path.cwd()` walking up to find `.autoclaw/`, or accept `--root`.
 
 ### 2.6 Wakeup latency

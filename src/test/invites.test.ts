@@ -18,7 +18,7 @@ function baseInput(over = {}) {
   return {
     issued_by: 'claude-code',
     project: 'autoclaw',
-    workspace: 'k:/Projects/autoclaw',
+    workspace: '/workspace/autoclaw',
     suggested_role: 'tester',
     suggested_agent_type: 'coder',
     scope: ['src/test/**'],
