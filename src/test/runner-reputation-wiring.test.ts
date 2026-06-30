@@ -100,3 +100,20 @@ suite('BL-7 — dispatchPreferredByReputation', () => {
     } finally { fs.rmSync(ws, { recursive: true, force: true }); }
   });
 });
+
+suite('BL-7b — reputationAwareDispatch setting', () => {
+  test('package.json declares autoclaw.runners.reputationAwareDispatch', () => {
+    const root = path.join(__dirname, '..', '..');
+    const pkg = require(path.join(root, 'package.json'));
+    const configs = pkg.contributes?.configuration;
+    assert.ok(Array.isArray(configs), 'contributes.configuration should be an array');
+    const orchestrationBlock = configs.find((c: { title?: string }) => c.title === 'Orchestration & AutoBuild');
+    assert.ok(orchestrationBlock, 'should have Orchestration & AutoBuild block');
+    const setting = orchestrationBlock.properties['autoclaw.runners.reputationAwareDispatch'];
+    assert.ok(setting, 'reputationAwareDispatch setting should be declared');
+    assert.strictEqual(setting.type, 'boolean');
+    assert.strictEqual(setting.default, false);
+    assert.ok(setting.markdownDescription, 'should have a description');
+    assert.match(setting.markdownDescription, /reputation/i);
+  });
+});
