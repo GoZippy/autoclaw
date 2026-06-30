@@ -46,6 +46,7 @@ import { writeMonitorPresence, readMonitorRoster, pruneStaleMonitorPresence } fr
 import { ClusterMapGossipBus, RemoteClusterMapTracker } from './lmd/clusterMapGossip';
 import { ingestWorkforceSignals } from './fleet/workforceIngest';
 import { runRecallSweep } from './fleet/recallDispatch';
+import { selectPreferredVendorByReputation } from './runners/reputationAssign';
 // Fabric governance (AF-8 §3) — gate + audit the real dispatch path. Explicit
 // subpath keeps the message-bus/bridge out of the loop module.
 import { gateDispatch, appendAuditLog, type ControlLevel } from './fabric/governance';
@@ -676,10 +677,33 @@ export async function dispatchWork(
     const reg = JSON.parse(
       (await fsPromises.readFile(path.join(commsDirAbs, 'registry.json'), 'utf8')).replace(/^﻿/, '')
     ) as { agents?: Array<{ id: string; agent_type?: string }> };
+
+    // BL-7b Part 2: reputation-aware DEFAULT assignment. A work package with no
+    // explicit target ('other') is otherwise broadcast unaddressed for any agent
+    // to self-claim. Instead, address the claim to the highest-reputation CAPABLE
+    // registered agent — "capable" = one the dispatch gate would allow. Explicit,
+    // named vendors are untouched. Degrade-safe: no candidates or a ledger-read
+    // failure leaves the original 'other' broadcast and existing queue semantics.
+    if (pkg.assignToVendor === 'other') {
+      const candidates = (reg.agents ?? [])
+        .filter(a => !!a.id && a.id !== 'other'
+          && gateDispatch((a.agent_type ?? 'coder') as AgentType, controlLevel).allowed)
+        .map(a => a.id);
+      const picked = await selectPreferredVendorByReputation(workspaceRoot, candidates);
+      if (picked) {
+        pkg.assignToVendor = picked as VendorKind;
+        await writeLoopJournal(workspaceRoot, {
+          at: new Date().toISOString(), tick: 0, phase: 'dispatch',
+          action: 'reputation_assigned',
+          detail: { taskId: pkg.taskId, from: 'other', to: picked, candidates: candidates.length },
+        });
+      }
+    }
+
     const match = reg.agents?.find(a => a.id === pkg.assignToVendor);
     if (match?.agent_type) { agentType = match.agent_type as AgentType; }
   } catch {
-    /* no registry ⇒ default coder */
+    /* no registry ⇒ default coder, original vendor preserved */
   }
   const gate = gateDispatch(agentType, controlLevel);
   if (!gate.allowed) {
