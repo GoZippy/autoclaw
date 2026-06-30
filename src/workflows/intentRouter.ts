@@ -50,7 +50,7 @@ export interface CandidateModel {
 }
 
 export interface ZippyMeshRecommendModel {
-  (request: IntentRouterRequest): { providerId: string; model: string; reason?: string } | undefined;
+  (request: IntentRouterRequest): { providerId: string; model: string; reason?: string; harnessId?: string } | undefined;
 }
 
 export interface IntentRouterDecision {
@@ -60,6 +60,7 @@ export interface IntentRouterDecision {
   reason: string;
   rejected: RejectedModel[];
   usedRecommendation: boolean;
+  recommendedHarnessId?: string;
 }
 
 export interface RejectedModel {
@@ -101,9 +102,11 @@ export function routeWorkflowIntent(request: IntentRouterRequest): IntentRouterD
         scaffoldDecision,
         rejected,
         usedRecommendation: true,
+        ...(recommendation.harnessId ? { recommendedHarnessId: recommendation.harnessId } : {}),
         reason: withScaffoldReason(
           recommendation.reason ?? `ZippyMesh recommended ${selected.providerId}:${selected.model}.`,
           scaffoldDecision,
+          recommendation.harnessId,
         ),
       };
     }
@@ -155,11 +158,23 @@ function routeScaffold(request: IntentRouterRequest): ScaffoldSelectionDecision 
   });
 }
 
-function withScaffoldReason(reason: string, scaffoldDecision: ScaffoldSelectionDecision | undefined): string {
+function withScaffoldReason(
+  reason: string,
+  scaffoldDecision: ScaffoldSelectionDecision | undefined,
+  harnessId?: string,
+): string {
+  const parts: string[] = [];
   if (!scaffoldDecision?.selected) {
-    return reason;
+    if (harnessId) {
+      parts.push(`harness=${harnessId}`);
+    }
+  } else {
+    parts.push(`scaffold=${scaffoldDecision.selected.id}`);
+    if (harnessId) {
+      parts.push(`harness=${harnessId}`);
+    }
   }
-  return `${reason}; scaffold=${scaffoldDecision.selected.id}`;
+  return parts.length ? `${reason}; ${parts.join('; ')}` : reason;
 }
 
 function rejectionReason(

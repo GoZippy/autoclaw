@@ -129,14 +129,16 @@ Verification:
 
 ### OSL-3.2 - Scaffold Mutations
 
-Status: open
+Status: complete
+
+Owner: Codex
 
 Scope:
 
 - `src/workflows/scaffolds/mutate.ts`
-- `src/workflows/loops.ts`
-- `src/intelligence/contextPack.ts`
+- `src/workflows/scaffolds/index.ts`
 - `src/test/workflow-scaffoldMutations.test.ts`
+- `package.json`
 
 Acceptance:
 
@@ -145,15 +147,38 @@ Acceptance:
 - Mutation output is bounded and validates before execution.
 - No mutation may widen file scope or bypass policy without human approval.
 
+Implementation:
+
+- `mutateScaffoldVariant()` produces child `ScaffoldVariant`s with
+  `parentScaffoldId`, mutation metadata, deterministic child ids, and parseable
+  scaffold output.
+- Supported mutations update context mode, loop policy metadata, router
+  profile, best-of-N count, tool lane ids, and reviewer independence.
+- Validation rejects unbounded best-of-N, loop-policy, and tool-lane payloads.
+- Scope widening and policy relaxation require `humanApproved: true`.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/workflow-scaffoldMutations.test.js out/test/workflow-scaffoldSelector.test.js out/test/workflow-scaffolds.test.js out/test/workflow-loops.test.js`
+
 ### OSL-4.1 - Prompt Harness Registry
 
-Status: open
+Status: review
+
+Owner: kilocode; revision: codex
 
 Scope:
 
 - `src/llm/promptHarness.ts`
-- `src/llm/modelCatalog.ts`
+- `src/llm/types.ts`
+- `src/llm/zippymesh.ts`
+- `src/llm/ollama.ts`
+- `src/llm/lmstudio.ts`
 - `src/test/llm-promptHarness.test.ts`
+- `src/test/llm-types.test.ts`
+- `src/test/llm-zippymesh.test.ts`
+- `src/test/llm-ollama.test.ts`
 
 Acceptance:
 
@@ -162,24 +187,63 @@ Acceptance:
 - Providers can advertise supported harnesses.
 - Unsupported harness/model combinations are rejected with an actionable reason.
 
+Implementation:
+
+- `PromptHarnessContract` and `PromptHarnessRegistry` define and select
+  built-in OpenAI, Claude, Qwen XML, and DeepSeek R1 prompt harnesses.
+- `checkHarnessCompatibility()` applies model-family format rules even when a
+  custom harness declares a matching family, so misdeclared harnesses cannot
+  bypass role/tool/reasoning validation.
+- `ProviderCapabilities.promptHarnesses` lets providers and routers advertise
+  the harness ids they can safely serve.
+- ZippyMesh advertises the multi-family router harness set; Ollama and LM
+  Studio conservatively advertise OpenAI-compatible harness support.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/llm-promptHarness.test.js out/test/llm-types.test.js out/test/llm-zippymesh.test.js out/test/llm-ollama.test.js` - 65 passing.
+
 ### OSL-5.1 - Anti-Hacking Monitor
 
-Status: open
+Status: review
+
+Owner: codex
 
 Scope:
 
 - `src/workflows/scaffolds/monitor.ts`
+- `src/workflows/scaffolds/index.ts`
 - `src/workflows/contracts.ts`
 - `src/orchestrator/scopeLease.ts`
 - `src/test/workflow-antiHackingMonitor.test.ts`
+- `package.json`
 
 Acceptance:
 
 - Monitor blocks reads of hidden verifier paths.
 - Monitor blocks writes to verifier, hidden tests, run ledger, score ledger, and
   policy files unless explicitly allowed.
-- Out-of-scope edits map to `scope_conflict` or a specific monitor violation.
+- Out-of-scope edits map to `scope_violation` or a specific monitor violation.
 - Violation emits a finding_report payload shape and zeroes reward.
+
+Implementation:
+
+- `evaluateScaffoldMonitor()` checks declared reads/writes against hidden
+  verifier, hidden-test, run-ledger, score-ledger, policy, and declared-scope
+  globs.
+- Explicit `allowedWriteGlobs` exceptions can permit protected writes for
+  orchestrator-owned maintenance tasks.
+- Monitor findings carry `task_id`, `scaffold_id`, `agent`, severity, and the
+  underlying `AntiHackingViolation` so report writers can emit deterministic
+  `finding_report` payloads.
+- Reward integration is through the OSL-2.1 scorer: any anti-hacking violation
+  forces non-pass and reward `-1`.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/workflow-antiHackingMonitor.test.js out/test/workflow-scaffoldScore.test.js out/test/scopeLease.test.js out/test/workflow-contracts.test.js` - 35 passing.
 
 ### OSL-6.1 - VoidSpec Scaffold Metadata
 
@@ -210,14 +274,18 @@ Verification:
 
 ### OSL-6.2 - ZMLR Scaffold-Aware Recommendation
 
-Status: open
+Status: complete
+
+Owner: Codex
 
 Scope:
 
 - `src/llm/zippymesh.ts`
+- `src/llm/registry.ts`
 - `src/workflows/intentRouter.ts`
 - `docs/specs/llm-provider-s2-zmlr-mcp-route/spec.md`
 - `src/test/llm-zippymesh.test.ts`
+- `src/test/llm-registry.test.ts`
 - `src/test/workflow-intentRouter.test.ts`
 
 Acceptance:
@@ -227,3 +295,21 @@ Acceptance:
 - Responses can identify a `harnessId` alongside the model.
 - Older ZMLR responses still parse and fall back cleanly.
 - Intent router reasons mention scaffold/harness only when present.
+
+Implementation:
+
+- `ZippyMeshProvider.recommendModel()` now maps failure type, prompt harness,
+  allowed/required harnesses, and scaffold score hints into ZMLR's snake_case
+  MCP handler shape.
+- `recommend_model` responses may carry `harnessId`/`harness_id` in newer
+  recommendation objects while legacy string/object responses continue to
+  parse.
+- `LlmRegistry.getPreferred()` forwards optional `zmlrConstraints` and exposes
+  the returned `harnessId` on ZMLR picks.
+- `routeWorkflowIntent()` records `recommendedHarnessId` and appends
+  `harness=<id>` to the reason only when ZMLR supplied a harness.
+
+Verification:
+
+- `npm run compile`
+- `npx mocha --ui tdd --timeout 30000 out/test/llm-zippymesh.test.js out/test/llm-registry.test.js out/test/workflow-intentRouter.test.js`

@@ -23,6 +23,7 @@ const BASE_CAPS: ProviderCapabilities = {
   locality: 'local',
   reportsCost: false,
   modelFamilies: ['llama'],
+  promptHarnesses: ['openai-tools'],
 };
 
 suite('parseProviderRef', () => {
@@ -99,5 +100,15 @@ suite('mergeCapabilities', () => {
   test('omitted modelFamilies preserves base', () => {
     const out = mergeCapabilities(BASE_CAPS, { toolUse: true });
     assert.deepStrictEqual(out.modelFamilies, ['llama']);
+  });
+
+  test('override promptHarnesses replaces (not merges)', () => {
+    const out = mergeCapabilities(BASE_CAPS, { promptHarnesses: ['qwen-xml-tools'] });
+    assert.deepStrictEqual(out.promptHarnesses, ['qwen-xml-tools']);
+  });
+
+  test('omitted promptHarnesses preserves base', () => {
+    const out = mergeCapabilities(BASE_CAPS, { toolUse: true });
+    assert.deepStrictEqual(out.promptHarnesses, ['openai-tools']);
   });
 });

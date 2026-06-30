@@ -53,6 +53,8 @@ export interface ProviderCapabilities {
   reportsCost: boolean;
   /** Model families exposed (`llama`, `qwen`, `claude`, `gpt`, ...). */
   modelFamilies: string[];
+  /** Prompt harness ids this provider/router can safely serve. */
+  promptHarnesses?: string[];
 }
 
 /** A single chat message, role-tagged. */
@@ -268,6 +270,7 @@ export function mergeCapabilities(
     ...base,
     ...override,
     modelFamilies: override.modelFamilies ?? base.modelFamilies,
+    promptHarnesses: override.promptHarnesses ?? base.promptHarnesses,
   };
 }
 

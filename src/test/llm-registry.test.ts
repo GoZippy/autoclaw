@@ -19,13 +19,27 @@ import { OllamaProvider } from '../llm/ollama';
 import { LmStudioProvider } from '../llm/lmstudio';
 import { Oracle } from '../llm/oracle';
 
+interface CapturedFetchCall {
+  url: string;
+  body?: unknown;
+}
+
 function mkWorkspace(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'autoclaw-registry-'));
 }
 
-function makeFetch(routes: Record<string, { status: number; body: unknown }>): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
+function makeFetch(
+  routes: Record<string, { status: number; body: unknown }>,
+  capture?: CapturedFetchCall[],
+): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : (input as URL).toString();
+    if (capture) {
+      capture.push({
+        url,
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
+    }
     for (const [pattern, response] of Object.entries(routes)) {
       if (url.includes(pattern)) {
         return new Response(JSON.stringify(response.body), { status: response.status });
@@ -132,6 +146,70 @@ suite('LlmRegistry — oracle fallback branch (ZMLR unreachable)', () => {
     assert.strictEqual(pick!.provider.id, 'lmstudio');
     assert.strictEqual(pick!.via, 'oracle');
     assert.strictEqual(pick!.model, 'qwen2.5-coder-7b-instruct');
+  });
+});
+
+suite('LlmRegistry — ZMLR scaffold-aware recommendation branch', () => {
+  let workspace: string;
+  setup(() => {
+    workspace = mkWorkspace();
+  });
+  teardown(() => {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  });
+
+  test('getPreferred() forwards scaffold constraints and preserves harnessId', async () => {
+    const capture: CapturedFetchCall[] = [];
+    const fetchImpl = makeFetch(
+      {
+        '127.0.0.1:20128/v1/models': {
+          status: 200,
+          body: { data: [{ id: 'auto' }] },
+        },
+        '127.0.0.1:20128/mcp': {
+          status: 200,
+          body: {
+            success: true,
+            recommendations: [
+              { model: 'ollama/qwen3:14b', harnessId: 'qwen-xml-tools' },
+            ],
+            fallbackChain: ['ollama/qwen3:7b'],
+          },
+        },
+      },
+      capture,
+    );
+    const registry = new LlmRegistry({
+      workspaceRoot: workspace,
+      providers: [new ZippyMeshProvider({ fetchImpl })],
+      oracle: new Oracle({ workspaceRoot: workspace, ephemeral: true, fetchImpl }),
+    });
+
+    const pick = await registry.getPreferred({
+      hints: { intent: 'code' },
+      zmlrConstraints: {
+        failureType: 'acceptance_failure',
+        promptHarnessId: 'qwen-xml-tools',
+        allowedHarnesses: ['qwen-xml-tools', 'openai-tools'],
+        scaffoldScoreHints: [{ scaffoldId: 'scaffold-qwen-review', reward: 0.75 }],
+      },
+    });
+
+    assert.ok(pick);
+    assert.strictEqual(pick!.provider.id, 'zippymesh');
+    assert.strictEqual(pick!.model, 'ollama/qwen3:14b');
+    assert.strictEqual(pick!.via, 'zmlr-recommend');
+    assert.strictEqual(pick!.harnessId, 'qwen-xml-tools');
+
+    const mcpCall = capture.find((call) => call.url.endsWith('/mcp'));
+    assert.ok(mcpCall);
+    const input = (mcpCall!.body as { input: { constraints: Record<string, unknown> } }).input;
+    assert.strictEqual(input.constraints.failure_type, 'acceptance_failure');
+    assert.strictEqual(input.constraints.prompt_harness_id, 'qwen-xml-tools');
+    assert.deepStrictEqual(input.constraints.allowed_harnesses, ['qwen-xml-tools', 'openai-tools']);
+    assert.deepStrictEqual(input.constraints.scaffold_score_hints, [
+      { scaffold_id: 'scaffold-qwen-review', reward: 0.75 },
+    ]);
   });
 });
 
