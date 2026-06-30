@@ -452,3 +452,31 @@ suite('runner-codex: dispatch() with injected spawnFn', () => {
     assert.strictEqual(runner.id, 'codex');
   });
 });
+
+// SYNCHRONOUS spawn/execFile failures (EPERM in a sandbox) must RESOLVE, never
+// reject. A `.catch()` on the promise misses a throw that happens before the
+// promise is created; these inject a sync thrower to lock the fix env-independently
+// (the suites above only cover ASYNC 'error' events and the real-binary ENOENT path).
+suite('runner-codex: synchronous EPERM failures resolve, never reject', () => {
+  const epermThrow = () => {
+    throw Object.assign(new Error('spawn EPERM'), { code: 'EPERM' });
+  };
+
+  test('detect() resolves not_installed when execFile throws EPERM synchronously', async () => {
+    const runner = new CodexRunner({ execFileFn: epermThrow as unknown as typeof ExecFileType });
+    const result = await runner.detect(); // must resolve, not reject
+    assert.strictEqual(result.found, false);
+    assert.ok(
+      result.reason === 'not_installed' || result.reason === 'no_auth',
+      `expected not_installed/no_auth, got ${result.reason}`,
+    );
+  });
+
+  test('dispatch() resolves an error DispatchResult when spawn throws EPERM synchronously', async () => {
+    const runner = new CodexRunner({ spawnFn: epermThrow as unknown as typeof SpawnType });
+    const result = await runner.dispatch({ prompt: 'x', trust: 'auto', workingDir: process.cwd() });
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.exitCode, -1);
+    assert.strictEqual(result.errorClass, 'internal');
+  });
+});

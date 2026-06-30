@@ -16,7 +16,7 @@
  * @see docs/rfc/runner-bridge-contract.md §2, §3, §7
  */
 
-import { spawn, execFile } from 'child_process';
+import { spawn, execFile, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as crypto from 'crypto';
 import { promisify } from 'util';
 import type {
@@ -140,20 +140,27 @@ export class CodexRunner implements Runner {
   }
 
   /** Run `<bin> --version`; resolves null if the binary is absent. */
-  private probeVersion(): Promise<{ version: string } | null> {
-    const execFileAsync = promisify(this.execFileFn);
-    return execFileAsync(this.bin, ['--version'], { timeout: 10_000 })
-      .then(({ stdout }) => ({ version: stdout.trim() || 'unknown' }))
-      .catch(() => null);
+  private async probeVersion(): Promise<{ version: string } | null> {
+    // try/catch (not just .catch) so a SYNCHRONOUS throw from execFile/spawn —
+    // EPERM in a sandbox, ENOENT on some platforms — yields `null` (not installed)
+    // instead of rejecting detect().
+    try {
+      const { stdout } = await promisify(this.execFileFn)(this.bin, ['--version'], { timeout: 10_000 });
+      return { version: stdout.trim() || 'unknown' };
+    } catch {
+      return null;
+    }
   }
 
   /** Resolve the absolute path of the codex executable, best-effort. */
-  private probeCodexPath(): Promise<string> {
-    const execFileAsync = promisify(this.execFileFn);
+  private async probeCodexPath(): Promise<string> {
     const which = process.platform === 'win32' ? 'where' : 'which';
-    return execFileAsync(which, [this.bin], { timeout: 10_000 })
-      .then(({ stdout }) => stdout.split(/\r?\n/)[0].trim() || this.bin)
-      .catch(() => this.bin);
+    try {
+      const { stdout } = await promisify(this.execFileFn)(which, [this.bin], { timeout: 10_000 });
+      return stdout.split(/\r?\n/)[0].trim() || this.bin;
+    } catch {
+      return this.bin;
+    }
   }
 
   /**
@@ -193,10 +200,29 @@ export class CodexRunner implements Runner {
     const args = ['-q', ...codexTrustFlags(opts.trust), opts.prompt];
 
     return await new Promise<DispatchResult>((resolve) => {
-      const child = this.spawnFn(this.bin, args, {
-        cwd: opts.workingDir,
-        env: { ...process.env, ...(opts.env ?? {}) },
-      });
+      let child: ChildProcessWithoutNullStreams;
+      try {
+        child = this.spawnFn(this.bin, args, {
+          cwd: opts.workingDir,
+          env: { ...process.env, ...(opts.env ?? {}) },
+        });
+      } catch {
+        // Synchronous spawn failure (EPERM in a sandbox, ENOENT on some
+        // platforms) — resolve an error DispatchResult, never reject. Mirrors
+        // the async child.on('error') path below.
+        this.lastDispatchAt = new Date().toISOString();
+        this.recentErrors.set('internal', (this.recentErrors.get('internal') ?? 0) + 1);
+        resolve({
+          ok: false,
+          sessionId,
+          exitCode: -1,
+          finishedAt: this.lastDispatchAt,
+          durationMs: Date.now() - startedAt,
+          errorClass: 'internal',
+          stdoutTail: '',
+        });
+        return;
+      }
 
       let stdout = '';
       let stderr = '';
