@@ -60,7 +60,12 @@ export interface KgHandle {
   close(): void;
 }
 
-const DEGRADED_KG: KnowledgeGraph = {
+/**
+ * The no-op KnowledgeGraph returned when no SQLite driver loads. Exported so the
+ * degrade contract (writes no-op, reads return `[]`) can be asserted directly in
+ * tests without needing to force a driver failure cross-platform.
+ */
+export const DEGRADED_KG: KnowledgeGraph = {
   async recordThought(): Promise<ThoughtId> {
     return ""; // no-op id
   },
@@ -80,6 +85,12 @@ const DEGRADED_KG: KnowledgeGraph = {
     return [];
   },
   async since(): Promise<Thought[]> {
+    return [];
+  },
+  async thoughtsForTask(): Promise<Thought[]> {
+    return [];
+  },
+  async edgesForNode(): Promise<Edge[]> {
     return [];
   },
   async allThoughts(): Promise<Thought[]> {

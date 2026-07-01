@@ -239,6 +239,57 @@ export class KnowledgeGraphStore implements KnowledgeGraph {
     return this.filterStream({ since: iso });
   }
 
+  async thoughtsForTask(taskId: string, opts: { project?: string } = {}): Promise<Thought[]> {
+    if (typeof taskId !== "string" || taskId === "") return [];
+    const where = ["task_id = ?"];
+    const params: unknown[] = [taskId];
+    if (opts.project) {
+      where.push("project = ?");
+      params.push(opts.project);
+    }
+    // Oldest→newest = activity-log order; served by `thoughts_task_created`.
+    const rows = this.driver
+      .prepare(
+        `SELECT * FROM thoughts WHERE ${where.join(" AND ")} ORDER BY created_at ASC`,
+      )
+      .all(...params) as ThoughtRow[];
+    return rows.map(rowToThought);
+  }
+
+  async edgesForNode(nodeId: string): Promise<Edge[]> {
+    if (typeof nodeId !== "string" || nodeId === "") return [];
+    // Two indexed lookups (edges_from_kind on from_id, edges_to on to_id),
+    // unioned + deduped by the (from, kind, to) triple. UNION already collapses
+    // identical rows across the two arms, but dedupe defensively in JS too so
+    // a self-edge (from_id = to_id = nodeId) is never double-counted.
+    const rows = this.driver
+      .prepare(
+        `SELECT from_id, kind, to_id, meta_json FROM edges WHERE from_id = ?
+         UNION
+         SELECT from_id, kind, to_id, meta_json FROM edges WHERE to_id = ?`,
+      )
+      .all(nodeId, nodeId) as {
+      from_id: string;
+      kind: string;
+      to_id: string;
+      meta_json: string | null;
+    }[];
+    const seen = new Set<string>();
+    const edges: Edge[] = [];
+    for (const r of rows) {
+      const key = `${r.from_id}|${r.kind}|${r.to_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        from: r.from_id,
+        kind: r.kind,
+        to: r.to_id,
+        ...(r.meta_json ? { meta: safeParse(r.meta_json) } : {}),
+      });
+    }
+    return edges;
+  }
+
   async allThoughts(opts: { limit?: number } = {}): Promise<Thought[]> {
     const limit = clampInt(opts.limit ?? 2000, 1, 20000);
     const rows = this.driver

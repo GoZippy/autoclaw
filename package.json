@@ -341,6 +341,10 @@
         "title": "AutoClaw: Knowledge Graph — Browse & Visualize"
       },
       {
+        "command": "autoclaw.kg.backfillProvenance",
+        "title": "AutoClaw: Knowledge Graph — Backfill Task Provenance"
+      },
+      {
         "command": "autoclaw.program.create",
         "title": "AutoClaw: Create Program… (cross-repo registry)"
       },

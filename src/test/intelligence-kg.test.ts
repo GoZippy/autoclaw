@@ -17,7 +17,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { openKnowledgeGraph } from '../intelligence/kg';
+import { openKnowledgeGraph, DEGRADED_KG } from '../intelligence/kg';
 import { openSqliteDriver } from '../intelligence/vector/sqliteDriver';
 import type { IntelligenceConfig } from '../intelligence/types';
 
@@ -214,6 +214,86 @@ suite('intelligence-kg', function () {
     } finally {
       h.close();
     }
+  });
+
+  test('thoughtsForTask returns a task timeline oldest->newest, project-scoped', async function () {
+    const h = openKnowledgeGraph({ dbPath: freshDbPath(), config: noneConfig() });
+    try {
+      // Two events on task BL-30 in project P (out-of-order insert), one same-id
+      // task in a different project to prove the project filter.
+      await h.kg.recordThought({
+        project: 'P', agent: 'orchestrator', task_id: 'BL-30', kind: 'created',
+        text: 'created', created_at: '2026-01-02T00:00:00.000Z',
+      });
+      await h.kg.recordThought({
+        project: 'P', agent: 'claude-code', task_id: 'BL-30', kind: 'done',
+        text: 'done', created_at: '2026-01-03T00:00:00.000Z',
+      });
+      await h.kg.recordThought({
+        project: 'P', agent: 'claude-code', task_id: 'BL-30', kind: 'claimed',
+        text: 'claimed', created_at: '2026-01-01T00:00:00.000Z',
+      });
+      await h.kg.recordThought({
+        project: 'OTHER', agent: 'x', task_id: 'BL-30', kind: 'created', text: 'other project',
+      });
+
+      const all = await h.kg.thoughtsForTask('BL-30');
+      assert.strictEqual(all.length, 4, 'every thought for the task id across projects');
+      // oldest -> newest
+      assert.deepStrictEqual(all.map((t) => t.kind), ['claimed', 'created', 'done', 'created']);
+
+      const scoped = await h.kg.thoughtsForTask('BL-30', { project: 'P' });
+      assert.strictEqual(scoped.length, 3, 'project filter excludes OTHER');
+      assert.ok(scoped.every((t) => t.project === 'P'));
+      assert.deepStrictEqual(scoped.map((t) => t.kind), ['claimed', 'created', 'done'], 'oldest->newest');
+
+      assert.deepStrictEqual(await h.kg.thoughtsForTask(''), [], 'empty task id -> []');
+      assert.deepStrictEqual(await h.kg.thoughtsForTask('nope'), [], 'unknown task id -> []');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('edgesForNode unions incoming + outgoing edges, deduped', async function () {
+    const h = openKnowledgeGraph({ dbPath: freshDbPath(), config: noneConfig() });
+    try {
+      const node = 'task:P:BL-30';
+      // outgoing: node -> thoughtA (activity); node -> task:P:BL-31 (derived_from)
+      await h.kg.recordRelation(node, 'activity', 'thoughtA', { kind: 'created' });
+      await h.kg.recordRelation('task:P:BL-31', 'derived_from', node, { reason: 'follow-up' });
+      // incoming: agent:x -> node (claimed)
+      await h.kg.recordRelation('agent:x', 'claimed', node);
+      // an unrelated edge that must NOT appear
+      await h.kg.recordRelation('agent:x', 'reviewed', 'task:P:ZZ');
+
+      const edges = await h.kg.edgesForNode(node);
+      const keys = edges.map((e) => `${e.from}|${e.kind}|${e.to}`).sort();
+      assert.deepStrictEqual(keys, [
+        'agent:x|claimed|task:P:BL-30',       // incoming
+        'task:P:BL-30|activity|thoughtA',      // outgoing
+        'task:P:BL-31|derived_from|task:P:BL-30', // incoming
+      ], 'both directions, unrelated edge excluded');
+
+      // dedupe: a self-edge (from = to = node) appears in both arms -> once only.
+      await h.kg.recordRelation(node, 'self', node);
+      const withSelf = await h.kg.edgesForNode(node);
+      const selfCount = withSelf.filter((e) => e.kind === 'self').length;
+      assert.strictEqual(selfCount, 1, 'self-edge is not double-counted');
+
+      // meta round-trips
+      const activity = edges.find((e) => e.kind === 'activity')!;
+      assert.strictEqual((activity.meta as { kind?: string }).kind, 'created');
+
+      assert.deepStrictEqual(await h.kg.edgesForNode(''), [], 'empty node id -> []');
+    } finally {
+      h.close();
+    }
+  });
+
+  test('degraded handle returns [] for thoughtsForTask + edgesForNode (no throw)', async function () {
+    assert.deepStrictEqual(await DEGRADED_KG.thoughtsForTask('BL-30'), []);
+    assert.deepStrictEqual(await DEGRADED_KG.thoughtsForTask('BL-30', { project: 'P' }), []);
+    assert.deepStrictEqual(await DEGRADED_KG.edgesForNode('task:P:BL-30'), []);
   });
 
   test('degraded handle no-ops without throwing', async function () {

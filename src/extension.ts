@@ -112,7 +112,7 @@ import { defaultAgentTypeForRunner, agentTypeProfile, AGENT_TYPES, type AgentTyp
 import { setFleetHalted, startTriggerHooksRuntime } from './hooks/triggerHooks';
 // Track-record ledger (REP-1) — record reviewed-task outcomes for reputation routing.
 import { recordTaskOutcome } from './reputation';
-import { recordOutcomeEdge } from './intelligence/kgRecord';
+import { recordOutcomeEdge, backfillTaskProvenance } from './intelligence/kgRecord';
 import {
   renderAgentList, renderAwaitingYou, payloadExcerpt, filterAwaitingYou,
   renderFabricHealth, renderPanelFooter, renderStatusLegend,
@@ -816,6 +816,29 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand('autoclaw.kg.openDashboard', async () => {
       await kgOpenDashboardCommand();
+    })
+  );
+  // KG-P4: one-shot backfill of per-task lifecycle provenance from the artifacts
+  // already on disk (handoff sidecars + state.json catalog). FREE — no gate.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('autoclaw.kg.backfillProvenance', async () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        void vscode.window.showWarningMessage('AutoClaw: open a workspace folder before backfilling KG provenance.');
+        return;
+      }
+      const log = (m: string): void => getKgOutputChannel().appendLine(m);
+      try {
+        const res = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'AutoClaw: backfilling KG task provenance…' },
+          () => backfillTaskProvenance(workspaceRoot, { log }),
+        );
+        void vscode.window.showInformationMessage(
+          `AutoClaw: KG provenance backfill complete — recorded ${res.recorded}, skipped ${res.skipped}.`,
+        );
+      } catch (err) {
+        void vscode.window.showErrorMessage(`AutoClaw: KG provenance backfill failed — ${(err as Error).message}`);
+      }
     })
   );
 

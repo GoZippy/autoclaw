@@ -44,6 +44,7 @@ export function createKgSchema(driver: SqliteDriver, dimension: number): KgCapab
     CREATE INDEX IF NOT EXISTS thoughts_project_created ON thoughts(project, created_at DESC);
     CREATE INDEX IF NOT EXISTS thoughts_agent_created   ON thoughts(agent, created_at DESC);
     CREATE INDEX IF NOT EXISTS thoughts_created         ON thoughts(created_at DESC);
+    CREATE INDEX IF NOT EXISTS thoughts_task_created    ON thoughts(task_id, created_at);
     CREATE INDEX IF NOT EXISTS thoughts_valid_from      ON thoughts(valid_from);
     CREATE INDEX IF NOT EXISTS thoughts_valid_to        ON thoughts(valid_to);
   `);

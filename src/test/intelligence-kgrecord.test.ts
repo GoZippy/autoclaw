@@ -15,8 +15,11 @@
  */
 
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
-import { recordCoordinationToKg, recordOrchestrationEventsToKg, recordLearningsToKg, recordOutcomeEdge, OrchestrationEvent } from '../intelligence/kgRecord';
+import { recordCoordinationToKg, recordOrchestrationEventsToKg, recordLearningsToKg, recordOutcomeEdge, recordLifecycleEventToKg, backfillTaskProvenance, lifecycleThoughtId, OrchestrationEvent } from '../intelligence/kgRecord';
 import { CoordinationSignals } from '../intelligence/coordinationSignals';
 import type { KnowledgeGraph } from '../intelligence/kg/types';
 
@@ -282,6 +285,141 @@ suite('intelligence-kgrecord', function () {
       const res = await recordOutcomeEdge(WS, outcome, { deps: { getKg: () => { throw new Error('no driver'); } } });
       assert.strictEqual(res.recorded, 0);
       assert.strictEqual(res.skipped, 1);
+    });
+  });
+
+  suite('recordLifecycleEventToKg', () => {
+    test('ensures the task node, writes the lifecycle thought + activity edge + caller edges', async () => {
+      const f = fakeKg();
+      const res = await recordLifecycleEventToKg(WS, {
+        taskId: 'BL-30', sprint: 2, agent: 'claude-code', kind: 'created',
+        text: 'Task BL-30 created: wire the board', discriminator: 'BL-30',
+        meta: { source: 'catalog' },
+        edges: [{ from: 'task:proj:BL-30', kind: 'implements', to: 'spec:R1', meta: { source: 'catalog' } }],
+      }, { deps: { getKg: () => f.kg } });
+      assert.ok(res.recorded > 0);
+
+      // task entity node ensured
+      assert.ok([...f.ids].some((id) => id.startsWith('task:') && id.endsWith(':BL-30')), 'task node');
+
+      // lifecycle thought with the deterministic evt: id + stringified sprint
+      const evt = f.recorded.find((t) => t.kind === 'created')!;
+      assert.ok(evt.id!.startsWith('evt:') && evt.id!.includes(':BL-30:created:BL-30'), 'evt id scheme');
+      assert.strictEqual((evt as any).sprint, '2', 'sprint stringified into TEXT column');
+      assert.strictEqual(evt.agent, 'claude-code');
+      assert.strictEqual(evt.task_id, 'BL-30');
+      assert.strictEqual((evt.meta as any).source, 'catalog');
+
+      const kinds = [...f.edges.values()].map((e) => e.kind).sort();
+      assert.deepStrictEqual(kinds, ['activity', 'implements']);
+      const activity = [...f.edges.values()].find((e) => e.kind === 'activity')!;
+      assert.ok(activity.from.endsWith(':BL-30') && activity.to === evt.id, 'activity: task node -> thought');
+      assert.strictEqual((activity.meta as any).kind, 'created');
+    });
+
+    test('idempotent — the deterministic id makes a second identical call a no-op', async () => {
+      const f = fakeKg();
+      const ev = { taskId: 'BL-30', agent: 'claude-code', kind: 'done', text: 'done', discriminator: 'sess-1' } as const;
+      await recordLifecycleEventToKg(WS, ev, { deps: { getKg: () => f.kg } });
+      const nodes1 = f.ids.size, edges1 = f.edges.size, thoughts1 = f.recorded.length;
+      await recordLifecycleEventToKg(WS, ev, { deps: { getKg: () => f.kg } });
+      assert.strictEqual(f.recorded.length, thoughts1, 'no new thoughts (deterministic id dedup)');
+      assert.strictEqual(f.ids.size, nodes1, 'no new nodes');
+      assert.strictEqual(f.edges.size, edges1, 'no new edges (PK = triple)');
+    });
+
+    test('skips malformed input and is degrade-safe (a degraded KG -> no throw, no writes)', async () => {
+      const f = fakeKg();
+      // missing required fields -> no-op, no writes
+      assert.deepStrictEqual(
+        await recordLifecycleEventToKg(WS, { taskId: '', agent: 'x', kind: 'created', text: 't', discriminator: 'd' }, { deps: { getKg: () => f.kg } }),
+        { recorded: 0, skipped: 0 },
+      );
+      assert.strictEqual(f.recorded.length, 0);
+
+      // degraded KG (open throws) -> counted skipped, never throws, no writes
+      const res = await recordLifecycleEventToKg(WS, { taskId: 'BL-30', agent: 'x', kind: 'created', text: 't', discriminator: 'd' }, {
+        deps: { getKg: () => { throw new Error('no driver'); } },
+      });
+      assert.strictEqual(res.recorded, 0);
+      assert.strictEqual(res.skipped, 1);
+    });
+
+    test('lifecycleThoughtId is stable + encodes the natural key', () => {
+      assert.strictEqual(lifecycleThoughtId('proj', 'BL-30', 'done', 'sess-1'), 'evt:proj:BL-30:done:sess-1');
+    });
+  });
+
+  suite('backfillTaskProvenance', () => {
+    /** Build a synthetic workspace with handoff sidecars + a state.json catalog. */
+    function makeWorkspace(): string {
+      const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'kg-backfill-'));
+      const handoffs = path.join(ws, '.autoclaw', 'orchestrator', 'comms', 'handoffs');
+      fs.mkdirSync(handoffs, { recursive: true });
+      fs.writeFileSync(path.join(handoffs, 'BL-30-abc.json'), JSON.stringify({
+        task_id: 'BL-30', agent_id: 'claude-code', session_id: 'sess-30', timestamp: '2026-01-01T00:00:00.000Z',
+        files_changed: ['a.ts'], files_not_touched: [], integration_points: [], tests_run: [], risks: [],
+        next_task_suggested: 'BL-31', summary: 'landed BL-30', branch: 'dev-beta',
+      }));
+      fs.writeFileSync(path.join(handoffs, 'BL-7a-def.json'), JSON.stringify({
+        task_id: 'BL-7a', agent_id: 'kilocode', session_id: 'sess-7a', timestamp: '2026-01-02T00:00:00.000Z',
+        files_changed: [], files_not_touched: [], integration_points: [], tests_run: [], risks: [], summary: 'done 7a',
+      }));
+      // a malformed sidecar that must be skipped, not abort the walk
+      fs.writeFileSync(path.join(handoffs, 'broken.json'), '{ not json');
+      fs.writeFileSync(path.join(ws, '.autoclaw', 'orchestrator', 'state.json'), JSON.stringify({
+        tasks: [
+          { id: 'BL-30', title: 'wire the board', sprint: 2, status: 'done' },
+          { id: 'BL-31', title: 'panel drilldown', sprint: 2, status: 'open', spec: 'R-7' },
+        ],
+      }));
+      return ws;
+    }
+
+    test('ingests handoffs + catalog into deterministic lifecycle thoughts, idempotent on re-run', async () => {
+      const ws = makeWorkspace();
+      try {
+        const f = fakeKg();
+        const first = await backfillTaskProvenance(ws, { deps: { getKg: () => f.kg } });
+        assert.ok(first.recorded > 0, 'first run records');
+
+        // two `done` thoughts (from handoffs) + two `created` thoughts (from catalog)
+        const done = f.recorded.filter((t) => t.kind === 'done');
+        assert.strictEqual(done.length, 2, 'one done per handoff (malformed skipped)');
+        assert.ok(done.some((t) => t.id === lifecycleThoughtId(f.recorded[0].project, 'BL-30', 'done', 'sess-30')), 'done id uses session_id discriminator');
+
+        const created = f.recorded.filter((t) => t.kind === 'created');
+        assert.strictEqual(created.length, 2, 'one created per catalog task');
+
+        // spec node + implements edge for BL-31 (spec R-7)
+        assert.ok([...f.ids].some((id) => id === 'spec:R-7'), 'spec node ensured');
+        assert.ok([...f.edges.values()].some((e) => e.kind === 'implements' && e.to === 'spec:R-7'), 'implements edge');
+        // derived_from edge from the BL-30 handoff (next_task_suggested = BL-31)
+        assert.ok([...f.edges.values()].some((e) => e.kind === 'derived_from'), 'derived_from edge from next_task_suggested');
+
+        // Idempotency = the graph does not GROW on re-run. (Edges are INSERT OR
+        // REPLACE, so a re-run re-writes the same triples — that is counted as a
+        // write attempt but never adds a row; thoughts dedup by deterministic id.)
+        const nodes1 = f.ids.size, edges1 = f.edges.size, thoughts1 = f.recorded.length;
+        await backfillTaskProvenance(ws, { deps: { getKg: () => f.kg } });
+        assert.strictEqual(f.recorded.length, thoughts1, 'no new thoughts (deterministic ids)');
+        assert.strictEqual(f.ids.size, nodes1, 'no new nodes');
+        assert.strictEqual(f.edges.size, edges1, 'no new edges (PK = triple)');
+      } finally {
+        fs.rmSync(ws, { recursive: true, force: true });
+      }
+    });
+
+    test('an absent .autoclaw tree records nothing and never throws', async () => {
+      const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'kg-backfill-empty-'));
+      try {
+        const f = fakeKg();
+        const res = await backfillTaskProvenance(ws, { deps: { getKg: () => f.kg } });
+        assert.deepStrictEqual(res, { recorded: 0, skipped: 0 });
+        assert.strictEqual(f.recorded.length, 0);
+      } finally {
+        fs.rmSync(ws, { recursive: true, force: true });
+      }
     });
   });
 });

@@ -94,6 +94,20 @@ export interface KnowledgeGraph {
   forProject(project: string, opts?: { since?: string }): Promise<Thought[]>;
   since(iso: string): Promise<Thought[]>;
 
+  /**
+   * Every thought for a task, oldest→newest — the board's per-task activity
+   * timeline. Uses the `thoughts_task_created` index. `opts.project` scopes to
+   * a single project namespace when the same task id occurs in more than one.
+   */
+  thoughtsForTask(taskId: string, opts?: { project?: string }): Promise<Thought[]>;
+
+  /**
+   * Every edge touching `nodeId` — incoming (`to_id = nodeId`) and outgoing
+   * (`from_id = nodeId`), deduped by the (from, kind, to) triple. This is the
+   * lineage lookup for a task/entity node (parents + children).
+   */
+  edgesForNode(nodeId: string): Promise<Edge[]>;
+
   /** All thoughts, newest first — for the viewer/visualizer. Bounded by `limit` (default 2000). */
   allThoughts(opts?: { limit?: number }): Promise<Thought[]>;
   /** All stored relations/edges — for the viewer/visualizer. Bounded by `limit` (default 5000). */
