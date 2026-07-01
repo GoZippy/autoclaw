@@ -212,6 +212,40 @@ export {
   renderContextPackMarkdown,
 } from './contextPack';
 
+// context-spine: metadata-first references for retrieval and cross-agent context
+export {
+  CONTEXT_SPINE_SCHEMA,
+  ContextBlockLevel,
+  ContextSpan,
+  ContextBlockProvenance,
+  ContextBlockIdParts,
+  ContextBlockRef,
+  ContextBlockRecord,
+  ContextSpineQuery,
+  CoarseToFineOptions,
+  CoarseToFineResult,
+  contextBlockId,
+  sanitizeContextBlockRecord,
+  parseContextBlockRecord,
+  toContextBlockRef,
+  scoreContextBlock,
+  queryContextBlocks,
+  coarseToFineContext,
+} from './contextSpine';
+export {
+  CONTEXT_SPINE_DIR,
+  CONTEXT_BLOCKS_FILE,
+  ContextReadResult,
+  ContextQueryResult,
+  contextSpineDir,
+  contextBlocksPath,
+  appendContextBlock,
+  updateContextBlock,
+  readContextBlocks,
+  queryContextIndex,
+  coarseToFineContextIndex,
+} from './contextIndex';
+
 // host-context: per-host ambient project digest (Channel C delivery)
 export {
   HostContextTarget,
