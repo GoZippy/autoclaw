@@ -10,7 +10,7 @@ survey recommendation).
 | # | Item | Status | Blocked on |
 |---|------|--------|-----------|
 | VF-1 | Replace hand-rolled `parseVoidSpecYaml` with a real YAML parser | open | — |
-| VF-2 | Write the `tasks.yaml` contract doc | open | — |
+| VF-2 | Write the `tasks.yaml` contract doc | done | — |
 | VF-3 | Implement the deferred `runner-voidspec` dispatch runner | blocked | VoidSpec exposing a programmatic API |
 
 ---
@@ -27,14 +27,14 @@ multiline scalars.
 - [ ] `src/test/voidspec.test.ts` stays green; add cases for the above
 - [ ] no change to the sync conflict rule
 
-## VF-2 — Write `docs/specs/voidspec-tasks-yaml.md`
+## VF-2 — Write `docs/specs/taskspec/tasks-yaml.md`
 The VoidSpec `tasks.yaml` format (stable `VS-<id>` IDs) is the canonical
 "what to build" contract, but it lives only implicitly in `types.ts` + `sync.ts`.
 
 **Done when:**
-- [ ] the schema is documented field-by-field with an example `tasks.yaml`
-- [ ] the bidirectional-sync conflict rule (**VoidSpec wins "what", AutoClaw wins "how far"**) and the status-synonym normalization (~12 synonyms) are written down
-- [ ] `src/voidspec/types.ts` gets a cross-link comment to github.com/GoZippy/VoidSpec so the relationship survives author turnover
+- [x] the schema is documented field-by-field with an example `tasks.yaml`
+- [x] the bidirectional-sync conflict rule (**VoidSpec wins "what", AutoClaw wins "how far"**) and the status-synonym normalization (~12 synonyms) are written down
+- [x] `src/voidspec/types.ts` gets a cross-link comment to github.com/GoZippy/VoidSpec so the relationship survives author turnover
 
 *(V3.1 quick-win #1.)*
 

@@ -1,19 +1,21 @@
 /**
- * types.ts — Shared types for the VoidSpec ↔ AutoClaw integration (G1/G2).
+ * types.ts — Shared types for the TaskSpec/VoidSpec ↔ AutoClaw integration.
  *
- * VoidSpec is an external spec-driven task tracker. It stores its task list in
- * a `tasks.yaml` file (typically under a `.voidspec/` directory). AutoClaw
- * tracks execution work in sprint YAML files under
- * `.autoclaw/orchestrator/sprints/`.
+ * TaskSpec is AutoClaw's product name for the canonical `tasks.yaml` contract:
+ * docs/specs/taskspec/tasks-yaml.md. VoidSpec is a compatible external
+ * spec-driven task tracker (github.com/GoZippy/VoidSpec) that produces the same
+ * shape, typically under `.voidspec/tasks.yaml`. AutoClaw tracks execution work
+ * in sprint YAML files under `.autoclaw/orchestrator/sprints/`.
  *
  * This module is pure type/interface declarations plus a couple of trivial
  * pure helpers — zero runtime cost, zero LLM calls, zero I/O.
  *
  * ── Stable-ID convention (COORDINATION §2.11) ──────────────────────────────
- *   Every VoidSpec task carries a stable `id` that never changes across edits.
- *   When such a task is mirrored into AutoClaw it is given the shared-namespace
- *   id `VS-<id>` so both systems can refer to the same unit of work without
- *   collision with native AutoClaw task ids (which use `<Letter><digit>` form).
+ *   Every TaskSpec/VoidSpec task carries a stable `id` that never changes
+ *   across edits. When such a task is mirrored into AutoClaw it is given the
+ *   shared-namespace id `VS-<id>` so both systems can refer to the same unit of
+ *   work without collision with native AutoClaw task ids (which use
+ *   `<Letter><digit>` form).
  */
 
 import type { ModelLocality, WorkflowIntent } from '../workflows/types';

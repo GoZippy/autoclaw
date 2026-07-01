@@ -284,7 +284,7 @@ Acceptance:
 
 ### SPEC-1 - TaskSpec Contract Document
 
-Status: open
+Status: review
 
 Scope:
 
