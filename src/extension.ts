@@ -3466,25 +3466,28 @@ async function writeAgentHeartbeats(workspaceRoot: string, commsDir: string): Pr
   const hostAgentId = detectAutoclawHostAgent(vscode.env.appName ?? '');
 
   for (const agent of detectedAgents) {
-    // PRESENCE GATE — three classes of agent, only two get live heartbeats:
-    //   (a) extension-backed agent whose extension is currently activated
-    //   (b) the host IDE itself (Antigravity in Antigravity IDE, Cursor in
-    //       Cursor, etc.)
-    //   (c) "registered but absent" — workspace has the agent's rules dir
-    //       (.agent, .cursor) but the agent isn't actually loaded. We skip
-    //       writing a heartbeat for (c) so host-side activity (file saves,
-    //       visible editors) doesn't get falsely attributed to an agent
-    //       that isn't running.
+    // PRESENCE GATE — the tick may stamp a live heartbeat ONLY for the host
+    // agent. Everyone else owns their own presence.
+    //
+    // The old gate also stamped any agent whose EXTENSION was activated. That
+    // conflated "installed + loaded" (detected) with "a session is actually
+    // running" (live): a peer like Kilo Code auto-activates its extension at
+    // IDE startup, so the tick wrote it a fresh heartbeat every cycle — same
+    // millisecond timestamp as the host, no session_id, and a `status` copied
+    // from HOST file-save / editor activity. The panel then showed the peer as
+    // "ACTIVE · Ns ago" even though no chat session existed. (Reported by a
+    // Claude Code session in another workspace; confirmed against runtime.)
+    //
+    // A real peer agent following the cross-agent protocol self-writes its own
+    // heartbeat (REGISTER stamps `<agent>.json` with its session_id; SYNC
+    // refreshes it). So the honest model is: the host stamps the host; every
+    // non-host peer's liveness is exactly what that peer last wrote — and it is
+    // allowed to go stale when the peer stops writing.
     const isHost = agent.id === hostAgentId;
-    const ext = agent.extensionId ? vscode.extensions.getExtension(agent.extensionId) : undefined;
-    const extActive = !!ext?.isActive;
-    const isRegisteredButAbsent = !isHost && !extActive;
-
-    if (isRegisteredButAbsent) {
-      // Do not fabricate a heartbeat. Leave the previous file in place so
-      // operators can see when it last legitimately ticked; downstream
-      // consumers should compare timestamp to wall clock + treat stale
-      // heartbeats as "presence unknown."
+    if (!isHost) {
+      // Never fabricate or refresh a peer's heartbeat. Leave whatever the peer
+      // itself last wrote in place; downstream consumers compare its timestamp
+      // to the wall clock and treat a stale heartbeat as "presence unknown."
       continue;
     }
 
