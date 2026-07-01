@@ -1495,6 +1495,37 @@ th {
 .agent-actions .btn-evict:hover {
   background: var(--vscode-inputValidation-errorBackground, rgba(244, 135, 113, 0.15));
 }
+/* Start / Onboard — the one-click affordance for a detected-but-not-live agent.
+   Emphasised (button-family accent) so it reads as the primary next action. */
+.agent-actions .btn-start {
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+  border-color: var(--vscode-button-background, #0e639c);
+  font-weight: 600;
+}
+.agent-actions .btn-start:hover {
+  background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+/* loop_mechanism badge — does this agent auto-poll or need a manual start.
+   Neutral by default; the manual-start (plain-message) variant is tinted so a
+   dark agent that needs a human to press send stands out. */
+.loop-mech {
+  font-size: 0.68em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+  margin-left: 4px;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 22%, transparent);
+}
+.loop-mech.loop-mech-plain-message {
+  background: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 18%, transparent);
+  color: var(--vscode-charts-yellow, #d7ba7d);
+  border-color: color-mix(in srgb, var(--vscode-charts-yellow, #d7ba7d) 40%, transparent);
+}
 
 /* Follow-up #4: compact per-agent cost line (tokens / $ / dispatches). Muted,
    one-line, same visual family as .workload-rollup / .inbox-summary labels. */

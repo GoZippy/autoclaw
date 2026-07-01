@@ -135,7 +135,7 @@ import {
 import { LanGossipRelay, LAN_GOSSIP_DEFAULT_PORT } from './fleet/lanGossipRelay';
 import { createInvite, listInvites, revokeInvite, writeInvite, type AdmitPolicy, type Invite } from './fleet/invites';
 import { computePendingAgents, admitAgent } from './fleet/pending';
-import { renderJoinPromptForInvite, JOIN_TARGETS } from './fleet/joinPrompt';
+import { renderJoinPromptForInvite, JOIN_TARGETS, type JoinTargetConvention } from './fleet/joinPrompt';
 import { agentTypeForRole } from './fleet/roleType';
 import { TEAM_TEMPLATES, getTeamTemplate, recommendedTemplate, seatSummary } from './fleet/teamTemplates';
 import { scaffoldAgent, keepaliveProfileFor } from './fleet/scaffold';
@@ -911,7 +911,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('autoclaw.fleet.decline', () => fleetDeclineCommand()),
     // Generate a ready-to-paste join prompt for a chosen tool (Codex/Claude
     // Desktop/OpenClaw/Hermes/…), bundling a fresh invite token + lane steps.
-    vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', () => fleetJoinPromptCommand()),
+    vscode.commands.registerCommand('autoclaw.fleet.joinPrompt', (arg?: { agentId?: string }) => fleetJoinPromptCommand(arg)),
     // Add a whole agent team from a ready-made template (gallery → preview → fan-out).
     vscode.commands.registerCommand('autoclaw.fleet.addTeam', () => fleetAddTeamCommand()),
     // Open the "Build your first agent team" getting-started walkthrough.
@@ -2520,6 +2520,12 @@ export class KDreamViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'evictAgent':
           await vscode.commands.executeCommand('autoclaw.fleet.evict', { agentId: message.agentId, sessionId: message.sessionId });
+          break;
+        case 'startOnboardAgent':
+          // One-click Start / Onboard for a detected-but-not-live agent card.
+          // Reuses the EXISTING join-prompt flow, pre-selecting THIS agent id so
+          // the target-tool picker step is skipped.
+          await vscode.commands.executeCommand('autoclaw.fleet.joinPrompt', { agentId: message.agentId });
           break;
         case 'startKgDaemon':
         case 'restartKgDaemon':
@@ -5071,6 +5077,26 @@ function laneConsequence(conv: { lane: string; fallbackLane?: string }): string 
  * Build the target-tool picker items, grouped by federation peers vs in-extension
  * IDE hosts, each row surfacing its join lane (description) + consequence (detail).
  */
+/**
+ * Resolve a registry/fleet agent id to a {@link JOIN_TARGETS} key so the Start /
+ * Onboard card action can pre-select the joining tool. Most agent ids ARE the
+ * target key (kilocode, kiro, codex, …); a few announce a different agent_id
+ * than their key (e.g. the `antigravity` target announces agent_id `gemini-cli`).
+ * We therefore match the key directly first, then fall back to matching a
+ * target's announced `agentId`, then finally to the id itself (unknown tools get
+ * the safe fs-lane fallback inside the renderer). Returns undefined only for a
+ * blank id so the caller falls back to the full picker.
+ */
+function resolveJoinTargetKey(agentId: string | undefined): string | undefined {
+  const id = (agentId ?? '').trim();
+  if (!id) { return undefined; }
+  if (JOIN_TARGETS[id]) { return id; }
+  for (const [key, conv] of Object.entries(JOIN_TARGETS)) {
+    if (conv.agentId === id) { return key; }
+  }
+  return id;
+}
+
 function buildTargetItems(): FleetPickItem[] {
   const federation = ['codex', 'codex-ide', 'codex-cli', 'generic-mcp', 'claude-desktop', 'openclaw', 'hermes'];
   const toItem = (key: string): FleetPickItem => {
@@ -5259,19 +5285,24 @@ async function fleetInviteCommand(): Promise<void> {
  * Closes the bare-token gap: the human gets a full prompt to paste into Codex,
  * Claude Desktop, OpenClaw, Hermes, or any in-extension IDE host.
  */
-async function fleetJoinPromptCommand(): Promise<void> {
+async function fleetJoinPromptCommand(arg?: { agentId?: string }): Promise<void> {
   const wr = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (!wr) { vscode.window.showWarningMessage('AutoClaw: open a workspace folder first.'); return; }
 
-  // 1. Target tool — drives the join lane + announced agent_id. Grouped by
-  // federation peers vs IDE hosts; each row surfaces its lane + consequence.
-  const targetPick = await vscode.window.showQuickPick(buildTargetItems(), {
-    title: 'Generate join prompt — target tool',
-    placeHolder: 'Which tool is joining? (its lane is shown on each row)',
-    matchOnDescription: true, matchOnDetail: true,
-  });
-  if (!targetPick?.value) { return; }
-  const targetKey = targetPick.value;
+  // 1. Target tool — drives the join lane + announced agent_id. When invoked
+  // from a detected-but-not-live agent card (Start / Onboard), the agent id is
+  // already known, so the target-tool picker is skipped and the tool is resolved
+  // directly. Otherwise the user picks from the grouped tool list.
+  let targetKey = arg?.agentId ? resolveJoinTargetKey(arg.agentId) : undefined;
+  if (!targetKey) {
+    const targetPick = await vscode.window.showQuickPick(buildTargetItems(), {
+      title: 'Generate join prompt — target tool',
+      placeHolder: 'Which tool is joining? (its lane is shown on each row)',
+      matchOnDescription: true, matchOnDetail: true,
+    });
+    if (!targetPick?.value) { return; }
+    targetKey = targetPick.value;
+  }
 
   // 2. Role — the only required taxonomy choice (the board-facing job).
   const rolePick = await vscode.window.showQuickPick(buildRoleItems(), {
@@ -5302,7 +5333,12 @@ async function fleetJoinPromptCommand(): Promise<void> {
   });
   const scope = (scopeRaw ?? '').split(',').map(s => s.trim()).filter(Boolean);
 
-  const target = JOIN_TARGETS[targetKey];
+  // An unknown agent id (Start / Onboard on a card for a tool without a
+  // JOIN_TARGETS convention) resolves to a safe fs-lane fallback, mirroring the
+  // renderer's own `conventionFor` fallback so lane-dependent steps below stay
+  // sound. renderJoinPromptForInvite re-derives the same fallback from targetKey.
+  const target: JoinTargetConvention = JOIN_TARGETS[targetKey]
+    ?? { agentId: targetKey, label: targetKey, lane: 'fs' };
 
   // 4b. Admit policy — unified with the Invite command (was hard-coded here).
   const policyPick = await vscode.window.showQuickPick(buildAdmitItems(), {

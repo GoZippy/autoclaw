@@ -7,6 +7,7 @@ import {
   renderFabricHealth, bridgeTooltip, kgTooltip, kgClickCommand,
   agentHost, isRemoteAgent, agentRole, renderRoleChip, renderTeamSummary,
   renderSessionList, renderSelfIdentity, renderProvenanceBadge,
+  renderAgentActions, renderLoopMechanismBadge, loopMechanismMeta, isDetectedNotLive,
   type AgentWithLive, type InboxSummary, type AwaitingYouRow, type FabricHealth,
 } from '../webview-render';
 import type { Message, RegisteredAgent, Heartbeat } from '../comms';
@@ -293,6 +294,78 @@ suite('webview-render — agent cards', () => {
   test('a present-but-idle agent (no sessions, no session id) says so plainly', () => {
     const html = renderAgentCard(makeMinimalAgent());
     assert.match(html, /No active chat sessions/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Start / Onboard affordance + loop_mechanism badge
+// ---------------------------------------------------------------------------
+
+suite('webview-render — Start/Onboard + loop_mechanism', () => {
+  test('loopMechanismMeta maps known values and returns null for unknown/absent', () => {
+    assert.strictEqual(loopMechanismMeta('slash-loop')?.short, 'auto /loop');
+    assert.strictEqual(loopMechanismMeta('plain-message')?.short, 'manual start');
+    assert.strictEqual(loopMechanismMeta('cli-headless')?.short, 'headless runner');
+    assert.strictEqual(loopMechanismMeta('bridge-relayed')?.short, 'bridge-driven');
+    assert.strictEqual(loopMechanismMeta(undefined), null);
+    assert.strictEqual(loopMechanismMeta('mystery'), null);
+  });
+
+  test('renderLoopMechanismBadge renders a labelled badge and hides for absent/unknown', () => {
+    const html = renderLoopMechanismBadge({ ...makeMinimalAgent(), loop_mechanism: 'plain-message' });
+    assert.match(html, /class="loop-mech loop-mech-plain-message"/);
+    assert.match(html, />manual start</);
+    assert.strictEqual(renderLoopMechanismBadge(makeMinimalAgent()), '');
+    assert.strictEqual(renderLoopMechanismBadge({ ...makeMinimalAgent(), loop_mechanism: 'mystery' }), '');
+  });
+
+  test('isDetectedNotLive is true for offline/stalled/detected, false for live states', () => {
+    const a = makeMinimalAgent();
+    assert.strictEqual(isDetectedNotLive({ ...a, live_status: 'detected' }), true);
+    assert.strictEqual(isDetectedNotLive({ ...a, live_status: 'offline' }), true);
+    assert.strictEqual(isDetectedNotLive({ ...a, live_status: 'stalled' }), true);
+    assert.strictEqual(isDetectedNotLive({ ...a, live_status: 'active' }), false);
+    assert.strictEqual(isDetectedNotLive({ ...a, live_status: 'idle' }), false);
+    assert.strictEqual(isDetectedNotLive({ ...a, live_status: 'overloaded' }), false);
+    // Falls back to `status` when live_status is absent (minimal agent = detected).
+    assert.strictEqual(isDetectedNotLive(a), true);
+  });
+
+  test('renderAgentActions shows Start/Onboard for a detected-but-not-live agent', () => {
+    const html = renderAgentActions(makeMinimalAgent());
+    assert.match(html, /data-action="startOnboardAgent"/);
+    assert.match(html, /data-agent-id="cursor"/);
+    assert.match(html, /btn-start/);
+    assert.match(html, /Start \/ Onboard/);
+  });
+
+  test('renderAgentActions omits Start/Onboard for a live agent', () => {
+    const live: AgentWithLive = { ...makeMinimalAgent(), live_status: 'active' };
+    const html = renderAgentActions(live);
+    assert.ok(!/startOnboardAgent/.test(html), 'a live agent needs no Start/Onboard');
+    // …but the peer command-and-control row is still present for a non-self peer.
+    assert.match(html, /data-action="messageAgent"/);
+  });
+
+  test('renderAgentActions on the SELF card still offers Start/Onboard if not live, but no C&C', () => {
+    // A dark self host: Start/Onboard is a recovery affordance, but you never
+    // pause/evict yourself, so the peer doorbells are suppressed.
+    const html = renderAgentActions(makeMinimalAgent(), 'cursor');
+    assert.match(html, /startOnboardAgent/);
+    assert.ok(!/messageAgent/.test(html), 'no peer C&C on your own card');
+    assert.ok(!/btn-evict/.test(html), 'no evict on your own card');
+  });
+
+  test('renderAgentActions returns empty for a live SELF card (nothing to show)', () => {
+    const liveSelf: AgentWithLive = { ...makeMinimalAgent(), live_status: 'active' };
+    assert.strictEqual(renderAgentActions(liveSelf, 'cursor'), '');
+  });
+
+  test('agent card surfaces the loop_mechanism badge + Start/Onboard end-to-end', () => {
+    const dark: AgentWithLive = { ...makeMinimalAgent(), loop_mechanism: 'plain-message' };
+    const html = renderAgentCard(dark);
+    assert.match(html, /loop-mech-plain-message/);            // badge in the head
+    assert.match(html, /data-action="startOnboardAgent"/);   // action in the body
   });
 });
 

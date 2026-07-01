@@ -230,6 +230,18 @@ export interface RegisteredAgent {
   spiffe_id?: string;
   /** ISO timestamp the registry entry was last refreshed. */
   last_detected_at?: string;
+  /**
+   * How this agent's loop is driven — stamped onto the row by `scaffoldAgent`
+   * (see src/fleet/scaffold.ts `KeepaliveProfile.loop_mechanism`). One of
+   * `slash-loop` / `plain-message` / `cli-headless` / `bridge-relayed`. Absent
+   * on legacy rows. Surfaced on the fleet-panel card so the user knows whether
+   * an agent auto-polls or must be manually started/fed a prompt. Kept as a
+   * free string here to avoid a runtime import of scaffold.ts's LoopMechanism
+   * union into this fs-only module.
+   */
+  loop_mechanism?: string;
+  /** Relative path of the shipped keepalive template (revive flow). */
+  keepalive_template?: string;
 }
 
 export interface AgentRegistry {

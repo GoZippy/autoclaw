@@ -690,19 +690,45 @@ export function renderAgentMetrics(m: AgentMetrics | undefined, _now: number = D
  * Returns '' for the self card so it renders exactly as before.
  */
 export function renderAgentActions(agent: AgentWithLive, selfId?: string): string {
-  if (selfId && agent.id === selfId) { return ''; }
+  const isSelf = !!selfId && agent.id === selfId;
   const id = esc(agent.id);
   const btn = (action: string, label: string, title: string, extraCls = ''): string =>
     `<button type="button" class="agent-action${extraCls ? ' ' + extraCls : ''}" `
     + `data-action="${esc(action)}" data-agent-id="${id}" title="${esc(title)}">${esc(label)}</button>`;
-  let h = '<div class="agent-actions" role="group" aria-label="Agent actions">';
-  h += btn('messageAgent', 'Message', 'Send this agent a message (lands in its inbox).');
-  h += btn('pauseAgent', 'Pause', 'Ask this agent to stop claiming new work.');
-  h += btn('resumeAgent', 'Resume', 'Tell a paused agent it may claim work again.');
-  h += btn('reassignAgent', 'Reassign', 'Release a claim this agent holds back to the board.');
-  h += btn('evictAgent', 'Evict', 'Evict this agent (releases work, revokes trust, retires it). Confirmation required.', 'btn-evict');
-  h += '</div>';
-  return h;
+
+  // Start / Onboard — the one-click affordance for an agent that is DETECTED
+  // (registered / extension present) but NOT LIVE (no recent heartbeat / no
+  // running session). Clicking it wires the EXISTING join-prompt onboarding flow
+  // for THIS agent id (the host reuses fleetJoinPromptCommand, pre-selecting the
+  // agent). Shown even on this window's own card if the host is somehow not live,
+  // so the operator always has a way to (re)start a dark agent.
+  let startBtn = '';
+  if (isDetectedNotLive(agent)) {
+    const mech = loopMechanismMeta(agent.loop_mechanism);
+    const hint = mech
+      ? ` It ${agent.loop_mechanism === 'plain-message' ? 'must be started manually' : 'auto-drives once launched'} (${mech.short}).`
+      : '';
+    startBtn = `<button type="button" class="agent-action btn-start" `
+      + `data-action="startOnboardAgent" data-agent-id="${id}" `
+      + `title="Start / onboard ${esc(agent.name || agent.id)} — generate this agent's join prompt so it can join the fleet.${esc(hint)}">`
+      + `&#9654; Start / Onboard</button>`;
+  }
+
+  // The peer command-and-control doorbells (Message/Pause/…/Evict) never target
+  // this window's own agent — you don't pause/evict yourself. So the standard
+  // C&C row is suppressed on the self card, but the Start/Onboard button (a
+  // recovery affordance) may still render above.
+  let cc = '';
+  if (!isSelf) {
+    cc += btn('messageAgent', 'Message', 'Send this agent a message (lands in its inbox).');
+    cc += btn('pauseAgent', 'Pause', 'Ask this agent to stop claiming new work.');
+    cc += btn('resumeAgent', 'Resume', 'Tell a paused agent it may claim work again.');
+    cc += btn('reassignAgent', 'Reassign', 'Release a claim this agent holds back to the board.');
+    cc += btn('evictAgent', 'Evict', 'Evict this agent (releases work, revokes trust, retires it). Confirmation required.', 'btn-evict');
+  }
+
+  if (!startBtn && !cc) { return ''; }
+  return '<div class="agent-actions" role="group" aria-label="Agent actions">' + startBtn + cc + '</div>';
 }
 
 /**
@@ -804,6 +830,44 @@ export function renderProvenanceBadge(agent: AgentWithLive): string {
   return '';
 }
 
+/** Human-facing label + tooltip for a `loop_mechanism` registry value. Describes
+ *  whether the agent auto-polls or needs a manual start, which is exactly the
+ *  distinction the operator needs when an agent is detected-but-not-live. */
+export function loopMechanismMeta(
+  m: string | undefined
+): { short: string; title: string } | null {
+  switch (m) {
+    case 'slash-loop':
+      return { short: 'auto /loop', title: 'Auto-loops via its /loop skill — it re-runs its own cycle once started.' };
+    case 'plain-message':
+      return { short: 'manual start', title: 'Chat-only host — must be manually started/fed a prompt each cycle (no auto-poll).' };
+    case 'cli-headless':
+      return { short: 'headless runner', title: 'Headless subprocess — a runner re-dispatches it (auto-driven once launched).' };
+    case 'bridge-relayed':
+      return { short: 'bridge-driven', title: 'A REST bridge / companion auto-submits its next cycle (auto-driven).' };
+    default:
+      return null; // unknown / absent — render no badge
+  }
+}
+
+/** Render the compact loop-mechanism badge shown on the card summary line, so the
+ *  operator can tell at a glance whether an agent auto-polls or needs a manual
+ *  start. Returns '' when the registry row carries no (recognised) mechanism. */
+export function renderLoopMechanismBadge(agent: AgentWithLive): string {
+  const meta = loopMechanismMeta(agent.loop_mechanism);
+  if (!meta) { return ''; }
+  return `<span class="loop-mech loop-mech-${esc(String(agent.loop_mechanism))}" title="${esc(meta.title)}">${esc(meta.short)}</span>`;
+}
+
+/** True when an agent is DETECTED (extension present / a registry row exists) but
+ *  NOT LIVE — no recent heartbeat, no running session. These are the agents the
+ *  Start / Onboard affordance targets. A live agent is active/idle/overloaded;
+ *  offline / stalled / detected all mean "not currently running". */
+export function isDetectedNotLive(agent: AgentWithLive): boolean {
+  const live = agent.live_status || agent.status;
+  return live === 'offline' || live === 'stalled' || live === 'detected';
+}
+
 /**
  * Render one agent card. The summary row is always rendered; the expanded
  * body is rendered as a sibling div the JS can toggle by adding/removing
@@ -862,6 +926,11 @@ export function renderAgentCard(
   // a delegated sub-agent spawned by an orchestrator, or an external tool that
   // joined via a beacon check-in. Primary team agents carry no provenance badge.
   head += renderProvenanceBadge(agent);
+  // loop_mechanism badge — tells the operator whether this agent auto-polls or
+  // must be manually started/fed a prompt. Most useful when it is detected-but-
+  // not-live (the Start / Onboard case), but shown whenever the row carries a
+  // recognised mechanism. Renders '' for legacy rows without the field.
+  head += renderLoopMechanismBadge(agent);
   if (summary && summary.awaiting_response > 0) {
     head += `<span class="awaiting-pip" title="${summary.awaiting_response} awaiting your response">${summary.awaiting_response}</span>`;
   }
