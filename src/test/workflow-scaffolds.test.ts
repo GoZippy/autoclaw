@@ -7,10 +7,12 @@ import {
   PROMPT_HARNESS_SCHEMA,
   SCAFFOLD_SCHEMA,
   SCAFFOLD_SCORE_SCHEMA,
+  WORKFLOW_PLAYBOOK_SCHEMA,
   appendPromptHarnessContract,
   appendScaffoldScore,
   appendScaffoldVariant,
   parseScaffoldVariant,
+  parseWorkflowPlaybook,
   readPromptHarnessContracts,
   readScaffoldScores,
   readScaffoldVariants,
@@ -101,6 +103,15 @@ suite('workflow scaffolds', () => {
 
     assert.strictEqual(parsed.id, 'scaffold-review-local-v1');
     assert.deepStrictEqual(parsed.futureContract, { kgAblation: true });
+  });
+
+  test('Workflow Playbook aliases preserve the scaffold contract', () => {
+    const parsed = parseWorkflowPlaybook(variant({ id: 'playbook-review-local-v1' }));
+
+    assert.strictEqual(WORKFLOW_PLAYBOOK_SCHEMA, SCAFFOLD_SCHEMA);
+    assert.strictEqual(parsed.schema, SCAFFOLD_SCHEMA);
+    assert.strictEqual(parsed.id, 'playbook-review-local-v1');
+    assert.strictEqual(parsed.routerProfile, 'local-only');
   });
 
   test('appends and reads scaffold variants and prompt harness contracts', async () => {

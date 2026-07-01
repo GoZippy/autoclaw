@@ -4,10 +4,12 @@ import type { ModelCapability, ModelLocality, UnknownFields, WorkflowIntent, Wor
 export const SCAFFOLD_SCHEMA = 'autoclaw.scaffold.v1' as const;
 export const PROMPT_HARNESS_SCHEMA = 'autoclaw.promptHarness.v1' as const;
 export const SCAFFOLD_SCORE_SCHEMA = 'autoclaw.scaffoldScore.v1' as const;
+export const WORKFLOW_PLAYBOOK_SCHEMA = SCAFFOLD_SCHEMA;
 
 export type ScaffoldSchema = typeof SCAFFOLD_SCHEMA;
 export type PromptHarnessSchema = typeof PROMPT_HARNESS_SCHEMA;
 export type ScaffoldScoreSchema = typeof SCAFFOLD_SCORE_SCHEMA;
+export type WorkflowPlaybookSchema = ScaffoldSchema;
 export type ScaffoldRouterProfile = NonNullable<WorkflowPolicies['routingProfile']>;
 export type ScaffoldMutationKind =
   | 'context_mode'
@@ -125,6 +127,16 @@ export interface ScaffoldScore extends UnknownFields {
   metadata?: Record<string, unknown>;
 }
 
+// Product-safe aliases. The underlying persisted schema stays
+// autoclaw.scaffold.v1 for backward compatibility with existing ledgers.
+export type WorkflowPlaybook = ScaffoldVariant;
+export type WorkflowPlaybookMutation = ScaffoldMutation;
+export type WorkflowPlaybookMutationKind = ScaffoldMutationKind;
+export type WorkflowPlaybookReviewConfig = ReviewScaffoldConfig;
+export type WorkflowPlaybookScore = ScaffoldScore;
+export type OutcomeScore = ScaffoldScore;
+export type WorkflowPromptHarness = PromptHarnessContract;
+
 export function parseScaffoldVariant(input: string | unknown): ScaffoldVariant {
   const value = parseRecord(input, 'Scaffold variant');
   requireSchema(value, SCAFFOLD_SCHEMA, 'Scaffold variant');
@@ -135,6 +147,10 @@ export function parseScaffoldVariant(input: string | unknown): ScaffoldVariant {
   requireStringArray(value, 'toolLaneIds', 'Scaffold variant');
   requireString(value, 'createdAt', 'Scaffold variant');
   return value as ScaffoldVariant;
+}
+
+export function parseWorkflowPlaybook(input: string | unknown): WorkflowPlaybook {
+  return parseScaffoldVariant(input);
 }
 
 export function parsePromptHarnessContract(input: string | unknown): PromptHarnessContract {
