@@ -38,6 +38,7 @@ import { getEmbedding, detectRouter, detectOllama } from './embeddings';
 import { resolveEmbeddingConfig, applyEmbeddingPin } from './embeddingResolve';
 import { acquireLock } from './fileLock';
 import { initVectorDB, initVectorBackend, VectorRecord } from './vector';
+import { clearDbRecoveredMarker, hasDurableLearningArtifacts } from './recovery';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -432,12 +433,10 @@ async function writeIndexHealth(
 }
 
 /**
- * Cheap, bounded reachability probe for the force pre-flight. For network
- * providers it uses the ~1.5s liveness detectors — NOT the 30s embed path, which
- * would stall the whole `/index-code → Full re-index` command on a host that
- * accepts the socket but hangs. In-process providers (transformers) cannot hang
- * on a socket, so a probe embed there is local + fast. Returns true when a
- * rebuild would degrade to `none` and thus poison the store.
+ * Cheap first, then meaningful: network providers must pass the bounded
+ * liveness detectors before we run a real embed probe. A host can be reachable
+ * while the model itself returns 5xx/shape errors, and a force rebuild in that
+ * state would poison the store with fallback vectors.
  */
 async function providerUnreachableForRebuild(
   config: IntelligenceConfig,
@@ -446,10 +445,14 @@ async function providerUnreachableForRebuild(
   const e = config.embedding;
   try {
     if (e.provider === 'router') {
-      return !(await detectRouter(e.routerHost));
+      if (!(await detectRouter(e.routerHost))) {
+        return true;
+      }
     }
     if (e.provider === 'ollama') {
-      return !(await detectOllama(e.ollamaHost));
+      if (!(await detectOllama(e.ollamaHost))) {
+        return true;
+      }
     }
     let degraded = false;
     await getEmbedding(HEALTH_PROBE_TEXT, e, log, () => {
@@ -546,7 +549,9 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
     // Decide the working set: incremental git-diff selection vs full walk.
     let filesToIndex = allFiles;
     let usedIncremental = false;
-    if (!force && config.rag.incremental) {
+    if (db.dbRecovered) {
+      log('rag: prior vector database was recovered from corruption; forcing a full re-index');
+    } else if (!force && config.rag.incremental) {
       const lastCommit = lastCommitFor(paths.lastIndexPath, project);
       if (lastCommit) {
         const diff = tryGit(gitRunner, `diff --name-only ${lastCommit} HEAD`, workspaceRoot);
@@ -679,6 +684,15 @@ export async function indexCodebase(options: IndexCodebaseOptions): Promise<Inde
         cancelled,
       },
     });
+
+    if (!cancelled && !hasDurableLearningArtifacts(paths)) {
+      await clearDbRecoveredMarker(paths.dbRecoveredPath);
+    } else if (!cancelled && db.dbRecovered) {
+      log(
+        'rag: code vectors restored, but learned-memory artifacts exist; run /learn to ' +
+          'rebuild learn vectors before clearing recovery state',
+      );
+    }
 
     return {
       filesIndexed: filesToIndex.length,

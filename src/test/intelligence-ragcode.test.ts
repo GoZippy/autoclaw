@@ -32,6 +32,8 @@ import {
   GitRunner,
 } from '../intelligence/ragCode';
 import { defaultConfig } from '../intelligence/config';
+import { intelligencePaths } from '../intelligence/paths';
+import { resolveProjectKey } from '../intelligence/project';
 import { IntelligenceConfig } from '../intelligence/types';
 import { nativeVectorAvailable } from './_vectorBackendAvailable';
 
@@ -268,6 +270,87 @@ suite('intelligence-ragcode', function () {
       assert.ok(
         afterEntries.some((e) => e.commit === 'C3'),
         'force should update the recorded commit to C3',
+      );
+    });
+
+    test('recovered corrupt database forces a full rebuild and clears the recovery marker', async function () {
+      const ws = freshDir('ws-recovered');
+      writeFile(ws, 'a.ts', 'export const recoveredAToken = 1;');
+      writeFile(ws, 'b.ts', 'export const recoveredBToken = 2;');
+
+      const cfg = noneConfig();
+      const paths = intelligencePaths(ws);
+      const project = resolveProjectKey(ws);
+      fs.mkdirSync(paths.vectorDir, { recursive: true });
+      fs.writeFileSync(paths.dbPath, 'not sqlite', 'utf8');
+      fs.writeFileSync(
+        paths.lastIndexPath,
+        JSON.stringify({ [project]: { commit: 'C1', indexedAt: new Date().toISOString() } }, null, 2),
+        'utf8',
+      );
+
+      const logs: string[] = [];
+      const git = stubGit((args) => {
+        if (args.startsWith('rev-parse')) return 'C2';
+        if (args.startsWith('diff')) return '';
+        return '';
+      });
+
+      const res = await indexCodebase({
+        workspaceRoot: ws,
+        config: cfg,
+        gitRunner: git,
+        log: (m) => logs.push(m),
+      });
+
+      assert.strictEqual(res.degraded, false);
+      assert.strictEqual(res.incremental, false, 'recovered DB cannot rely on git-diff incrementality');
+      assert.strictEqual(res.filesIndexed, 2, 'all source files must be restored into the fresh DB');
+      assert.strictEqual(fs.existsSync(paths.dbRecoveredPath), false, 'successful rebuild clears recovery marker');
+      assert.ok(
+        logs.some((m) => m.includes('forcing a full re-index')),
+        'operator log should explain why the run was full',
+      );
+    });
+
+    test('recovered corrupt database keeps the marker when learn artifacts need restore', async function () {
+      const ws = freshDir('ws-recovered-learn');
+      writeFile(ws, 'a.ts', 'export const recoveredLearnToken = 1;');
+
+      const cfg = noneConfig();
+      const paths = intelligencePaths(ws);
+      const project = resolveProjectKey(ws);
+      fs.mkdirSync(paths.vectorDir, { recursive: true });
+      fs.writeFileSync(paths.dbPath, 'not sqlite', 'utf8');
+      fs.writeFileSync(
+        path.join(paths.vectorDir, 'preferences.json'),
+        JSON.stringify({ preferredPatterns: ['keep durable learnings'], avoided: [], tools: [] }),
+        'utf8',
+      );
+      fs.writeFileSync(
+        paths.lastIndexPath,
+        JSON.stringify({ [project]: { commit: 'C1', indexedAt: new Date().toISOString() } }, null, 2),
+        'utf8',
+      );
+
+      const logs: string[] = [];
+      const res = await indexCodebase({
+        workspaceRoot: ws,
+        config: cfg,
+        gitRunner: stubGit((args) => (args.startsWith('rev-parse') ? 'C2' : '')),
+        log: (m) => logs.push(m),
+      });
+
+      assert.strictEqual(res.degraded, false);
+      assert.strictEqual(res.filesIndexed, 1);
+      assert.strictEqual(
+        fs.existsSync(paths.dbRecoveredPath),
+        true,
+        'marker stays until /learn restores learned-memory vectors',
+      );
+      assert.ok(
+        logs.some((m) => m.includes('run /learn')),
+        'operator log should explain that learn vectors still need restore',
       );
     });
 

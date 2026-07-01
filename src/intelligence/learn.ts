@@ -51,6 +51,7 @@ import { WorkflowInsights, mineWorkflows, workflowPatternLabel } from './workflo
 import { computeEffectiveness } from './effectiveness';
 import { recordEffectiveness } from './metrics/effectivenessStore';
 import { CoordinationSignals, collectCoordinationSignals } from './coordinationSignals';
+import { clearDbRecoveredMarker, codeIndexHealthy } from './recovery';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -702,7 +703,10 @@ export async function learnFromSessions(options: LearnOptions): Promise<LearnSum
   // lock. Every LearnedMemory record (procedural / failure / reflection) is
   // embedded — not just the single distilled reflection — so `/search` covers
   // the individual learnings (R6.2), not merely a per-run summary.
-  await storeMemoryEmbeddings(paths.dbPath, config, project, records, log);
+  const learnVectorsRestored = await storeMemoryEmbeddings(paths.dbPath, config, project, records, log);
+  if (learnVectorsRestored && codeIndexHealthy(paths, workspaceRoot)) {
+    await clearDbRecoveredMarker(paths.dbRecoveredPath);
+  }
 
   // (metrics-dashboard R1.1/R2.4) Record run metrics; attach real tokens from
   // the existing cost ledger when token logging is enabled. Best-effort — a
@@ -750,9 +754,9 @@ async function storeMemoryEmbeddings(
   project: string,
   records: LearnedMemory[],
   log: LogFn,
-): Promise<void> {
+): Promise<boolean> {
   if (records.length === 0) {
-    return;
+    return true;
   }
   try {
     const signature = getActiveEmbeddingSignature(config);
@@ -760,7 +764,7 @@ async function storeMemoryEmbeddings(
     if (db.degraded) {
       log('learn: vector backend unavailable; learning embeddings not stored');
       db.close();
-      return;
+      return false;
     }
     try {
       const vrecs: VectorRecord[] = [];
@@ -796,11 +800,13 @@ async function storeMemoryEmbeddings(
             `and re-run /learn for a clean rebuild.`,
         );
       }
+      return !embeddingDegraded;
     } finally {
       db.close();
     }
   } catch (err) {
     // Embedding is best-effort — never let it break the learn run.
     log(`learn: storing learning embeddings failed (${(err as Error).message})`);
+    return false;
   }
 }

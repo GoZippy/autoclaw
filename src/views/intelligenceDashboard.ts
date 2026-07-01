@@ -16,9 +16,8 @@
  * This is the ONLY file in this feature permitted to import `vscode`; all data
  * shaping lives in the host-free `src/intelligence/metrics/*` modules.
  *
- * Webview assets live in `media/intelligence/` (dashboard.html/.css/.js) and are
- * copied into the package by `scripts/copy-webview.js`. The HTML is CSP-locked
- * with a per-load nonce.
+ * Webview assets live in `media/intelligence/` (dashboard.html/.css/.js). The
+ * HTML is CSP-locked with a per-load nonce.
  */
 
 import * as vscode from 'vscode';

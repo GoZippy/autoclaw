@@ -104,14 +104,17 @@
   function renderBackendStatus(backend) {
     const btn = document.querySelector('button[data-action="install-backend"]');
     const pill = document.getElementById('backend-online');
+    const resetPill = document.getElementById('backend-reset');
     if (!backend) {
       if (btn) { btn.hidden = false; }
       if (pill) { pill.hidden = true; }
+      if (resetPill) { resetPill.hidden = true; }
       return;
     }
     if (backend.installed) {
       if (btn) { btn.hidden = true; btn.title = 'Vector backend installed at ' + (backend.path || ''); }
       if (pill) { pill.hidden = false; pill.title = 'Vector backend online — RAG enabled (' + (backend.path || '') + ')'; }
+      if (resetPill) { resetPill.hidden = true; }
     } else {
       if (btn) {
         btn.hidden = false;
@@ -119,6 +122,7 @@
           (backend.path ? ' — target: ' + backend.path : '');
       }
       if (pill) { pill.hidden = true; }
+      if (resetPill) { resetPill.hidden = true; }
     }
   }
 
@@ -291,17 +295,17 @@
     const index = health.index || {};
     renderHealthIndex(index);
 
-    // If the DB was auto-recovered from corruption, switch the Online pill to
-    // the amber Reset pill so the user sees the degraded state immediately.
-    if (index.dbCorruptRecovered) {
-      const onlinePill = document.getElementById('backend-online');
-      const resetPill = document.getElementById('backend-reset');
-      if (onlinePill) { onlinePill.hidden = true; }
-      if (resetPill) { resetPill.hidden = false; }
-    }
+    renderRecoveryPill(!!index.dbCorruptRecovered);
 
     // Nudges.
     renderHealthNudges(health.nudges || []);
+  }
+
+  function renderRecoveryPill(recovered) {
+    const onlinePill = document.getElementById('backend-online');
+    const resetPill = document.getElementById('backend-reset');
+    if (resetPill) { resetPill.hidden = !recovered; }
+    if (onlinePill && recovered) { onlinePill.hidden = true; }
   }
 
   function setHealthDot(status) {

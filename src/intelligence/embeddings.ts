@@ -85,6 +85,32 @@ const DEFAULT_ROUTER_HOST = 'http://127.0.0.1:20128';
 /** Generous for an embed call; short for liveness detection. */
 const EMBED_TIMEOUT_MS = 30000;
 const DETECT_TIMEOUT_MS = 1500;
+const EMBED_RETRY_DELAYS_MS = [250, 1000];
+
+/**
+ * Wall-clock backstop for a single embed call — strictly LONGER than the socket
+ * timeout so a legitimately slow response is never cut short, but bounded so a
+ * hung socket (on Windows a server can accept a connection and then never write,
+ * a state in which `req.setTimeout` is not guaranteed to fire) cannot freeze the
+ * whole index loop forever. Wraps every network embed via {@link hardDeadline}.
+ */
+const EMBED_HARD_DEADLINE_MS = 35000;
+
+/**
+ * Absolute ceiling on characters sent to an embedding provider in ONE call.
+ * Embedding models have a fixed token context (e.g. Ollama `nomic-embed-text` is
+ * 2048 tokens); an input past it is a DETERMINISTIC failure ("input length
+ * exceeds the context length"), never a transient one. A single long source line
+ * (minified JS, a bundled asset, a data blob) can produce a chunk far larger than
+ * `config.rag.codeChunkSize`, so we cap defensively before the first attempt and
+ * shrink-on-overflow after. The full chunk text is still STORED by the caller;
+ * only the text handed to the embedder is truncated.
+ */
+const EMBED_MAX_INPUT_CHARS = 8000;
+/** Floor for adaptive shrink so the retry loop always terminates. */
+const EMBED_MIN_INPUT_CHARS = 400;
+/** Max halvings from cap→floor before giving up (8000→…→400 is ~5). */
+const EMBED_MAX_SHRINKS = 12;
 
 /**
  * Hard wall-clock deadline so Windows socket-level timeouts (which can fail
@@ -121,6 +147,62 @@ function hardDeadline<T>(ms: number, p: Promise<T>): Promise<T> {
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * True when the provider rejected the input for being longer than the model's
+ * token context. This is DETERMINISTIC (the same input always fails), so it must
+ * be handled by shrinking the input — never by a delay-retry (pointless) and
+ * never by degrading to `none` (which would poison index geometry for a chunk
+ * the provider could embed just fine at a smaller size). Depends on the response
+ * body surviving into the error message — see {@link httpRequestJson}.
+ */
+function isContextLengthError(err: unknown): boolean {
+  return /context length|context window|exceeds? the context|input (?:is )?too long|maximum context|too many tokens|reduce the (?:length|input)/i.test(
+    errorMessage(err),
+  );
+}
+
+function isTransientEmbeddingError(err: unknown): boolean {
+  // A context-overflow 500 matches the HTTP 5xx rule below but is NOT transient —
+  // classify it out first so it is shrunk, not blindly retried then degraded.
+  if (isContextLengthError(err)) {
+    return false;
+  }
+  const msg = errorMessage(err);
+  return /HTTP 5\d\d|request timed out|ECONNRESET|EPIPE|socket hang up|fetch failed|detect deadline|embed deadline/i.test(msg);
+}
+
+/** Truncate `text` to at most `max` characters (head), leaving shorter text intact. */
+function capInput(text: string, max: number): string {
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+/**
+ * Run one concrete embed with a wall-clock backstop. The `none` provider is pure
+ * CPU (no socket) so it needs no deadline; every network provider is wrapped so a
+ * hung connection cannot stall the caller indefinitely.
+ */
+function embedOnce(text: string, config: EmbeddingConfig): Promise<number[]> {
+  if (config.provider === 'none') {
+    return embedStrict(text, config);
+  }
+  return hardDeadline(EMBED_HARD_DEADLINE_MS, embedStrict(text, config)).catch((err) => {
+    // Normalize the generic deadline message so the transient classifier and any
+    // logs read as an embed timeout rather than the detector's wording.
+    if (err instanceof Error && err.message === 'detect deadline') {
+      throw new Error('embed deadline');
+    }
+    throw err;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -143,23 +225,78 @@ export async function getEmbedding(
   onDegrade?: () => void,
 ): Promise<number[]> {
   const warn: LogFn = log ?? (() => undefined);
-  try {
-    return await embedStrict(text, config);
-  } catch (err) {
-    const msg = (err as Error).message;
-    if (config.provider !== 'none') {
-      onDegrade?.();
+  // Proactive cap: never hand a network provider more than it can embed in one
+  // call. `none` has no context limit, so leave its (hashing) input untouched.
+  let current = config.provider === 'none' ? text : capInput(text, EMBED_MAX_INPUT_CHARS);
+  let lastError: unknown;
+  let transientAttempts = 0;
+  let shrinks = 0;
+  for (;;) {
+    try {
+      return await embedOnce(current, config);
+    } catch (err) {
+      lastError = err;
+      const msg = errorMessage(err);
+
+      // (1) Deterministic "input too long" → shrink and retry IMMEDIATELY. A
+      // delay-retry is pointless (same input, same failure) and degrading to
+      // `none` would poison this chunk's geometry for a size the provider could
+      // embed fine. Embedding a truncated head still yields a usable vector; the
+      // caller stores the full chunk text regardless.
+      if (
+        config.provider !== 'none' &&
+        isContextLengthError(err) &&
+        current.length > EMBED_MIN_INPUT_CHARS &&
+        shrinks < EMBED_MAX_SHRINKS
+      ) {
+        shrinks++;
+        current = current.slice(0, Math.max(EMBED_MIN_INPUT_CHARS, Math.floor(current.length / 2)));
+        warnOnce(
+          warn,
+          `provider-shrink:${config.provider}`,
+          `embedding: an input exceeded the ${config.model} context window; embedding a ` +
+            `truncated head of oversized chunks (full chunk text is still stored). (further ` +
+            `identical notices this session are suppressed)`,
+        );
+        continue;
+      }
+
+      // (2) Genuinely transient failure (5xx that is not context-overflow,
+      // timeout, reset, hung socket) → bounded delay-retry with the SAME input.
+      if (
+        config.provider !== 'none' &&
+        transientAttempts < EMBED_RETRY_DELAYS_MS.length &&
+        isTransientEmbeddingError(err)
+      ) {
+        warnOnce(
+          warn,
+          `provider-retry:${config.provider}:${msg.slice(0, 120)}`,
+          `embedding: ${config.provider} provider had a transient failure (${msg}); retrying before ` +
+            `degrading to basic 'none' embeddings. (further identical retry warnings this session ` +
+            `are suppressed)`,
+        );
+        await sleep(EMBED_RETRY_DELAYS_MS[transientAttempts]);
+        transientAttempts++;
+        continue;
+      }
+
+      // (3) Not fixable here → fall through to the degrade-to-none path.
+      break;
     }
-    warnOnce(
-      warn,
-      `provider-fail:${config.provider}:${msg.slice(0, 120)}`,
-      `embedding: ${config.provider} provider unavailable (${msg}); using basic 'none' ` +
-        `embeddings for now (lower retrieval quality). Run "AutoClaw: Intelligence — Set ` +
-        `Embedding Provider" to pick Router/Ollama/offline, or fix the provider and re-index. ` +
-        `(further identical warnings this session are suppressed)`,
-    );
-    return getNoneEmbedding(text, config.dimension);
   }
+  const msg = errorMessage(lastError);
+  if (config.provider !== 'none') {
+    onDegrade?.();
+  }
+  warnOnce(
+    warn,
+    `provider-fail:${config.provider}:${msg.slice(0, 120)}`,
+    `embedding: ${config.provider} provider unavailable (${msg}); using basic 'none' ` +
+      `embeddings for now (lower retrieval quality). Run "AutoClaw: Intelligence — Set ` +
+      `Embedding Provider" to pick Router/Ollama/offline, or fix the provider and re-index. ` +
+      `(further identical warnings this session are suppressed)`,
+  );
+  return getNoneEmbedding(text, config.dimension);
 }
 
 /**
@@ -531,7 +668,12 @@ function httpRequestJson(
         res.on('end', () => {
           const status = res.statusCode ?? 0;
           if (status < 200 || status >= 300) {
-            reject(new Error(`HTTP ${status}`));
+            // Keep a snippet of the body: providers report deterministic input
+            // errors (e.g. Ollama's "the input length exceeds the context
+            // length") only in the body, and the caller needs it to distinguish
+            // a shrink-able overflow from a genuinely transient 5xx.
+            const detail = data ? `: ${data.replace(/\s+/g, ' ').trim().slice(0, 300)}` : '';
+            reject(new Error(`HTTP ${status}${detail}`));
             return;
           }
           try {
